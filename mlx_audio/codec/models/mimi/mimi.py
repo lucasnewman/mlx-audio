@@ -9,6 +9,54 @@ import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import hf_hub_download
 
+
+class MimiStreamingDecoder:
+    """Incremental decoder wrapper for the Mimi codec.
+
+    This helper keeps the internal state of the Mimi model across calls and
+    decodes audio tokens frame by frame using ``decode_step``.  It is useful in
+    streaming settings where resetting the codec state for every chunk would
+    introduce audible artifacts.
+    """
+
+    def __init__(self, mimi: "Mimi") -> None:  # noqa: F821 - Mimi defined below
+        self._mimi = mimi
+        self.reset()
+
+    def reset(self) -> None:
+        """Reset the underlying codec state."""
+        self._mimi.decoder.reset_state()
+        self._mimi.upsample.reset_state()
+        for c in self._mimi.decoder_cache:
+            c.reset()
+
+    def decode_frames(self, tokens: mx.array) -> mx.array:
+        """Decode a sequence of audio tokens incrementally.
+
+        Parameters
+        ----------
+        tokens:
+            Array of shape ``(B, C, T)`` or ``(C, T)`` containing the audio
+            tokens to decode. ``B`` is the batch dimension, ``C`` is the number
+            of codebooks and ``T`` the number of frames.
+
+        Returns
+        -------
+        mx.array
+            The decoded waveform for the provided frames.
+        """
+
+        if tokens.ndim == 2:
+            tokens = mx.expand_dims(tokens, 0)
+
+        pcm = []
+        for t in range(tokens.shape[-1]):
+            step_tokens = tokens[:, :, t : t + 1]
+            pcm.append(self._mimi.decode_step(step_tokens))
+
+        return mx.concat(pcm, axis=-1)
+
+
 from .modules import (
     ConvDownsample1d,
     ConvTrUpsample1d,
