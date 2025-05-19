@@ -295,7 +295,10 @@ def generate_audio(
         file_name = f"{file_prefix}.{audio_format}"
         for i, result in enumerate(results):
             if play:
-                player.queue_audio(result.audio)
+                if stream:
+                    player.queue_audio_async(result.audio)
+                else:
+                    player.queue_audio(result.audio)
 
             if join_audio:
                 audio_list.append(result.audio)

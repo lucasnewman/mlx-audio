@@ -1,5 +1,6 @@
 from collections import deque
-from threading import Event, Lock
+from queue import Queue
+from threading import Event, Lock, Thread
 
 import numpy as np
 import sounddevice as sd
@@ -13,6 +14,9 @@ class AudioPlayer:
         self.buffer_lock = Lock()
         self.playing = False
         self.drain_event = Event()
+        self._enqueue_queue = Queue()
+        self._enqueue_thread = Thread(target=self._enqueue_worker, daemon=True)
+        self._enqueue_thread.start()
 
     def callback(self, outdata, frames, time, status):
         with self.buffer_lock:
@@ -52,6 +56,21 @@ class AudioPlayer:
         if not self.playing:
             self.play()
 
+    def queue_audio_async(self, samples):
+        """Enqueue audio samples from any thread without blocking."""
+        if not self._enqueue_thread.is_alive():
+            self._enqueue_thread = Thread(target=self._enqueue_worker, daemon=True)
+            self._enqueue_thread.start()
+        self._enqueue_queue.put(np.array(samples))
+
+    def _enqueue_worker(self):
+        while True:
+            samples = self._enqueue_queue.get()
+            if samples is None:
+                break
+            self.queue_audio(samples)
+            self._enqueue_queue.task_done()
+
     def wait_for_drain(self):
         return self.drain_event.wait()
 
@@ -63,6 +82,10 @@ class AudioPlayer:
             self.stream.stop()
             self.stream.close()
             self.playing = False
+        # signal enqueue worker to exit
+        if self._enqueue_thread.is_alive():
+            self._enqueue_queue.put(None)
+            self._enqueue_thread.join(timeout=0.1)
 
     def flush(self):
         """Discard everything and stop playback immediately."""
