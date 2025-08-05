@@ -1,0 +1,376 @@
+import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
+from typing import Optional
+
+from .const import S3GEN_SR
+from ..s3tokenizer import S3_SR, SPEECH_VOCAB_SIZE, S3Tokenizer
+from .flow import CausalMaskedDiffWithXvec
+from .xvector import CAMPPlus
+from .utils.mel import mel_spectrogram
+from .f0_predictor import ConvRNNF0Predictor
+
+from .hifigan import HiFTGenerator
+from .transformer.upsample_encoder import UpsampleConformerEncoder
+from .flow_matching import CausalConditionalCFM
+from .decoder import ConditionalDecoder
+from .configs import CFM_PARAMS
+
+
+from mlx_audio.stt.utils import resample_audio
+
+
+def drop_invalid_tokens(x):
+    assert len(x.shape) <= 2 and x.shape[0] == 1, "only batch size of one allowed for now"
+    return x[x < SPEECH_VOCAB_SIZE]
+
+
+class S3Token2Mel(nn.Module):
+    """
+    CosyVoice2's CFM decoder maps S3 speech tokens to mel-spectrograms.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.tokenizer = S3Tokenizer.from_pretrained()
+        self.mel_extractor = mel_spectrogram
+        self.speaker_encoder = CAMPPlus()
+
+        encoder = UpsampleConformerEncoder(
+            output_size=512,
+            attention_heads=8,
+            linear_units=2048,
+            num_blocks=6,
+            dropout_rate=0.1,
+            positional_dropout_rate=0.1,
+            attention_dropout_rate=0.1,
+            normalize_before=True,
+            input_layer="linear",
+            pos_enc_layer_type="rel_pos_espnet",
+            selfattention_layer_type="rel_selfattn",
+            input_size=512,
+            use_cnn_module=False,
+            macaron_style=False,
+        )
+
+        estimator = ConditionalDecoder(
+            in_channels=320,
+            out_channels=80,
+            causal=True,
+            channels=[256],
+            dropout=0.0,
+            attention_head_dim=64,
+            n_blocks=4,
+            num_mid_blocks=12,
+            num_heads=8,
+            act_fn="gelu",
+        )
+
+        cfm_params = CFM_PARAMS
+        decoder = CausalConditionalCFM(
+            spk_emb_dim=80,
+            cfm_params=cfm_params,
+            estimator=estimator,
+        )
+
+        self.flow = CausalMaskedDiffWithXvec(encoder=encoder, decoder=decoder)
+
+    def embed_ref(
+        self,
+        ref_wav: np.ndarray,
+        ref_sr: int,
+        ref_fade_out=True,
+    ):
+        if len(ref_wav.shape) == 1:
+            ref_wav = ref_wav[None, :]  # (B, L)
+
+        if ref_wav.shape[1] > 10 * ref_sr:
+            print("WARNING: cosydec received ref longer than 10s")
+
+        ref_wav_24 = ref_wav
+        if ref_sr != S3GEN_SR:
+            ref_wav_24 = resample_audio(ref_wav, ref_sr, S3GEN_SR)
+            ref_wav_24 = mx.array(ref_wav_24, dtype=mx.float32)
+
+        ref_mels_24 = self.mel_extractor(ref_wav_24).transpose(1, 2)
+        ref_mels_24_len = None
+
+        # Resample to 16kHz
+        ref_wav_16 = resample_audio(ref_wav, ref_sr, S3_SR)
+
+        # Speaker embedding
+        ref_x_vector = self.speaker_encoder.inference(ref_wav_16)
+
+        # Tokenize 16khz reference
+        ref_speech_tokens, ref_speech_token_lens = self.tokenizer(ref_wav_16)
+
+        # Make sure mel_len = 2 * stoken_len (happens when the input is not padded to multiple of 40ms)
+        if ref_mels_24.shape[1] != 2 * ref_speech_tokens.shape[1]:
+            print("Reference mel length is not equal to 2 * reference token length.")
+            ref_speech_tokens = ref_speech_tokens[:, : ref_mels_24.shape[1] // 2]
+            ref_speech_token_lens[0] = ref_speech_tokens.shape[1]
+
+        return dict(
+            prompt_token=ref_speech_tokens,
+            prompt_token_len=ref_speech_token_lens,
+            prompt_feat=ref_mels_24,
+            prompt_feat_len=ref_mels_24_len,
+            embedding=ref_x_vector,
+        )
+
+    def forward(
+        self,
+        speech_tokens: mx.array,
+        # locally-computed ref embedding (mutex with ref_dict)
+        ref_wav: Optional[mx.array],
+        ref_sr: Optional[int],
+        # pre-computed ref embedding (prod API)
+        ref_dict: Optional[dict] = None,
+        finalize: bool = False,
+    ):
+        """
+        Generate waveforms from S3 speech tokens and a reference waveform, which the speaker timbre is inferred from.
+
+        NOTE:
+        - The speaker encoder accepts 16 kHz waveform.
+        - S3TokenizerV2 accepts 16 kHz waveform.
+        - The mel-spectrogram for the reference assumes 24 kHz input signal.
+        - This function is designed for batch_size=1 only.
+
+        Args
+        ----
+        - `speech_tokens`: S3 speech tokens [B=1, T]
+        - `ref_wav`: reference waveform (`torch.Tensor` with shape=[B=1, T])
+        - `ref_sr`: reference sample rate
+        - `finalize`: whether streaming is finished or not. Note that if False, the last 3 tokens will be ignored.
+        """
+        assert (ref_wav is None) ^ (ref_dict is None), f"Must provide exactly one of ref_wav or ref_dict (got {ref_wav} and {ref_dict})"
+
+        if ref_dict is None:
+            assert ref_wav is not None and ref_sr is not None, "Must provide ref_wav and ref_sr if ref_dict is not provided"
+            ref_dict = self.embed_ref(ref_wav, ref_sr)
+        else:
+            # type/device casting (all values will be numpy if it's from a prod API call)
+            for rk in list(ref_dict):
+                if isinstance(ref_dict[rk], np.ndarray):
+                    ref_dict[rk] = mx.array(ref_dict[rk])
+
+        if len(speech_tokens.shape) == 1:
+            speech_tokens = speech_tokens[None, :]  # (1, T)
+
+        # assert speech_tokens.shape[0] == 1, "only batch size of one allowed for now"
+        speech_token_lens = mx.array([speech_tokens.shape[1]], dtype=mx.int64)
+
+        output_mels, _ = self.flow.inference(
+            token=speech_tokens,
+            token_len=speech_token_lens,
+            finalize=finalize,
+            **ref_dict,
+        )
+        return output_mels
+
+    def sanitize(self, weights: dict) -> dict:
+        layer_mapping = {
+            "xvector.tdnn": "xvector.layers.0",
+            "xvector.block1": "xvector.layers.1",
+            "xvector.transit1": "xvector.layers.2",
+            "xvector.block2": "xvector.layers.3",
+            "xvector.transit2": "xvector.layers.4",
+            "xvector.block3": "xvector.layers.5",
+            "xvector.transit3": "xvector.layers.6",
+            "xvector.out_nonlinear": "xvector.layers.7.layers.0",
+            "xvector.dense": "xvector.layers.9",
+        }
+
+        sanitized_weights = {}
+        for k, v in weights.items():
+            if "tokenizer._mel_filters" in k:
+                continue
+            if ".num_batches_tracked" in k:
+                continue
+
+            if "mel2wav." in k:
+                if ".condnet." in k:
+                    k = k.replace(".condnet.", ".condnet.layers.")
+                if ".parametrizations.weight.original0" in k:
+                    k = k.replace(".parametrizations.weight.original0", ".weight_g")
+                    if ".ups." in k: # transpose conv1d
+                        v = v.transpose(1, 2, 0)
+                    else: 
+                        v = v.transpose(0, 2, 1)
+                if ".parametrizations.weight.original1" in k:
+                    k = k.replace(".parametrizations.weight.original1", ".weight_v")
+                    if ".ups." in k: # transpose conv1d
+                        v = v.transpose(1, 2, 0)
+                    else:
+                        v = v.transpose(0, 2, 1)
+
+                if ".source_downs." in k and ".weight" in k and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+
+            elif "tokenizer." in k:
+                if ".block." in k:
+                    k = k.replace(".block.", ".block.layers.")
+                if ".mlp." in k:
+                    k = k.replace(".mlp.", ".mlp.layers.")
+                if "._codebook." in k:
+                    k = k.replace("._codebook.", ".fsq_codebook.")
+
+                if (".conv1.weight" in k or ".conv2.weight" in k or ".fsmn_block.weight" in k) and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+
+            elif "flow." in k:
+                if ".block." in k:
+                    k = k.replace(".block.", ".block.layers.")
+                if ".mlp." in k:
+                    k = k.replace(".mlp.", ".mlp.layers.")
+                if ".net." in k:
+                    k = k.replace(".net.", ".net.layers.")
+                if ".to_out." in k:
+                    k = k.replace(".to_out.", ".to_out.layers.")
+                if ".out." in k:
+                    k = k.replace(".out.", ".out.layers.")
+
+                if (".conv.weight" in k or ".conv1.weight" in k or ".conv2.weight" in k or ".res_conv.weight" in k) and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+                if (".down_blocks.0.2.weight" in k or ".up_blocks.0.2.weight" in k) and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+                if ".block1.block.layers.0.weight" in k and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+                if ".block2.block.layers.0.weight" in k and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+                if ".final_block.block.layers.0.weight" in k and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+                if ".final_proj.weight" in k and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+
+            elif "speaker_encoder." in k:
+                # remap the named layers from torch
+                for prefix in layer_mapping.keys():
+                    if prefix in k:
+                        k = k.replace(prefix, layer_mapping[prefix])
+                        break
+
+                if ".tdnnd" in k:
+                    block_num = int(k.split(".tdnnd")[-1].split(".")[0])
+                    assert block_num > 0, f"Block number {block_num} should be greater than 0."
+                    k = k.replace(f".tdnnd{block_num}.", f".layers.{block_num - 1}.")
+
+                if ".out." in k:
+                    k = k.replace(".out.", ".out.layers.")
+                if ".layer1." in k:
+                    k = k.replace(".layer1.", ".layer1.layers.")
+                if ".layer2." in k:
+                    k = k.replace(".layer2.", ".layer2.layers.")
+                if ".shortcut." in k:
+                    k = k.replace(".shortcut.", ".shortcut.layers.")
+                if ".nonlinear." in k:
+                    k = k.replace(".nonlinear.", ".nonlinear.layers.0.")
+                if ".nonlinear1." in k:
+                    k = k.replace(".nonlinear1.", ".nonlinear1.layers.0.")
+                if ".nonlinear2." in k:
+                    k = k.replace(".nonlinear2.", ".nonlinear2.layers.0.")
+                if ".batchnorm." in k:
+                    k = k.replace(".batchnorm.", ".")
+
+                if (".conv1.weight" in k) and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+                if (".conv1.weight" in k or ".conv2.weight" in k) and v.ndim == 4:
+                    v = v.transpose(0, 2, 3, 1)
+                if ".shortcut.layers.0.weight" in k and v.ndim == 4:
+                    v = v.transpose(0, 2, 3, 1)
+                if ".linear.weight" in k and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+                if (".linear1.weight" in k or ".linear2.weight" in k) and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+                if ".linear_local.weight" in k and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+
+            sanitized_weights[k] = v
+        return sanitized_weights
+
+
+class S3Token2Wav(S3Token2Mel):
+    """
+    The decoder of CosyVoice2 is a concat of token-to-mel (CFM) and a mel-to-waveform (HiFiGAN) modules.
+
+    TODO: make these modules configurable?
+    """
+
+    def __init__(self):
+        super().__init__()
+
+        f0_predictor = ConvRNNF0Predictor()
+        self.mel2wav = HiFTGenerator(
+            sampling_rate=S3GEN_SR,
+            upsample_rates=[8, 5, 3],
+            upsample_kernel_sizes=[16, 11, 7],
+            source_resblock_kernel_sizes=[7, 7, 11],
+            source_resblock_dilation_sizes=[[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+            f0_predictor=f0_predictor,
+        )
+
+        # silence out a few ms and fade audio in to reduce artifacts
+        n_trim = S3GEN_SR // 50  # 20ms = half of a frame
+        trim_fade = mx.zeros(2 * n_trim)
+        trim_fade[n_trim:] = (mx.cos(mx.linspace(mx.pi, 0, n_trim)) + 1) / 2
+        self._trim_fade = trim_fade
+
+    def forward(
+        self,
+        speech_tokens,
+        # locally-computed ref embedding (mutex with ref_dict)
+        ref_wav: Optional[mx.array],
+        ref_sr: Optional[int],
+        # pre-computed ref embedding (prod API)
+        ref_dict: Optional[dict] = None,
+        finalize: bool = False,
+    ):
+        output_mels = super().forward(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize)
+
+        # TODO jrm: ignoring the speed control (mel interpolation) and the HiFTGAN caching mechanisms for now.
+        hift_cache_source = mx.zeros((1, 1, 0))
+
+        output_wavs, *_ = self.mel2wav.inference(speech_feat=output_mels, cache_source=hift_cache_source)
+
+        if not self.training:
+            # NOTE: ad-hoc method to reduce "spillover" from the reference clip.
+            output_wavs[:, : len(self._trim_fade)] *= self._trim_fade
+
+        return output_wavs
+
+    def flow_inference(
+        self,
+        speech_tokens,
+        # locally-computed ref embedding (mutex with ref_dict)
+        ref_wav: Optional[mx.array] = None,
+        ref_sr: Optional[int] = None,
+        # pre-computed ref embedding (prod API)
+        ref_dict: Optional[dict] = None,
+        finalize: bool = False,
+    ):
+        return super().forward(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize)
+
+    def hift_inference(self, speech_feat, cache_source: mx.array | None = None):
+        if cache_source is None:
+            cache_source = mx.zeros((1, 1, 0))
+        return self.mel2wav.inference(speech_feat=speech_feat, cache_source=cache_source)
+
+    def inference(
+        self,
+        speech_tokens,
+        # locally-computed ref embedding (mutex with ref_dict)
+        ref_wav: Optional[mx.array] = None,
+        ref_sr: Optional[int] = None,
+        # pre-computed ref embedding (prod API)
+        ref_dict: Optional[dict] = None,
+        cache_source: mx.array | None = None,  # NOTE: this arg is for streaming, it can probably be removed here
+        finalize: bool = True,
+    ):
+        output_mels = self.flow_inference(speech_tokens, ref_wav=ref_wav, ref_sr=ref_sr, ref_dict=ref_dict, finalize=finalize)
+        output_wavs, output_sources = self.hift_inference(output_mels, cache_source)
+
+        # NOTE: ad-hoc method to reduce "spillover" from the reference clip.
+        output_wavs[:, : len(self._trim_fade)] *= self._trim_fade
+
+        return output_wavs, output_sources

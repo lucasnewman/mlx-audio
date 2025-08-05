@@ -361,7 +361,7 @@ class S3TokenizerV2(nn.Module):
         if path is None:
             raise ValueError(f"Could not find model {path}")
 
-        model = S3TokenizerV2(name)
+        model = cls(name)
         model_path = path / f"{name}.safetensors"
         weights = mx.load(model_path.as_posix(), format="safetensors")
         model.load_weights(list(weights.items()))
