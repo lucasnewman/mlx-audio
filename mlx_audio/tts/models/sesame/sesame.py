@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import re
 import time
 from dataclasses import dataclass
@@ -93,6 +94,29 @@ def create_llama_model_args(flavor: str) -> LlamaModelArgs:
             num_key_value_heads=8,
             head_dim=64,
             hidden_size=2048,
+            intermediate_size=8192,
+            rms_norm_eps=1e-5,
+            vocab_size=128_256,
+            max_position_embeddings=2048,
+            attention_bias=False,
+            mlp_bias=False,
+            rope_theta=500_000,
+            rope_scaling={
+                "factor": 32.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
+        )
+    elif flavor == "llama-250M":
+        return LlamaModelArgs(
+            model_type="llama",
+            num_hidden_layers=6,
+            num_attention_heads=12,
+            num_key_value_heads=3,
+            head_dim=128,
+            hidden_size=1536,
             intermediate_size=8192,
             rms_norm_eps=1e-5,
             vocab_size=128_256,
@@ -299,8 +323,15 @@ class Model(nn.Module):
         self.model = SesameModel(config)
         self.model.setup_caches(1)
 
-        self._text_tokenizer = load_llama3_tokenizer(TOKENIZER_REPO)
+        self.tokenizer_repo = config.get("text_tokenizer")
+        if self.tokenizer_repo:
+            self._text_tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_repo)
+        else:
+            self._text_tokenizer = load_llama3_tokenizer(TOKENIZER_REPO)
+
         mimi = Mimi.from_pretrained(MIMI_REPO)
+        mimi.eval()
+
         self._audio_tokenizer = mimi
         self._streaming_decoder = MimiStreamingDecoder(mimi)
 
@@ -345,18 +376,19 @@ class Model(nn.Module):
 
         return mx.concat(frame_tokens, axis=0), mx.concat(frame_masks, axis=0)
 
-    def _tokenize_audio(self, audio: mx.array) -> Tuple[mx.array, mx.array]:
+    def _tokenize_audio(
+        self, audio: mx.array, add_eos: bool = True
+    ) -> Tuple[mx.array, mx.array]:
         frame_tokens = []
         frame_masks = []
 
         # (K, T)
-        audio_tokens = self._audio_tokenizer.encode(
-            mx.expand_dims(mx.expand_dims(audio, 0), 0)
-        )[0]
+        audio_tokens = self._audio_tokenizer.encode(audio[None, None, ...])[0]
 
         # add EOS frame
-        eos_frame = mx.zeros((audio_tokens.shape[0], 1))
-        audio_tokens = mx.concat([audio_tokens, eos_frame], axis=1)
+        if add_eos:
+            eos_frame = mx.zeros((audio_tokens.shape[0], 1))
+            audio_tokens = mx.concat([audio_tokens, eos_frame], axis=1)
 
         audio_frame = mx.zeros((audio_tokens.shape[1], 33)).astype(mx.int32)
         audio_frame_mask = mx.zeros((audio_tokens.shape[1], 33)).astype(mx.bool_)
@@ -368,7 +400,9 @@ class Model(nn.Module):
 
         return mx.concat(frame_tokens, axis=0), mx.concat(frame_masks, axis=0)
 
-    def _tokenize_segment(self, segment: Segment) -> Tuple[mx.array, mx.array]:
+    def _tokenize_segment(
+        self, segment: Segment, add_eos: bool = True
+    ) -> Tuple[mx.array, mx.array]:
         """
         Returns:
             (seq_len, 33), (seq_len, 33)
@@ -376,7 +410,7 @@ class Model(nn.Module):
         text_tokens, text_masks = self._tokenize_text_segment(
             segment.text, segment.speaker
         )
-        audio_tokens, audio_masks = self._tokenize_audio(segment.audio)
+        audio_tokens, audio_masks = self._tokenize_audio(segment.audio, add_eos=add_eos)
 
         return mx.concat([text_tokens, audio_tokens], axis=0), mx.concat(
             [text_masks, audio_masks], axis=0
@@ -419,7 +453,7 @@ class Model(nn.Module):
             audio = resample_audio(audio, sr, sample_rate)
         return Segment(text=text, speaker=speaker, audio=mx.array(audio))
 
-    def default_speaker_prompt(self, voice: str) -> List[Segment]:
+    def default_speaker_prompt(self, voice: str, repo_id = "sesame/csm-1b") -> List[Segment]:
         SPEAKER_PROMPTS = {
             "conversational_a": {
                 "text": (
@@ -444,10 +478,19 @@ class Model(nn.Module):
         }
 
         prompt_path = hf_hub_download(
-            repo_id="sesame/csm-1b", filename=f"prompts/{voice}.wav"
+            repo_id=repo_id, filename=f"prompts/{voice}.wav"
         )
+        
+        try:
+            prompt_text_path = hf_hub_download(
+                repo_id=repo_id, filename=f"prompts/{voice}.txt"
+            )
+            prompt_text = Path(prompt_text_path).read_text()
+        except Exception:
+            prompt_text = SPEAKER_PROMPTS[voice]["text"]
+
         prompt = self.prepare_prompt(
-            SPEAKER_PROMPTS[voice]["text"], 0, prompt_path, 24_000
+            prompt_text, 0, prompt_path, 24_000
         )
         return [prompt]
 
@@ -534,6 +577,7 @@ class Model(nn.Module):
         ref_text: str = None,
         stream: bool = False,
         streaming_interval: float = 2.0,
+        voice_match: bool = True,
         **kwargs,
     ):
         # if reference audio is provided, use it as the first segment
@@ -543,7 +587,13 @@ class Model(nn.Module):
             # otherwise, use the provided or default voice
             if voice is None:
                 voice = "conversational_a"
-            context = self.default_speaker_prompt(voice)
+            context = self.default_speaker_prompt(voice, repo_id="sesame/csm-1b" if not self.tokenizer_repo else self.tokenizer_repo)
+
+        if voice_match:
+            generation_text = (context[0].text + " " + text).strip()
+            context = [
+                Segment(speaker=speaker, text=generation_text, audio=context[0].audio)
+            ]
 
         sampler = sampler or make_sampler(temp=0.9, top_k=50)
         max_audio_frames = int(max_audio_length_ms / 80)
@@ -561,15 +611,18 @@ class Model(nn.Module):
 
             tokens, tokens_mask = [], []
             for segment in context:
-                segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
+                segment_tokens, segment_tokens_mask = self._tokenize_segment(
+                    segment, add_eos=not voice_match
+                )
                 tokens.append(segment_tokens)
                 tokens_mask.append(segment_tokens_mask)
 
-            gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(
-                prompt, speaker
-            )
-            tokens.append(gen_segment_tokens)
-            tokens_mask.append(gen_segment_tokens_mask)
+            if not voice_match:
+                gen_segment_tokens, gen_segment_tokens_mask = (
+                    self._tokenize_text_segment(prompt, speaker)
+                )
+                tokens.append(gen_segment_tokens)
+                tokens_mask.append(gen_segment_tokens_mask)
 
             prompt_tokens = mx.concat(tokens, axis=0).astype(mx.int32)
             prompt_tokens_mask = mx.concat(tokens_mask, axis=0).astype(mx.bool_)
