@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import mlx.core as mx
@@ -453,7 +453,9 @@ class Model(nn.Module):
             audio = resample_audio(audio, sr, sample_rate)
         return Segment(text=text, speaker=speaker, audio=mx.array(audio))
 
-    def default_speaker_prompt(self, voice: str, repo_id = "sesame/csm-1b") -> List[Segment]:
+    def default_speaker_prompt(
+        self, voice: str, repo_id="sesame/csm-1b"
+    ) -> List[Segment]:
         SPEAKER_PROMPTS = {
             "conversational_a": {
                 "text": (
@@ -477,10 +479,8 @@ class Model(nn.Module):
             },
         }
 
-        prompt_path = hf_hub_download(
-            repo_id=repo_id, filename=f"prompts/{voice}.wav"
-        )
-        
+        prompt_path = hf_hub_download(repo_id=repo_id, filename=f"prompts/{voice}.wav")
+
         try:
             prompt_text_path = hf_hub_download(
                 repo_id=repo_id, filename=f"prompts/{voice}.txt"
@@ -489,9 +489,7 @@ class Model(nn.Module):
         except Exception:
             prompt_text = SPEAKER_PROMPTS[voice]["text"]
 
-        prompt = self.prepare_prompt(
-            prompt_text, 0, prompt_path, 24_000
-        )
+        prompt = self.prepare_prompt(prompt_text, 0, prompt_path, 24_000)
         return [prompt]
 
     def generate_result(
@@ -587,7 +585,12 @@ class Model(nn.Module):
             # otherwise, use the provided or default voice
             if voice is None:
                 voice = "conversational_a"
-            context = self.default_speaker_prompt(voice, repo_id="sesame/csm-1b" if not self.tokenizer_repo else self.tokenizer_repo)
+            context = self.default_speaker_prompt(
+                voice,
+                repo_id=(
+                    "sesame/csm-1b" if not self.tokenizer_repo else self.tokenizer_repo
+                ),
+            )
 
         if voice_match:
             generation_text = (context[0].text + " " + text).strip()
