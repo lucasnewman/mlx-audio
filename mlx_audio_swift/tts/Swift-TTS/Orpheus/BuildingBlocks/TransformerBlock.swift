@@ -24,7 +24,7 @@ struct BlockProfiler {
     }
 }
 
-class TransformerBlock {
+class OrpheusTransformerBlock {
     private let weights: [String: MLXArray]
     private let layerIndex: Int
     private let hiddenSize: Int
@@ -33,7 +33,7 @@ class TransformerBlock {
     private let numKeyValueHeads: Int
     private let numRepeats: Int
     private let headDim: Int
-    private let rope: RoPE
+    private let rope: OrpheusRoPE
 
     // Pre-transposed Weights
     private let q_proj_w_T: MLXArray
@@ -62,7 +62,7 @@ class TransformerBlock {
         self.numRepeats = self.numAttentionHeads / self.numKeyValueHeads // 3
         
         // Initialize RoPE (dims = headDim)
-        self.rope = RoPE(dims: self.headDim)
+        self.rope = OrpheusRoPE(dims: self.headDim)
         
         // Initialize and pre-transpose weights for a small speed bump
         self.inputNormWeight = weights["model.layers.\(layerIndex).input_layernorm.weight"]!
@@ -91,9 +91,9 @@ class TransformerBlock {
 
         // Self attention projections
         let (q_proj, k_proj, v_proj) = BlockProfiler.time("Attention projections (Q,K,V)") {
-            let q = TransformerBlock.linear(x: normedX, weight: q_proj_w_T)
-            let k = TransformerBlock.linear(x: normedX, weight: k_proj_w_T)
-            let v = TransformerBlock.linear(x: normedX, weight: v_proj_w_T)
+            let q = OrpheusTransformerBlock.linear(x: normedX, weight: q_proj_w_T)
+            let k = OrpheusTransformerBlock.linear(x: normedX, weight: k_proj_w_T)
+            let v = OrpheusTransformerBlock.linear(x: normedX, weight: v_proj_w_T)
             return (q, k, v)
         }
 
@@ -143,7 +143,7 @@ class TransformerBlock {
 
         // Output projection
         let attnProj = BlockProfiler.time("Attention output projection") {
-            TransformerBlock.linear(x: attnOutputReshaped, weight: o_proj_w_T)
+            OrpheusTransformerBlock.linear(x: attnOutputReshaped, weight: o_proj_w_T)
         }
         
         // First residual connection
@@ -158,8 +158,8 @@ class TransformerBlock {
         
         // MLP
         let (gate, up) = BlockProfiler.time("MLP projections (gate, up)") {
-            let g = TransformerBlock.linear(x: normedH, weight: gate_proj_w_T)
-            let u = TransformerBlock.linear(x: normedH, weight: up_proj_w_T)
+            let g = OrpheusTransformerBlock.linear(x: normedH, weight: gate_proj_w_T)
+            let u = OrpheusTransformerBlock.linear(x: normedH, weight: up_proj_w_T)
             return (g, u)
         }
         
@@ -168,7 +168,7 @@ class TransformerBlock {
         }
         
         let down = BlockProfiler.time("MLP down projection") {
-            TransformerBlock.linear(x: gateUp, weight: down_proj_w_T)
+            OrpheusTransformerBlock.linear(x: gateUp, weight: down_proj_w_T)
         }
 
         // Second residual connection
