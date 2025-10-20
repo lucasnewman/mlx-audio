@@ -7,16 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		18D7A7B32DCDAB75005776E9 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B22DCDAB75005776E9 /* MLX */; };
-		18D7A7B52DCDAB75005776E9 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B42DCDAB75005776E9 /* MLXFFT */; };
-		18D7A7B72DCDAB75005776E9 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B62DCDAB75005776E9 /* MLXFast */; };
-		18D7A7B92DCDAB75005776E9 /* MLXLinalg in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B82DCDAB75005776E9 /* MLXLinalg */; };
-		18D7A7BB2DCDAB75005776E9 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7BA2DCDAB75005776E9 /* MLXNN */; };
+		0A6ECD582E6C2CE300837C54 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 0A6ECD572E6C2CE300837C54 /* MLXLLM */; };
+		0A6ECD5A2E6C2CE300837C54 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 0A6ECD592E6C2CE300837C54 /* MLXLMCommon */; };
+		0A6ECD5C2E6C2D0F00837C54 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 0A6ECD5B2E6C2D0F00837C54 /* MLXLLM */; };
+		0A6ECD5E2E6C2D0F00837C54 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 0A6ECD5D2E6C2D0F00837C54 /* MLXLMCommon */; };
 		261E20862DAC272A000711D0 /* readme.md in Resources */ = {isa = PBXBuildFile; fileRef = 261E20852DAC2726000711D0 /* readme.md */; };
-		7BBF58192DDD07310047DCFF /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 7BBF58182DDD07310047DCFF /* MLX */; };
-		7BBF581B2DDD074E0047DCFF /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 7BBF581A2DDD074E0047DCFF /* MLXNN */; };
-		7BBF581D2DDD07610047DCFF /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 7BBF581C2DDD07610047DCFF /* MLXFFT */; };
-		7BBF581F2DDD07680047DCFF /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 7BBF581E2DDD07680047DCFF /* MLXFast */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -177,6 +172,17 @@
 				Kokoro/TTSEngine/VoiceLoader.swift,
 				Kokoro/Utils/AudioUtils.swift,
 				Kokoro/Utils/BenchmarkTimer.swift,
+				"Sesame/Audio/Audio+MLXArray.swift",
+				Sesame/AudioPlayback.swift,
+				Sesame/Mimi/Conv.swift,
+				Sesame/Mimi/KVCache.swift,
+				Sesame/Mimi/Mimi.swift,
+				Sesame/Mimi/Quantization.swift,
+				Sesame/Mimi/Seanet.swift,
+				Sesame/Mimi/Transformer.swift,
+				Sesame/Models/LlamaModel.swift,
+				Sesame/Models/SesameModel.swift,
+				Sesame/SesameSession.swift,
 				Utils/AudioSessionManager.swift,
 			);
 			target = 7BBF57E22DDD06460047DCFF /* Swift-TTS-iOS */;
@@ -261,11 +267,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				18D7A7BB2DCDAB75005776E9 /* MLXNN in Frameworks */,
-				18D7A7B92DCDAB75005776E9 /* MLXLinalg in Frameworks */,
-				18D7A7B32DCDAB75005776E9 /* MLX in Frameworks */,
-				18D7A7B72DCDAB75005776E9 /* MLXFast in Frameworks */,
-				18D7A7B52DCDAB75005776E9 /* MLXFFT in Frameworks */,
+				0A6ECD582E6C2CE300837C54 /* MLXLLM in Frameworks */,
+				0A6ECD5A2E6C2CE300837C54 /* MLXLMCommon in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -273,10 +276,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				7BBF581B2DDD074E0047DCFF /* MLXNN in Frameworks */,
-				7BBF58192DDD07310047DCFF /* MLX in Frameworks */,
-				7BBF581F2DDD07680047DCFF /* MLXFast in Frameworks */,
-				7BBF581D2DDD07610047DCFF /* MLXFFT in Frameworks */,
+				0A6ECD5C2E6C2D0F00837C54 /* MLXLLM in Frameworks */,
+				0A6ECD5E2E6C2D0F00837C54 /* MLXLMCommon in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -357,11 +358,8 @@
 			);
 			name = "Swift-TTS";
 			packageProductDependencies = (
-				18D7A7B22DCDAB75005776E9 /* MLX */,
-				18D7A7B42DCDAB75005776E9 /* MLXFFT */,
-				18D7A7B62DCDAB75005776E9 /* MLXFast */,
-				18D7A7B82DCDAB75005776E9 /* MLXLinalg */,
-				18D7A7BA2DCDAB75005776E9 /* MLXNN */,
+				0A6ECD572E6C2CE300837C54 /* MLXLLM */,
+				0A6ECD592E6C2CE300837C54 /* MLXLMCommon */,
 			);
 			productName = "Swift-TTS";
 			productReference = 26942CF62DABD3B400B82507 /* Swift-TTS.app */;
@@ -385,10 +383,8 @@
 			);
 			name = "Swift-TTS-iOS";
 			packageProductDependencies = (
-				7BBF58182DDD07310047DCFF /* MLX */,
-				7BBF581A2DDD074E0047DCFF /* MLXNN */,
-				7BBF581C2DDD07610047DCFF /* MLXFFT */,
-				7BBF581E2DDD07680047DCFF /* MLXFast */,
+				0A6ECD5B2E6C2D0F00837C54 /* MLXLLM */,
+				0A6ECD5D2E6C2D0F00837C54 /* MLXLMCommon */,
 			);
 			productName = "Swift-TTS-iOS";
 			productReference = 7BBF57E32DDD06460047DCFF /* Swift-TTS-iOS.app */;
@@ -402,7 +398,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1630;
-				LastUpgradeCheck = 1600;
+				LastUpgradeCheck = 2600;
 				TargetAttributes = {
 					264836182DAD10AA004DA2A4 = {
 						CreatedOnToolsVersion = 16.0;
@@ -426,7 +422,7 @@
 			mainGroup = 26942CED2DABD3B400B82507;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */,
+				0A6ECD562E6C2CD700837C54 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 26942CF72DABD3B400B82507 /* Products */;
@@ -505,10 +501,13 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = "";
+				ENABLE_MODULE_VERIFIER = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.Swift-TTS-Tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -524,10 +523,13 @@
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = "";
+				ENABLE_MODULE_VERIFIER = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.Swift-TTS-Tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -570,6 +572,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -594,6 +597,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -633,6 +637,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -650,6 +655,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 			};
 			name = Release;
@@ -663,10 +669,23 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"Swift-TTS/Preview Content\"";
 				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -691,10 +710,23 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"Swift-TTS/Preview Content\"";
 				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -716,7 +748,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = YQZQG7N4WG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -746,7 +778,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = YQZQG7N4WG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -812,61 +844,36 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+		0A6ECD562E6C2CD700837C54 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ml-explore/mlx-swift";
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.25.2;
+				minimumVersion = 2.25.7;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		18D7A7B22DCDAB75005776E9 /* MLX */ = {
+		0A6ECD572E6C2CE300837C54 /* MLXLLM */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
-			productName = MLX;
+			package = 0A6ECD562E6C2CD700837C54 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLLM;
 		};
-		18D7A7B42DCDAB75005776E9 /* MLXFFT */ = {
+		0A6ECD592E6C2CE300837C54 /* MLXLMCommon */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
-			productName = MLXFFT;
+			package = 0A6ECD562E6C2CD700837C54 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLMCommon;
 		};
-		18D7A7B62DCDAB75005776E9 /* MLXFast */ = {
+		0A6ECD5B2E6C2D0F00837C54 /* MLXLLM */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
-			productName = MLXFast;
+			package = 0A6ECD562E6C2CD700837C54 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLLM;
 		};
-		18D7A7B82DCDAB75005776E9 /* MLXLinalg */ = {
+		0A6ECD5D2E6C2D0F00837C54 /* MLXLMCommon */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
-			productName = MLXLinalg;
-		};
-		18D7A7BA2DCDAB75005776E9 /* MLXNN */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
-			productName = MLXNN;
-		};
-		7BBF58182DDD07310047DCFF /* MLX */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
-			productName = MLX;
-		};
-		7BBF581A2DDD074E0047DCFF /* MLXNN */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
-			productName = MLXNN;
-		};
-		7BBF581C2DDD07610047DCFF /* MLXFFT */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
-			productName = MLXFFT;
-		};
-		7BBF581E2DDD07680047DCFF /* MLXFast */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
-			productName = MLXFast;
+			package = 0A6ECD562E6C2CD700837C54 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLMCommon;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
