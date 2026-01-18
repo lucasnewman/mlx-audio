@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import os
 import time
 from pathlib import Path
@@ -15,7 +16,6 @@ from .config import ModelConfig
 from .flow_lm import FlowLMModel
 from .mimi import MimiAdapter
 from .utils import PREDEFINED_VOICES, download_if_necessary, load_predefined_voice
-
 
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_LSD_DECODE_STEPS = 1
@@ -44,7 +44,10 @@ class Model(nn.Module):
         self.eos_threshold = DEFAULT_EOS_THRESHOLD
 
         self.speaker_proj_weight = mx.zeros(
-            (config.flow_lm.transformer.d_model, config.mimi.quantizer.output_dimension),
+            (
+                config.flow_lm.transformer.d_model,
+                config.mimi.quantizer.output_dimension,
+            ),
             dtype=mx.float32,
         )
 
@@ -111,7 +114,9 @@ class Model(nn.Module):
         if text_tokens is None:
             text_tokens = mx.zeros((1, 0), dtype=mx.int32)
         if backbone_input_latents is None:
-            backbone_input_latents = mx.zeros((1, 0, self.flow_lm.ldim), dtype=mx.float32)
+            backbone_input_latents = mx.zeros(
+                (1, 0, self.flow_lm.ldim), dtype=mx.float32
+            )
         if audio_conditioning is None:
             audio_conditioning = mx.zeros((1, 0, self.flow_lm.dim), dtype=mx.float32)
         return self._run_flow_lm(
@@ -128,7 +133,10 @@ class Model(nn.Module):
         return conditioning
 
     def get_state_for_audio_prompt(self, audio_conditioning: mx.array | Path | str):
-        if isinstance(audio_conditioning, str) and audio_conditioning in PREDEFINED_VOICES:
+        if (
+            isinstance(audio_conditioning, str)
+            and audio_conditioning in PREDEFINED_VOICES
+        ):
             prompt = load_predefined_voice(audio_conditioning)
         else:
             audio = self._load_audio(audio_conditioning)
@@ -167,7 +175,9 @@ class Model(nn.Module):
     ) -> Iterable[mx.array]:
         if model_state is None:
             model_state = self.get_state_for_audio_prompt(DEFAULT_AUDIO_PROMPT)
-        chunks = split_into_best_sentences(self.flow_lm.conditioner.tokenizer, text_to_generate)
+        chunks = split_into_best_sentences(
+            self.flow_lm.conditioner.tokenizer, text_to_generate
+        )
         for chunk in chunks:
             _, frames_after_eos_guess = prepare_text_prompt(chunk)
             if frames_after_eos is None:
@@ -338,7 +348,9 @@ class Model(nn.Module):
             cache.values = cache.values[..., :num_frames, :]
             cache.offset = min(cache.offset, num_frames)
 
-    def _expand_flow_cache(self, model_state: dict[str, Any], sequence_length: int) -> None:
+    def _expand_flow_cache(
+        self, model_state: dict[str, Any], sequence_length: int
+    ) -> None:
         caches = model_state.get("flow_cache", [])
         for cache in caches:
             if cache.keys is None:

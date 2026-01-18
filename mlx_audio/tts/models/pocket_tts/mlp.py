@@ -31,7 +31,9 @@ class RMSNorm(nn.Module):
 class LayerNorm(nn.Module):
     """LayerNorm implementation that matches the PyTorch reference."""
 
-    def __init__(self, channels: int, eps: float = 1e-6, elementwise_affine: bool = True):
+    def __init__(
+        self, channels: int, eps: float = 1e-6, elementwise_affine: bool = True
+    ):
         super().__init__()
         self.eps = eps
         if elementwise_affine:
@@ -49,7 +51,10 @@ class TimestepEmbedder(nn.Module):
     """Embeds scalar timesteps into vector representations."""
 
     def __init__(
-        self, hidden_size: int, frequency_embedding_size: int = 256, max_period: int = 10000
+        self,
+        hidden_size: int,
+        frequency_embedding_size: int = 256,
+        max_period: int = 10000,
     ):
         super().__init__()
         self.frequency_embedding_size = frequency_embedding_size
@@ -155,12 +160,15 @@ class SimpleMLPAdaLN(nn.Module):
         flow_depth = cfg.flow.depth
         num_time_conds = 2
         return cls(
-            latent_dim, flow_dim, latent_dim, cond_dim, flow_depth, num_time_conds=num_time_conds
+            latent_dim,
+            flow_dim,
+            latent_dim,
+            cond_dim,
+            flow_depth,
+            num_time_conds=num_time_conds,
         )
 
-    def __call__(
-        self, c: mx.array, s: mx.array, t: mx.array, x: mx.array
-    ) -> mx.array:
+    def __call__(self, c: mx.array, s: mx.array, t: mx.array, x: mx.array) -> mx.array:
         ts = [s, t]
         if len(ts) != self.num_time_conds:
             raise ValueError(

@@ -2,7 +2,6 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .codec.mimi.modules.kv_cache import KVCache, create_additive_causal_mask
-
 from .rope import RotaryEmbedding
 
 
@@ -23,7 +22,7 @@ class StreamingMultiheadAttention(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
         self.rope = rope
         self.in_proj = nn.Linear(embed_dim, 3 * embed_dim, bias=False)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)

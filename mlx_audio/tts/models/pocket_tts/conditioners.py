@@ -37,7 +37,9 @@ class LUTConditioner(nn.Module):
         self.dim = dim
         self.output_dim = output_dim
         self.embed = nn.Embedding(n_bins + 1, dim)
-        self.output_proj = None if dim == output_dim else nn.Linear(dim, output_dim, bias=False)
+        self.output_proj = (
+            None if dim == output_dim else nn.Linear(dim, output_dim, bias=False)
+        )
 
     def prepare(self, text: str) -> TokenizedText:
         return self.tokenizer(text)

@@ -60,7 +60,9 @@ class FlowLMConfig(BaseModelArgs):
         return cls(
             dtype=config.get("dtype"),
             flow=FlowConfig.from_dict(config.get("flow", {})),
-            transformer=FlowLMTransformerConfig.from_dict(config.get("transformer", {})),
+            transformer=FlowLMTransformerConfig.from_dict(
+                config.get("transformer", {})
+            ),
             lookup_table=LookupTable.from_dict(config.get("lookup_table", {})),
             weights_path=config.get("weights_path"),
         )

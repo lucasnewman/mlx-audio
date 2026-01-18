@@ -4,21 +4,13 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .codec.mimi.modules.conv import (
+    Conv1d,
     ConvDownsample1d,
     ConvTrUpsample1d,
-    Conv1d,
     get_extra_padding_for_conv1d,
 )
-from .codec.mimi.modules.seanet import (
-    SeanetConfig,
-    SeanetDecoder,
-    SeanetEncoder,
-)
-from .codec.mimi.modules.transformer import (
-    ProjectedTransformer,
-    TransformerConfig,
-)
-
+from .codec.mimi.modules.seanet import SeanetConfig, SeanetDecoder, SeanetEncoder
+from .codec.mimi.modules.transformer import ProjectedTransformer, TransformerConfig
 from .config import MimiConfig
 
 
@@ -70,10 +62,16 @@ class MimiAdapter(nn.Module):
                 raise ValueError("Cannot upsample with conv.")
             downsample_stride = encoder_frame_rate / frame_rate
             if downsample_stride != int(downsample_stride):
-                raise ValueError(f"Only integer strides are supported, got {downsample_stride}")
+                raise ValueError(
+                    f"Only integer strides are supported, got {downsample_stride}"
+                )
             downsample_stride = int(downsample_stride)
-            self.downsample = ConvDownsample1d(downsample_stride, dim=self.dimension, causal=True)
-            self.upsample = ConvTrUpsample1d(downsample_stride, dim=self.dimension, causal=True)
+            self.downsample = ConvDownsample1d(
+                downsample_stride, dim=self.dimension, causal=True
+            )
+            self.upsample = ConvTrUpsample1d(
+                downsample_stride, dim=self.dimension, causal=True
+            )
         else:
             self.downsample = None
             self.upsample = None

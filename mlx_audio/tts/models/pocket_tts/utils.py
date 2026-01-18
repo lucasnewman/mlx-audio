@@ -34,7 +34,9 @@ def download_if_necessary(path: str) -> Path:
     if path.startswith("http://") or path.startswith("https://"):
         cache_dir = make_cache_directory()
         suffix = path.split(".")[-1]
-        cached_file = cache_dir / f"{hashlib.sha256(path.encode()).hexdigest()}.{suffix}"
+        cached_file = (
+            cache_dir / f"{hashlib.sha256(path.encode()).hexdigest()}.{suffix}"
+        )
         if not cached_file.exists():
             response = requests.get(path, timeout=30)
             response.raise_for_status()
@@ -49,7 +51,9 @@ def download_if_necessary(path: str) -> Path:
             filename, revision = filename.split("@", 1)
         else:
             revision = None
-        cached_file = hf_hub_download(repo_id=repo_id, filename=filename, revision=revision)
+        cached_file = hf_hub_download(
+            repo_id=repo_id, filename=filename, revision=revision
+        )
         return Path(cached_file)
     return Path(path)
 

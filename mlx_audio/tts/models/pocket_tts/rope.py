@@ -14,9 +14,7 @@ def apply_rope(
     if d % 2 != 0:
         raise ValueError("RoPE requires an even head dimension.")
     half = d // 2
-    freqs = mx.exp(
-        mx.arange(half, dtype=mx.float32) * (-math.log(max_period) * 2 / d)
-    )
+    freqs = mx.exp(mx.arange(half, dtype=mx.float32) * (-math.log(max_period) * 2 / d))
     ts = mx.arange(t, dtype=mx.float32) + float(offset)
     ts = ts[None, :, None, None]
     q = q.reshape(b, t, h, half, 2)
