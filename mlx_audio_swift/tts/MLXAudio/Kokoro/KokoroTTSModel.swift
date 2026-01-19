@@ -81,21 +81,37 @@ public class KokoroTTSModel: ObservableObject {
     // MARK: - Chinese Support
 
     /// Initialize Chinese G2P support with bundled dictionary files
-    /// This method is for backwards compatibility - if not called, Chinese support
-    /// will be automatically downloaded from HuggingFace Hub when a Chinese voice is used
+    ///
+    /// **DEPRECATED**: This method is no longer needed for Chinese TTS.
+    /// The Chinese model is now automatically downloaded from HuggingFace Hub
+    /// when a Chinese voice is used. The downloaded model includes its own G2P dictionaries.
+    ///
+    /// **Note**: This method loads G2P into the English engine (`kokoroTTSEngine`),
+    /// but Chinese voices now use a separate Chinese engine (`chineseKokoroTTSEngine`).
+    /// Therefore, this call has NO EFFECT on Chinese speech generation.
+    ///
+    /// This method is kept only for backward compatibility with existing code.
+    /// For new code, simply call `say()` with a Chinese voice - no setup required.
+    ///
+    /// Example (simplified approach - recommended):
+    /// ```swift
+    /// kokoroTTSModel.say("你好", .zfXiaoxiao, speed: 1.0, autoPlay: true)
+    /// ```
+    @available(*, deprecated, message: "No longer needed. Chinese model auto-downloads when Chinese voice is used.")
     public func initializeChineseSupport(
         jiebaURL: URL,
         pinyinSingleURL: URL,
         pinyinPhrasesURL: URL? = nil
     ) throws {
         // Initialize Chinese G2P on the default English engine
-        // This allows using bundled dictionaries instead of downloading
+        // NOTE: This has NO EFFECT on Chinese TTS since Chinese voices
+        // now use chineseKokoroTTSEngine which has its own G2P
         try kokoroTTSEngine.initializeChineseG2P(
             jiebaURL: jiebaURL,
             pinyinSingleURL: pinyinSingleURL,
             pinyinPhrasesURL: pinyinPhrasesURL
         )
-        print("[KokoroTTSModel] Chinese G2P initialized from bundled files")
+        print("[KokoroTTSModel] Chinese G2P initialized from bundled files (deprecated - has no effect on Chinese TTS)")
     }
 
     // MARK: - Audio System Setup
