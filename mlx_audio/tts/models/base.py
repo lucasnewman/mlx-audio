@@ -19,19 +19,47 @@ class BaseModelArgs:
 
 
 def check_array_shape(arr):
+    """
+    Check if a 3D array is already in MLX Conv1d format.
+
+    MLX Conv1d weight_v format: (out_channels, kernel_size, in_channels)
+    PyTorch format: (out_channels, in_channels, kernel_size)
+
+    Typical kernel_sizes are 1, 3, 5, 7. We use this to determine which format
+    the weights are in by checking which dimension is likely the kernel_size.
+
+    Returns:
+        True if already in MLX format (no transpose needed)
+        False if in PyTorch format (transpose needed)
+    """
     shape = arr.shape
 
-    # Check if the shape has 4 dimensions
     if len(shape) != 3:
         return False
 
-    out_channels, kH, KW = shape
+    dim0, dim1, dim2 = shape
+    TYPICAL_KERNEL_SIZES = {1, 3, 5, 7}
 
-    # Check if out_channels is the largest, and kH and KW are the same
-    if (out_channels >= kH) and (out_channels >= KW) and (kH == KW):
+    dim1_is_kernel = dim1 in TYPICAL_KERNEL_SIZES
+    dim2_is_kernel = dim2 in TYPICAL_KERNEL_SIZES
+
+    if dim1_is_kernel and not dim2_is_kernel:
+        # Only middle dimension is a typical kernel size -> MLX format
         return True
-    else:
+    elif dim2_is_kernel and not dim1_is_kernel:
+        # Only last dimension is a typical kernel size -> PyTorch format
         return False
+    elif dim1_is_kernel and dim2_is_kernel:
+        # Both are typical kernel sizes (e.g., 1 and 3)
+        # The larger value is more likely the actual kernel_size
+        # (1x1 convs are common, so 1 is often in_channels not kernel)
+        if dim1 >= dim2:
+            return True  # MLX format (dim1 is kernel)
+        else:
+            return False  # PyTorch format (dim2 is kernel)
+    else:
+        # Neither is a typical kernel size, use size comparison
+        return dim1 <= dim2
 
 
 def adjust_speed(audio_array, speed_factor):

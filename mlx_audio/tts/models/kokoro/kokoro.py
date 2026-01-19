@@ -210,10 +210,16 @@ class Model(nn.Module):
 
             if key.startswith("predictor"):
                 if "F0_proj.weight" in key:
-                    sanitized_weights[key] = state_dict.transpose(0, 2, 1)
+                    if check_array_shape(state_dict):
+                        sanitized_weights[key] = state_dict
+                    else:
+                        sanitized_weights[key] = state_dict.transpose(0, 2, 1)
 
                 elif "N_proj.weight" in key:
-                    sanitized_weights[key] = state_dict.transpose(0, 2, 1)
+                    if check_array_shape(state_dict):
+                        sanitized_weights[key] = state_dict
+                    else:
+                        sanitized_weights[key] = state_dict.transpose(0, 2, 1)
 
                 elif "weight_v" in key:
                     if check_array_shape(state_dict):
