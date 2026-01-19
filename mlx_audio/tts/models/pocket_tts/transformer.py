@@ -1,8 +1,15 @@
 import mlx.core as mx
 import mlx.nn as nn
+from mlx_lm.models.cache import KVCache
 
-from .codec.mimi.modules.kv_cache import KVCache, create_additive_causal_mask
 from .rope import RotaryEmbedding
+
+
+def create_additive_causal_mask(N: int, offset: int = 0):
+    rinds = mx.arange(offset + N)
+    linds = mx.arange(offset, offset + N) if offset else rinds
+    mask = linds[:, None] < rinds[None]
+    return mask * -1e9
 
 
 class LayerScale(nn.Module):
@@ -126,7 +133,4 @@ class StreamingTransformer(nn.Module):
         return x
 
     def make_cache(self) -> list[KVCache]:
-        return [
-            KVCache(head_dim=self.head_dim, n_kv_heads=self.num_heads)
-            for _ in self.layers
-        ]
+        return [KVCache() for _ in self.layers]

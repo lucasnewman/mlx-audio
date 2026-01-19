@@ -4,8 +4,7 @@ from dataclasses import dataclass
 
 import mlx.core as mx
 import mlx.nn as nn
-
-from .kv_cache import KVCache, RotatingKVCache
+from mlx_lm.models.cache import KVCache, RotatingKVCache
 
 
 @dataclass
@@ -192,18 +191,12 @@ class Transformer(nn.Module):
 
     def make_cache(self) -> list[KVCache]:
         num_kv_heads = self.cfg.num_heads // self.cfg.kv_repeat
-        return [
-            KVCache(head_dim=self.cfg.head_dim, n_kv_heads=num_kv_heads)
-            for _ in self.layers
-        ]
+        return [KVCache() for _ in self.layers]
 
     def make_rot_cache(self) -> list[RotatingKVCache]:
-        num_kv_heads = self.cfg.num_heads // self.cfg.kv_repeat
         return [
             RotatingKVCache(
-                head_dim=self.cfg.head_dim,
-                n_kv_heads=num_kv_heads,
-                max_size=self.cfg.max_seq_len,
+                self.cfg.max_seq_len,
             )
             for _ in self.layers
         ]

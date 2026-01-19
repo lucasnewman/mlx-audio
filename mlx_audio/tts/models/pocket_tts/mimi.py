@@ -14,6 +14,14 @@ from .codec.mimi.modules.transformer import ProjectedTransformer, TransformerCon
 from .config import MimiConfig
 
 
+def _reset_kv_cache(cache) -> None:
+    cache.keys = None
+    cache.values = None
+    cache.offset = 0
+    if hasattr(cache, "_idx"):
+        cache._idx = 0
+
+
 def pad_for_conv1d(x: mx.array, kernel_size: int, stride: int, padding_total: int = 0):
     extra_padding = get_extra_padding_for_conv1d(
         x, kernel_size=kernel_size, stride=stride, padding_total=padding_total
@@ -91,9 +99,9 @@ class MimiAdapter(nn.Module):
         if self.upsample is not None:
             self.upsample.reset_state()
         for cache in self.encoder_cache:
-            cache.reset()
+            _reset_kv_cache(cache)
         for cache in self.decoder_cache:
-            cache.reset()
+            _reset_kv_cache(cache)
 
     def _to_framerate(self, x: mx.array):
         if self.encoder_frame_rate == self.frame_rate:
@@ -123,7 +131,7 @@ class MimiAdapter(nn.Module):
             )
         self.encoder.reset_state()
         for cache in self.encoder_cache:
-            cache.reset()
+            _reset_kv_cache(cache)
         if self.downsample is not None:
             self.downsample.reset_state()
 
@@ -136,7 +144,7 @@ class MimiAdapter(nn.Module):
     def decode_from_latent(self, latent: mx.array) -> mx.array:
         self.decoder.reset_state()
         for cache in self.decoder_cache:
-            cache.reset()
+            _reset_kv_cache(cache)
         if self.upsample is not None:
             self.upsample.reset_state()
 
