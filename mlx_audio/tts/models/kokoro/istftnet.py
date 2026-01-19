@@ -965,10 +965,7 @@ class Decoder(nn.Module):
     def sanitize(self, key, weights):
         sanitized_weights = None
         if "noise_convs" in key and key.endswith(".weight"):
-            if check_array_shape(weights):
-                sanitized_weights = weights
-            else:
-                sanitized_weights = weights.transpose(0, 2, 1)
+            sanitized_weights = weights.transpose(0, 2, 1)
 
         elif "weight_v" in key:
             if check_array_shape(weights):

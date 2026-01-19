@@ -134,51 +134,33 @@ class KokoroPipeline:
         if voice in self.voices:
             return self.voices[voice]
 
-        if voice.endswith(".safetensors") or voice.endswith(".npy"):
-            # Direct path to voice file
+        if voice.endswith(".safetensors"):
+            # Direct path to safetensors file
             f = voice
         else:
-            # Try both .safetensors and .npy formats
             # Check if voice exists in local snapshot first
-            f = None
-            for ext in [".safetensors", ".npy"]:
-                try:
-                    local_dir = Path(
-                        snapshot_download(
-                            repo_id=self.repo_id,
-                            allow_patterns=[f"voices/{voice}{ext}"],
-                            local_files_only=True,
-                        )
+            try:
+                local_dir = Path(
+                    snapshot_download(
+                        repo_id=self.repo_id,
+                        allow_patterns=[f"voices/{voice}.safetensors"],
+                        local_files_only=True,
                     )
-                    local_voice = local_dir / "voices" / f"{voice}{ext}"
-                    if local_voice.exists():
-                        f = str(local_voice)
-                        break
-                except (FileNotFoundError, Exception):
-                    continue
-
-            # If not found locally, try to download
-            if f is None:
-                for ext in [".safetensors", ".npy"]:
-                    try:
-                        local_dir = Path(
-                            snapshot_download(
-                                repo_id=self.repo_id,
-                                allow_patterns=[f"voices/{voice}{ext}"],
-                            )
-                        )
-                        local_voice = local_dir / "voices" / f"{voice}{ext}"
-                        if local_voice.exists():
-                            f = str(local_voice)
-                            break
-                    except Exception:
-                        continue
-
-            if f is None:
-                raise FileNotFoundError(
-                    f"Voice '{voice}' not found in repo '{self.repo_id}' "
-                    "(tried both .safetensors and .npy formats)"
                 )
+                local_voice = local_dir / "voices" / f"{voice}.safetensors"
+                if local_voice.exists():
+                    f = str(local_voice)
+                else:
+                    raise FileNotFoundError
+            except (FileNotFoundError, Exception):
+                # Download the specific voice file
+                local_dir = Path(
+                    snapshot_download(
+                        repo_id=self.repo_id,
+                        allow_patterns=[f"voices/{voice}.safetensors"],
+                    )
+                )
+                f = str(local_dir / "voices" / f"{voice}.safetensors")
 
             if not voice.startswith(self.lang_code):
                 v = LANG_CODES.get(voice, voice)
