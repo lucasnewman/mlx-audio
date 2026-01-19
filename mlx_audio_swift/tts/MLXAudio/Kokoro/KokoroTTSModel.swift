@@ -7,6 +7,7 @@ import UIKit
 
 public class KokoroTTSModel: ObservableObject {
     private var kokoroTTSEngine: KokoroTTS!
+    private var chineseKokoroTTSEngine: KokoroTTS?  // Separate engine for Chinese
     private var audioEngine: AVAudioEngine!
     private var playerNode: AVAudioPlayerNode!
     private var audioFormat: AVAudioFormat!
@@ -19,9 +20,13 @@ public class KokoroTTSModel: ObservableObject {
     // State management
     private var isGenerating = false
     private var isPlayingAudio = false
+    private var isLoadingChineseModel = false
 
     // Published property for UI updates - indicates generation OR playback is in progress
     @Published public var generationInProgress = false
+
+    // Published property to show Chinese model loading progress
+    @Published public var chineseModelLoadingProgress: String?
 
     // Audio file management
     @Published public var lastGeneratedAudioURL: URL?
@@ -72,6 +77,26 @@ public class KokoroTTSModel: ObservableObject {
          NotificationCenter.default.removeObserver(self)
          cleanupAudioSystem()
      }
+
+    // MARK: - Chinese Support
+
+    /// Initialize Chinese G2P support with bundled dictionary files
+    /// This method is for backwards compatibility - if not called, Chinese support
+    /// will be automatically downloaded from HuggingFace Hub when a Chinese voice is used
+    public func initializeChineseSupport(
+        jiebaURL: URL,
+        pinyinSingleURL: URL,
+        pinyinPhrasesURL: URL? = nil
+    ) throws {
+        // Initialize Chinese G2P on the default English engine
+        // This allows using bundled dictionaries instead of downloading
+        try kokoroTTSEngine.initializeChineseG2P(
+            jiebaURL: jiebaURL,
+            pinyinSingleURL: pinyinSingleURL,
+            pinyinPhrasesURL: pinyinPhrasesURL
+        )
+        print("[KokoroTTSModel] Chinese G2P initialized from bundled files")
+    }
 
     // MARK: - Audio System Setup
 
@@ -177,14 +202,63 @@ public class KokoroTTSModel: ObservableObject {
                  // Wait briefly for audio system to fully reset
                  try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
 
+                 // For Chinese voices, ensure the Chinese model is loaded
+                 if KokoroTTS.isChineseVoice(voice) {
+                     await self.ensureChineseModelLoaded()
+                 }
+
                  // Now start the new generation
                  self.startSpeechGeneration(text: trimmedText, voice: voice, speed: speed, autoPlay: autoPlay)
              }
              return
          }
 
-         // No existing playback, start immediately
+         // For Chinese voices, ensure the Chinese model is loaded
+         if KokoroTTS.isChineseVoice(voice) {
+             Task {
+                 await self.ensureChineseModelLoaded()
+                 self.startSpeechGeneration(text: trimmedText, voice: voice, speed: speed, autoPlay: autoPlay)
+             }
+             return
+         }
+
+         // No existing playback, start immediately (English voices)
          startSpeechGeneration(text: trimmedText, voice: voice, speed: speed, autoPlay: autoPlay)
+    }
+
+    /// Ensure the Chinese Kokoro model is loaded from HuggingFace Hub
+    private func ensureChineseModelLoaded() async {
+        // Check if already loaded
+        if chineseKokoroTTSEngine != nil {
+            return
+        }
+
+        // Prevent concurrent loading
+        guard !isLoadingChineseModel else { return }
+        isLoadingChineseModel = true
+
+        DispatchQueue.main.async {
+            self.chineseModelLoadingProgress = "Downloading Chinese model..."
+        }
+
+        do {
+            chineseKokoroTTSEngine = try await KokoroTTS.fromHub { [weak self] progress in
+                DispatchQueue.main.async {
+                    self?.chineseModelLoadingProgress = "Loading Chinese model: \(Int(progress.fractionCompleted * 100))%"
+                }
+            }
+            print("[KokoroTTSModel] Chinese Kokoro model loaded successfully")
+            DispatchQueue.main.async {
+                self.chineseModelLoadingProgress = nil
+            }
+        } catch {
+            print("[KokoroTTSModel] Failed to load Chinese model: \(error)")
+            DispatchQueue.main.async {
+                self.chineseModelLoadingProgress = "Failed to load Chinese model: \(error.localizedDescription)"
+            }
+        }
+
+        isLoadingChineseModel = false
     }
 
     public func stopPlayback() {
@@ -246,10 +320,11 @@ public class KokoroTTSModel: ObservableObject {
             }
         }
 
-        // Reset TTS model in background with proper QoS
+        // Reset TTS models in background with proper QoS
         DispatchQueue.global(qos: .background).async { [weak self] in
             guard let self = self else { return }
             self.kokoroTTSEngine.resetModel()
+            self.chineseKokoroTTSEngine?.resetModel()
         }
     }
 
@@ -324,8 +399,17 @@ public class KokoroTTSModel: ObservableObject {
         var receivedAudioChunks = false
 
         do {
+            // Select the appropriate engine based on voice language
+            let engine: KokoroTTS
+            if KokoroTTS.isChineseVoice(voice), let chineseEngine = chineseKokoroTTSEngine {
+                engine = chineseEngine
+                print("[KokoroTTSModel] Using Chinese Kokoro engine for voice: \(voice)")
+            } else {
+                engine = kokoroTTSEngine
+            }
+
             // Use streaming by sentence approach
-            try kokoroTTSEngine.generateAudio(
+            try engine.generateAudio(
                 voice: voice,
                 text: text,
                 speed: speed

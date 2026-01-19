@@ -96,6 +96,9 @@ public class KokoroTTS {
   // Custom URL of Koroko safetensors file
   private var customURL: URL?
 
+  // Directory containing voice files (for models loaded from Hub)
+  private var voicesDirectory: URL?
+
   // Callback type for streaming audio generation
   public typealias AudioChunkCallback = (MLXArray) -> Void
 
@@ -117,10 +120,10 @@ public class KokoroTTS {
   ) async throws -> KokoroTTS {
     print("[KokoroTTS] Downloading model from \(repoId)...")
 
-    // Download model weights
+    // Download model weights, G2P dictionaries, and voice files (*.npy for Chinese)
     let snapshotURL = try await Hub.snapshot(
       from: repoId,
-      matching: ["*.safetensors", "g2p/*"],
+      matching: ["*.safetensors", "g2p/*", "*.npy"],
       progressHandler: progressHandler ?? { _ in }
     )
 
@@ -132,6 +135,10 @@ public class KokoroTTS {
     print("[KokoroTTS] Model downloaded to \(modelURL.path)")
 
     let tts = KokoroTTS(customURL: modelURL)
+
+    // Store the voices directory for loading Chinese voice NPY files
+    tts.voicesDirectory = snapshotURL
+    print("[KokoroTTS] Voices directory set to \(snapshotURL.path)")
 
     // Initialize Chinese G2P from the same snapshot
     let jiebaURL = snapshotURL.appending(path: "g2p/jieba.bin.gz")
@@ -685,7 +692,19 @@ public class KokoroTTS {
     return try autoreleasepool { () -> MLXArray in
       if chosenVoice != voice {
         autoreleasepool {
-          self.voice = VoiceLoader.loadVoice(voice)
+          // For Chinese voices with a voices directory (from Hub), use directory-based loading
+          if KokoroTTS.isChineseVoice(voice), let voicesDir = self.voicesDirectory {
+            if let loadedVoice = VoiceLoader.loadVoice(voice, from: voicesDir) {
+              self.voice = loadedVoice
+              print("[KokoroTTS] Loaded Chinese voice \(voice) from \(voicesDir.path)")
+            } else {
+              print("[KokoroTTS] Warning: Failed to load Chinese voice \(voice) from directory, falling back to bundled")
+              self.voice = VoiceLoader.loadVoice(voice)
+            }
+          } else {
+            // Use bundled voice files for non-Chinese voices or when no directory is set
+            self.voice = VoiceLoader.loadVoice(voice)
+          }
           self.voice?.eval() // Force immediate evaluation
         }
 

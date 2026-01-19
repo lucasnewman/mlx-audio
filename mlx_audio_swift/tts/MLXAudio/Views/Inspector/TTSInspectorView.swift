@@ -23,6 +23,7 @@ struct TTSInspectorView: View {
     let isGenerating: Bool
     let canGenerate: Bool
     let marvisSession: MarvisSession?
+    let chineseModelLoadingProgress: String?
     let onGenerate: () -> Void
     let onStop: () -> Void
 
@@ -91,6 +92,26 @@ struct TTSInspectorView: View {
                         onGenerate: onGenerate,
                         onStop: onStop
                     )
+
+                    // Chinese Model Loading Progress
+                    if let loadingProgress = chineseModelLoadingProgress {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Chinese Model")
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text(loadingProgress)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(controlBackgroundColor)
+                            .cornerRadius(6)
+                        }
+                    }
 
                     // Status Display
                     if !status.isEmpty {

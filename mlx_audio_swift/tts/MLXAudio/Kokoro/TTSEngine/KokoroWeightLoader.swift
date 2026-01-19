@@ -72,12 +72,15 @@ class KokoroWeightLoader {
     }
     
     private static func checkArrayShape(arr: MLXArray) -> Bool {
-        guard arr.shape.count != 3 else { return false }
-        
+        // Must be a 3D tensor
+        guard arr.shape.count == 3 else { return false }
+
         let outChannels = arr.shape[0]
         let kH = arr.shape[1]
         let kW = arr.shape[2]
-        
+
+        // Check if out_channels is the largest, and kH and KW are the same
+        // This matches the Python implementation in mlx_audio/tts/models/base.py
         return (outChannels >= kH) && (outChannels >= kW) && (kH == kW)
     }
 }
