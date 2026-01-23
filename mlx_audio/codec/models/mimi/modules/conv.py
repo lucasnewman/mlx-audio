@@ -63,7 +63,7 @@ class ConvTranspose1d(nn.Module):
         bias: bool = True,
     ):
         super().__init__()
-        nn.Conv1d
+        
         scale = 1 / (in_channels * ksize)
         self.weight = mx.random.uniform(
             low=-scale,
