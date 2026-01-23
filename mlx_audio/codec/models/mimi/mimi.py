@@ -240,9 +240,14 @@ class Mimi(nn.Module):
                 or k.endswith(".input_proj.weight")
             ):
                 v = v.swapaxes(-1, -2)
-            # PyTorch layout for conv-transposed weights is inC, outC, kSize, for MLX it's outC, kSize, inC
+            # PyTorch layout for conv-transposed weights is (inC, outC/groups, kSize).
+            # MLX expects (outC, kSize, inC/groups). Depthwise convtr needs a
+            # different transpose because outC/groups == 1.
             if k.endswith(".convtr.weight"):
-                v = v.transpose(1, 2, 0)
+                if v.ndim == 3 and v.shape[1] == 1:
+                    v = v.transpose(0, 2, 1)
+                else:
+                    v = v.transpose(1, 2, 0)
             weights.append((k, v))
         m = self.load_weights(weights, strict=strict)
 
