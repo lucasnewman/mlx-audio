@@ -46,3 +46,7 @@ result = model.predict_endpoint(audio, sample_rate=16000, threshold=0.5)
 
 - Typical usage is to run Smart Turn after silence is detected by a lightweight VAD.
 - Use full current-turn context instead of very short snippets when possible.
+
+## License
+
+This code is licensed under the BSD 2-Clause "Simplified" License. See `LICENSE` for more information.
