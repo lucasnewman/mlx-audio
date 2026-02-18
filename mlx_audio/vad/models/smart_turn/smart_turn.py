@@ -24,9 +24,7 @@ class WhisperAttention(nn.Module):
         self.num_heads = config.encoder_attention_heads
         self.head_dim = config.d_model // config.encoder_attention_heads
         self.q_proj = nn.Linear(config.d_model, config.d_model, bias=True)
-        self.k_proj = nn.Linear(
-            config.d_model, config.d_model, bias=config.k_proj_bias
-        )
+        self.k_proj = nn.Linear(config.d_model, config.d_model, bias=config.k_proj_bias)
         self.v_proj = nn.Linear(config.d_model, config.d_model, bias=True)
         self.out_proj = nn.Linear(config.d_model, config.d_model, bias=True)
 
@@ -75,7 +73,9 @@ class WhisperEncoder(nn.Module):
     def __init__(self, config: EncoderConfig):
         super().__init__()
         self.config = config
-        self.conv1 = nn.Conv1d(config.num_mel_bins, config.d_model, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv1d(
+            config.num_mel_bins, config.d_model, kernel_size=3, padding=1
+        )
         self.conv2 = nn.Conv1d(
             config.d_model, config.d_model, kernel_size=3, stride=2, padding=1
         )
@@ -123,7 +123,9 @@ class Model(nn.Module):
         self.classifier_4 = nn.Linear(256, 64)
         self.classifier_6 = nn.Linear(64, 1)
 
-    def __call__(self, input_features: mx.array, return_logits: bool = False) -> mx.array:
+    def __call__(
+        self, input_features: mx.array, return_logits: bool = False
+    ) -> mx.array:
         if input_features.ndim == 2:
             input_features = input_features[None, ...]
 
@@ -158,7 +160,11 @@ class Model(nn.Module):
         audio: Union[str, np.ndarray, mx.array],
         sample_rate: Optional[int] = None,
     ) -> np.ndarray:
-        sr = self.config.processor_config.sampling_rate if sample_rate is None else sample_rate
+        sr = (
+            self.config.processor_config.sampling_rate
+            if sample_rate is None
+            else sample_rate
+        )
 
         if isinstance(audio, str):
             waveform, file_sr = audio_read(audio)
@@ -263,17 +269,36 @@ class Model(nn.Module):
             target_key = cls._remap_key(target_key)
 
             # Conv1d: PyTorch/HF stores (out, in, k), MLX expects (out, k, in).
-            if target_key in {"encoder.conv1.weight", "encoder.conv2.weight"} and value.ndim == 3:
+            if (
+                target_key in {"encoder.conv1.weight", "encoder.conv2.weight"}
+                and value.ndim == 3
+            ):
                 value = mx.transpose(value, (0, 2, 1))
 
             # Handle pre-remapped semantic keys that still carry ONNX MatMul layout.
-            if target_key.endswith("fc1.weight") and value.ndim == 2 and value.shape[0] < value.shape[1]:
+            if (
+                target_key.endswith("fc1.weight")
+                and value.ndim == 2
+                and value.shape[0] < value.shape[1]
+            ):
                 value = mx.transpose(value, (1, 0))
-            if target_key.endswith("fc2.weight") and value.ndim == 2 and value.shape[0] > value.shape[1]:
+            if (
+                target_key.endswith("fc2.weight")
+                and value.ndim == 2
+                and value.shape[0] > value.shape[1]
+            ):
                 value = mx.transpose(value, (1, 0))
-            if target_key == "pool_attention_0.weight" and value.ndim == 2 and value.shape[0] != 256:
+            if (
+                target_key == "pool_attention_0.weight"
+                and value.ndim == 2
+                and value.shape[0] != 256
+            ):
                 value = mx.transpose(value, (1, 0))
-            if target_key == "pool_attention_2.weight" and value.ndim == 2 and value.shape[0] != 1:
+            if (
+                target_key == "pool_attention_2.weight"
+                and value.ndim == 2
+                and value.shape[0] != 1
+            ):
                 value = mx.transpose(value, (1, 0))
 
             sanitized[target_key] = value
