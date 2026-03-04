@@ -188,7 +188,8 @@ class DeepFilterNetModel:
             window=self._vorbis,
             center=False,
             length=orig_len + p.fft_size,
-            normalized=False,
+            # Match libDF overlap-add scaling behavior.
+            normalized=True,
         )
 
         # `mlx_audio.dsp.istft` alignment differs from libDF's synthesis by one hop.
