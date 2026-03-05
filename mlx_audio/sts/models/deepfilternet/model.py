@@ -25,23 +25,17 @@ from .network import DfNet
 from .network_df1 import DfNetV1
 from .weight_loader import load_weights as load_df_weights
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 DEFAULT_MODEL_DIRS = {
     1: [
         str(_REPO_ROOT / "models" / "DeepFilterNet1"),
-        "/Users/kylehowells/Developer/Example-Projects/mlx-audio/models/DeepFilterNet1",
-        "/Users/kylehowells/Developer/Example-Projects/DeepFilterNet/DeepFilterNet/models/extracted/DeepFilterNet",
     ],
     2: [
         str(_REPO_ROOT / "models" / "DeepFilterNet2"),
-        "/Users/kylehowells/Developer/Example-Projects/mlx-audio/models/DeepFilterNet2",
-        "/Users/kylehowells/Developer/Example-Projects/DeepFilterNet2/DeepFilterNet2/models/DeepFilterNet2",
     ],
     3: [
         str(_REPO_ROOT / "models" / "DeepFilterNet3"),
-        "/Users/kylehowells/Developer/Example-Projects/mlx-audio/models/DeepFilterNet3",
-        "/Users/kylehowells/Developer/Example-Projects/DeepFilterNet/DeepFilterNet/models/extracted/DeepFilterNet3",
     ],
 }
 
@@ -155,6 +149,83 @@ class DeepFilterNetModel:
             audio = audio[:, 0]
 
         enhanced = self.enhance_array(audio)
+        audio_io.write(str(output_path), enhanced, self.config.sample_rate)
+        return output_path
+
+    def create_streamer(
+        self,
+        *,
+        pad_end_frames: int = 3,
+        compensate_delay: bool = True,
+    ):
+        from .streaming import DeepFilterNetStreamer, DeepFilterNetStreamingConfig
+
+        return DeepFilterNetStreamer(
+            model=self,
+            config=DeepFilterNetStreamingConfig(
+                pad_end_frames=pad_end_frames,
+                compensate_delay=compensate_delay,
+            ),
+        )
+
+    def enhance_array_streaming(
+        self,
+        audio: np.ndarray,
+        chunk_samples: Optional[int] = None,
+        *,
+        pad_end_frames: int = 3,
+        compensate_delay: bool = True,
+    ) -> np.ndarray:
+        x = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if x.size == 0:
+            return x
+
+        streamer = self.create_streamer(
+            pad_end_frames=pad_end_frames,
+            compensate_delay=compensate_delay,
+        )
+        if chunk_samples is None:
+            chunk_samples = self.config.hop_size * 8
+        chunk_samples = max(int(chunk_samples), self.config.hop_size)
+
+        outs = []
+        for start in range(0, x.shape[0], chunk_samples):
+            out = streamer.process_chunk(x[start : start + chunk_samples], is_last=False)
+            if out.size > 0:
+                outs.append(out)
+        tail = streamer.flush()
+        if tail.size > 0:
+            outs.append(tail)
+        if not outs:
+            return np.zeros((0,), dtype=np.float32)
+        return np.concatenate(outs, axis=0)
+
+    def enhance_file_streaming(
+        self,
+        input_path: Union[str, Path],
+        output_path: Union[str, Path],
+        chunk_samples: Optional[int] = None,
+        *,
+        pad_end_frames: int = 3,
+        compensate_delay: bool = True,
+    ) -> Path:
+        input_path = Path(input_path)
+        output_path = Path(output_path)
+
+        audio, sr = audio_io.read(str(input_path), always_2d=False, dtype="float32")
+        if sr != self.config.sample_rate:
+            raise ValueError(
+                f"Expected {self.config.sample_rate} Hz audio, got {sr} Hz: {input_path}"
+            )
+        if audio.ndim > 1:
+            audio = audio[:, 0]
+
+        enhanced = self.enhance_array_streaming(
+            audio=audio,
+            chunk_samples=chunk_samples,
+            pad_end_frames=pad_end_frames,
+            compensate_delay=compensate_delay,
+        )
         audio_io.write(str(output_path), enhanced, self.config.sample_rate)
         return output_path
 

@@ -72,8 +72,7 @@ def main() -> None:
             "MLX CLI",
             [
                 str(PY),
-                "-m",
-                "mlx_audio.enhancement.cli",
+                "examples/deepfilternet.py",
                 str(PREP),
                 "-o",
                 "",  # replaced per run

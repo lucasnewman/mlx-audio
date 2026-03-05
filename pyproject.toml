@@ -104,7 +104,7 @@ dev = [
 "mlx_audio.stt.generate" = "mlx_audio.stt.generate:main"
 "mlx_audio.tts.generate" = "mlx_audio.tts.generate:main"
 "mlx_audio.server" = "mlx_audio.server:main"
-"mlx_audio.enhancement.cli" = "mlx_audio.enhancement.cli:main"
+"mlx_audio.sts.deepfilternet" = "mlx_audio.sts.deepfilternet:main"
 
 [project.urls]
 Homepage = "https://github.com/Blaizzy/mlx-audio"

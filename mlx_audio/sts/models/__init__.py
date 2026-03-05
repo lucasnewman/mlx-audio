@@ -8,6 +8,14 @@ from .lfm_audio import (
     LFM2AudioProcessor,
     LFMModality,
 )
+from .deepfilternet import (
+    DeepFilterNet2Config,
+    DeepFilterNet3Config,
+    DeepFilterNetConfig,
+    DeepFilterNetModel,
+    DeepFilterNetStreamer,
+    DeepFilterNetStreamingConfig,
+)
 from .mossformer2_se import MossFormer2SE, MossFormer2SEConfig, MossFormer2SEModel
 from .sam_audio import (
     Batch,
@@ -25,6 +33,13 @@ __all__ = [
     "Batch",
     "save_audio",
     "SAMAudioConfig",
+    # DeepFilterNet
+    "DeepFilterNetModel",
+    "DeepFilterNetConfig",
+    "DeepFilterNet2Config",
+    "DeepFilterNet3Config",
+    "DeepFilterNetStreamer",
+    "DeepFilterNetStreamingConfig",
     # MossFormer2 SE
     "MossFormer2SE",
     "MossFormer2SEConfig",
