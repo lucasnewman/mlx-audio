@@ -440,19 +440,8 @@ class ConvBlock(nn.Module):
         # Transpose weight from PyTorch format [O, I, H, W] to MLX format [O, H, W, I]
         weight = mx.transpose(self.weight, (0, 2, 3, 1))
 
-        # Grouped convolution
-        if self.groups == 1:
-            x = mx.conv2d(x, weight, stride=(1, self.fstride))
-        else:
-            b, h, w, c = x.shape
-            group_ch = c // self.groups
-            out_group_ch = self.out_ch // self.groups
-            outputs = []
-            for g in range(self.groups):
-                x_g = x[:, :, :, g*group_ch:(g+1)*group_ch]
-                w_g = weight[g*out_group_ch:(g+1)*out_group_ch, :, :, :]
-                outputs.append(mx.conv2d(x_g, w_g, stride=(1, self.fstride)))
-            x = mx.concatenate(outputs, axis=-1)
+        # Use native grouped conv2d instead of Python per-group loops.
+        x = mx.conv2d(x, weight, stride=(1, self.fstride), groups=self.groups)
 
         x = mx.transpose(x, (0, 3, 1, 2))  # [B, C, T, F]
         return x

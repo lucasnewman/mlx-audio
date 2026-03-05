@@ -215,29 +215,34 @@ class DeepFilterNetModel:
         return a
 
     def _band_mean_norm(self, x: mx.array, alpha: float, nb_bands: int) -> mx.array:
-        # libDF init state: linearly spaced [-60, -90]
-        state = mx.linspace(-60.0, -90.0, nb_bands)
-        outs = []
-        for i in range(x.shape[0]):
-            state = x[i] * (1.0 - alpha) + state * alpha
-            outs.append((x[i] - state) / 40.0)
-        return mx.stack(outs, axis=0)
+        # Use numpy for the sequential EMA loop to avoid per-frame MLX kernel launch overhead.
+        x_np = np.array(x, dtype=np.float32)
+        state = np.linspace(-60.0, -90.0, nb_bands, dtype=np.float32)
+        out = np.empty_like(x_np)
+        a = np.float32(alpha)
+        one_minus_a = np.float32(1.0 - alpha)
+        for i in range(x_np.shape[0]):
+            state = x_np[i] * one_minus_a + state * a
+            out[i] = (x_np[i] - state) / np.float32(40.0)
+        return mx.array(out)
 
     def _band_unit_norm(self, x: mx.array, alpha: float, nb_freqs: int):
-        # libDF init state: linearly spaced [0.001, 0.0001]
-        state = mx.linspace(0.001, 0.0001, nb_freqs)
-        mag = mx.abs(x)
+        # Same EMA recurrence as libDF, computed in numpy for performance.
+        x_np = np.array(x, dtype=np.complex64)
+        mag = np.abs(x_np)
+        state = np.linspace(0.001, 0.0001, nb_freqs, dtype=np.float32)
 
-        outs_r = []
-        outs_i = []
-        for i in range(x.shape[0]):
-            state = mag[i] * (1.0 - alpha) + state * alpha
-            # Match libDF band_unit_norm: divide by sqrt(state) with no extra epsilon.
-            denom = mx.sqrt(state)
-            outs_r.append(mx.real(x[i]) / denom)
-            outs_i.append(mx.imag(x[i]) / denom)
+        out_r = np.empty((x_np.shape[0], nb_freqs), dtype=np.float32)
+        out_i = np.empty((x_np.shape[0], nb_freqs), dtype=np.float32)
+        a = np.float32(alpha)
+        one_minus_a = np.float32(1.0 - alpha)
+        for i in range(x_np.shape[0]):
+            state = mag[i] * one_minus_a + state * a
+            denom = np.sqrt(state)
+            out_r[i] = x_np[i].real / denom
+            out_i[i] = x_np[i].imag / denom
 
-        return mx.stack(outs_r, axis=0), mx.stack(outs_i, axis=0)
+        return mx.array(out_r), mx.array(out_i)
 
     def _erb(self, spec_mag_sq: mx.array) -> mx.array:
         """Compute ERB energies like libDF using contiguous band widths when available."""
