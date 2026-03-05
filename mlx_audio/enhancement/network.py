@@ -158,7 +158,8 @@ class SqueezedGRU(nn.Module):
             GroupedLinearEinsum(input_size, hidden_size, linear_groups),
             nn.ReLU(),
         )
-        self.gru_layers = [PyTorchGRU(hidden_size, hidden_size) for _ in range(num_layers)]
+        # Use MLX native GRU kernels (batch-first) for better runtime.
+        self.gru_layers = [nn.GRU(hidden_size, hidden_size) for _ in range(num_layers)]
         self.linear_out = nn.Sequential(
             GroupedLinearEinsum(hidden_size, output_size or hidden_size, linear_groups),
             nn.ReLU(),
@@ -166,10 +167,9 @@ class SqueezedGRU(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.linear_in(x)
-        x = mx.transpose(x, (1, 0, 2))  # [T, B, H]
         for gru in self.gru_layers:
-            x = gru(x)
-        x = mx.transpose(x, (1, 0, 2))  # [B, T, H]
+            h0 = mx.zeros((x.shape[0], self.hidden_size), dtype=x.dtype)
+            x = gru(x, h0)
         if self.linear_out:
             x = self.linear_out(x)
         return x
@@ -182,9 +182,12 @@ class Encoder(nn.Module):
         super().__init__()
         p = config
         self.erb_bins = p.nb_erb
+        # DeepFilterNet2 uses a different embedding pathway shape than DeepFilterNet3.
+        self._is_v2_style = p.enc_concat
         self.emb_in_dim = p.conv_ch * p.nb_erb // 4
         self.emb_dim = p.emb_hidden_dim
-        self.emb_out_dim = p.conv_ch * p.nb_erb // 4
+        self.emb_out_dim = p.emb_hidden_dim if self._is_v2_style else (p.conv_ch * p.nb_erb // 4)
+        self.enc_concat = p.enc_concat
         self.lsnr_scale = p.lsnr_max - p.lsnr_min
         self.lsnr_offset = p.lsnr_min
 
@@ -206,7 +209,9 @@ class Encoder(nn.Module):
             nn.ReLU(),
         )
         
-        self.emb_gru = SqueezedGRU(self.emb_in_dim, self.emb_dim, self.emb_out_dim, 1, p.linear_groups)
+        emb_gru_in_dim = self.emb_in_dim * 2 if self.enc_concat else self.emb_in_dim
+        emb_gru_out_size = None if self._is_v2_style else self.emb_out_dim
+        self.emb_gru = SqueezedGRU(emb_gru_in_dim, self.emb_dim, emb_gru_out_size, 1, p.linear_groups)
         
         self.lsnr_fc = nn.Sequential(nn.Linear(self.emb_out_dim, 1), nn.Sigmoid())
 
@@ -250,7 +255,10 @@ class Encoder(nn.Module):
         cemb = mx.transpose(c1, (0, 2, 3, 1)).reshape(c1.shape[0], c1.shape[2], -1)
         cemb = self.df_fc_emb(cemb)
         emb = mx.transpose(e3, (0, 2, 3, 1)).reshape(e3.shape[0], e3.shape[2], -1)
-        emb = emb + cemb
+        if self.enc_concat:
+            emb = mx.concatenate([emb, cemb], axis=-1)
+        else:
+            emb = emb + cemb
 
         emb = self.emb_gru(emb)
         lsnr = self.lsnr_fc(emb) * self.lsnr_scale + self.lsnr_offset
@@ -279,7 +287,7 @@ class ErbDecoder(nn.Module):
     def __init__(self, config: DeepFilterNetConfig):
         super().__init__()
         p = config
-        self.emb_in_dim = p.conv_ch * p.nb_erb // 4
+        self.emb_in_dim = p.emb_hidden_dim if p.enc_concat else (p.conv_ch * p.nb_erb // 4)
         self.emb_dim = p.emb_hidden_dim
         self.emb_out_dim = p.conv_ch * p.nb_erb // 4
 
@@ -371,7 +379,7 @@ class DfDecoder(nn.Module):
     def __init__(self, config: DeepFilterNetConfig):
         super().__init__()
         p = config
-        self.emb_in_dim = p.conv_ch * p.nb_erb // 4
+        self.emb_in_dim = p.emb_hidden_dim if p.enc_concat else (p.conv_ch * p.nb_erb // 4)
         self.emb_dim = p.df_hidden_dim
         self.df_order = p.df_order
         self.df_bins = p.nb_df
@@ -384,16 +392,25 @@ class DfDecoder(nn.Module):
             '3': BatchNorm(self.df_out_ch)
         }
 
-        self.df_gru = SqueezedGRU(self.emb_in_dim, self.emb_dim, None, p.df_num_layers, 8)  # Fixed at 8 to match PyTorch
-        self.df_skip = GroupedLinearEinsum(self.emb_in_dim, self.emb_dim, 16)  # Use 16 from config
-        self.df_out = nn.Sequential(GroupedLinearEinsum(self.emb_dim, self.df_bins * self.df_out_ch, 16), nn.Tanh())  # Use 16 from config
+        # DeepFilterNet2/3 checkpoints both use 8 groups for df_gru.linear_in.
+        self.df_gru = SqueezedGRU(self.emb_in_dim, self.emb_dim, None, p.df_num_layers, 8)
+        self.df_skip = (
+            GroupedLinearEinsum(self.emb_in_dim, self.emb_dim, p.linear_groups)
+            if p.df_gru_skip == "groupedlinear"
+            else None
+        )
+        self.df_out = nn.Sequential(
+            GroupedLinearEinsum(self.emb_dim, self.df_bins * self.df_out_ch, p.linear_groups),
+            nn.Tanh(),
+        )
         self.df_fc_a = nn.Sequential(nn.Linear(self.emb_dim, 1), nn.Sigmoid())
 
     def __call__(self, emb: mx.array, c0: mx.array):
         b, t = emb.shape[:2]
 
         c = self.df_gru(emb)
-        c = c + self.df_skip(emb)
+        if self.df_skip is not None:
+            c = c + self.df_skip(emb)
 
         c0 = self._apply_convp(c0)
         c0 = mx.transpose(c0, (0, 2, 3, 1))  # [B, T, F, O*2]
@@ -413,20 +430,36 @@ class DfDecoder(nn.Module):
 class ConvBlock(nn.Module):
     """2D convolution block."""
 
-    def __init__(self, in_ch: int, out_ch: int, kernel: tuple, groups: int, fstride: int, upsample: int = 1):
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        kernel: tuple,
+        groups: int,
+        fstride: int,
+        upsample: int = 1,
+        lookahead: int = 0,
+        use_bias: bool = False,
+    ):
         super().__init__()
         self.kernel = kernel
         self.groups = groups
         self.fstride = fstride
         self.upsample = upsample
-        self.time_pad = (kernel[0] - 1, 0)
+        raw_left = kernel[0] - 1 - lookahead
+        self.time_crop = max(0, -raw_left)
+        left = max(0, raw_left)
+        right = max(0, lookahead)
+        self.time_pad = (left, right)
         self.freq_pad = kernel[1] // 2
         self.in_ch = in_ch
         self.out_ch = out_ch
+        self.use_bias = use_bias
         
         # Weight: stored in PyTorch format [out_ch, in_ch // groups, kH, kW]
         # Will be transposed for MLX conv2d which expects [out_ch, kH, kW, in_ch // groups]
         self.weight = mx.zeros((out_ch, in_ch // groups, kernel[0], kernel[1]))
+        self.bias = mx.zeros((out_ch,)) if use_bias else None
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [B, C, T, F]
@@ -435,6 +468,9 @@ class ConvBlock(nn.Module):
         if self.upsample > 1:
             x = mx.repeat(x, self.upsample, axis=2)
 
+        if self.time_crop > 0:
+            x = x[:, self.time_crop :, :, :]
+
         x = mx.pad(x, [(0, 0), (self.time_pad[0], self.time_pad[1]), (self.freq_pad, self.freq_pad), (0, 0)])
 
         # Transpose weight from PyTorch format [O, I, H, W] to MLX format [O, H, W, I]
@@ -442,6 +478,8 @@ class ConvBlock(nn.Module):
 
         # Use native grouped conv2d instead of Python per-group loops.
         x = mx.conv2d(x, weight, stride=(1, self.fstride), groups=self.groups)
+        if self.bias is not None:
+            x = x + self.bias.reshape((1, 1, 1, -1))
 
         x = mx.transpose(x, (0, 3, 1, 2))  # [B, C, T, F]
         return x
@@ -541,7 +579,7 @@ class DeepFilterOp(nn.Module):
         self.df_order = df_order
         self.lookahead = lookahead
 
-    def __call__(self, spec: mx.array, coefs: mx.array) -> mx.array:
+    def __call__(self, spec: mx.array, coefs: mx.array, alpha: Optional[mx.array] = None) -> mx.array:
         # spec: [B, 1, T, F, 2], coefs: [B, O, T, F_df, 2]
         b, _, t, f, _ = spec.shape
         
@@ -575,8 +613,17 @@ class DeepFilterOp(nn.Module):
         out_r = mx.sum(sr * cr - si * ci, axis=1)  # [B, T, F]
         out_i = mx.sum(sr * ci + si * cr, axis=1)  # [B, T, F]
 
-        # [B, T, F, 2] -> [B, 1, T, F, 2]
-        return mx.expand_dims(mx.stack([out_r, out_i], axis=-1), axis=1)
+        spec_f = mx.expand_dims(mx.stack([out_r, out_i], axis=-1), axis=1)  # [B, 1, T, F, 2]
+
+        # Match libDF assign_df: only replace/blend first df_bins bins; keep others unchanged.
+        out = spec
+        if alpha is not None:
+            a = mx.reshape(alpha, (b, 1, t, 1, 1))
+            low = spec_f * a + spec[:, :, :, : self.df_bins, :] * (1 - a)
+        else:
+            low = spec_f
+        out = mx.concatenate([low, spec[:, :, :, self.df_bins :, :]], axis=3)
+        return out
 
 
 class DfNet(nn.Module):
@@ -634,7 +681,15 @@ class DfNet(nn.Module):
         df_coefs = df_coefs.reshape(b, t, self.nb_df, self.df_order, 2)
         df_coefs = mx.transpose(df_coefs, (0, 3, 1, 2, 4))
 
-        spec_df = self.df_op(spec, df_coefs)
-        spec_e = mx.concatenate([spec_df, spec_m[:, :, :, self.nb_df:, :]], axis=3)
+        # DeepFilterNet2 and DeepFilterNet3 behave slightly differently here in this MLX port:
+        # - DF2 path matches better when DF sees masked spectrum directly.
+        # - DF3 path matches better with legacy low-bin DF + masked high-bin fusion.
+        if self.config.enc_concat:
+            spec_e = self.df_op(spec_m, df_coefs)
+        else:
+            spec_df = self.df_op(spec, df_coefs)
+            spec_e = mx.concatenate(
+                [spec_df[:, :, :, : self.nb_df, :], spec_m[:, :, :, self.nb_df :, :]], axis=3
+            )
 
         return spec_e, m, lsnr, df_coefs

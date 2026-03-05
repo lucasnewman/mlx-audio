@@ -22,18 +22,24 @@ from mlx_audio.dsp import istft, stft
 
 from .config import DeepFilterNet2Config, DeepFilterNet3Config, DeepFilterNetConfig
 from .network import DfNet
+from .network_df1 import DfNetV1
 from .weight_loader import load_weights as load_df_weights
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_MODEL_DIRS = {
     1: [
+        str(_REPO_ROOT / "models" / "DeepFilterNet1"),
         "/Users/kylehowells/Developer/Example-Projects/mlx-audio/models/DeepFilterNet1",
         "/Users/kylehowells/Developer/Example-Projects/DeepFilterNet/DeepFilterNet/models/extracted/DeepFilterNet",
     ],
     2: [
+        str(_REPO_ROOT / "models" / "DeepFilterNet2"),
         "/Users/kylehowells/Developer/Example-Projects/mlx-audio/models/DeepFilterNet2",
         "/Users/kylehowells/Developer/Example-Projects/DeepFilterNet2/DeepFilterNet2/models/DeepFilterNet2",
     ],
     3: [
+        str(_REPO_ROOT / "models" / "DeepFilterNet3"),
         "/Users/kylehowells/Developer/Example-Projects/mlx-audio/models/DeepFilterNet3",
         "/Users/kylehowells/Developer/Example-Projects/DeepFilterNet/DeepFilterNet/models/extracted/DeepFilterNet3",
     ],
@@ -101,7 +107,25 @@ class DeepFilterNetModel:
         config_class = DEFAULT_CONFIGS.get(model_version, DeepFilterNetConfig)
         config = config_class.from_dict(config_dict)
 
-        model = DfNet(config)
+        # libDF widths are needed when a checkpoint does not carry erb_fb (notably DF1).
+        if config.erb_widths is None:
+            try:
+                from libdf import DF
+
+                df_state = DF(
+                    sr=config.sample_rate,
+                    fft_size=config.fft_size,
+                    hop_size=config.hop_size,
+                    nb_bands=config.nb_erb,
+                )
+                config.erb_widths = [int(w) for w in df_state.erb_widths().tolist()]
+            except Exception:
+                pass
+
+        if model_version == "DeepFilterNet":
+            model = DfNetV1(config)
+        else:
+            model = DfNet(config)
 
         weights_path = model_dir_resolved / "model.safetensors"
         if not weights_path.exists():

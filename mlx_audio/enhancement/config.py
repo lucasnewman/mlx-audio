@@ -51,6 +51,10 @@ class DeepFilterNetConfig:
 
     # Model architecture
     conv_ch: int = 16
+    conv_k_enc: int = 1
+    conv_k_dec: int = 1
+    conv_width_factor: int = 1
+    conv_dec_mode: str = "transposed"
     conv_depthwise: bool = True
     convt_depthwise: bool = True
     conv_kernel: List[int] = field(default_factory=lambda: [1, 3])
@@ -72,8 +76,10 @@ class DeepFilterNetConfig:
     df_gru_skip: str = "none"
 
     # Linear layer groups
+    gru_groups: int = 8
     linear_groups: int = 8  # Must match PyTorch model (was 8 during training)
     enc_linear_groups: int = 16
+    group_shuffle: bool = False
 
     # Post-filter
     mask_pf: bool = False
@@ -81,6 +87,7 @@ class DeepFilterNetConfig:
 
     # Other
     enc_concat: bool = False
+    dfop_method: str = "real_unfold"
     lsnr_max: int = 35
     lsnr_min: int = -15
     lsnr_dropout: bool = False
@@ -114,6 +121,10 @@ class DeepFilterNetConfig:
             "df_lookahead": self.df_lookahead,
             "conv_lookahead": self.conv_lookahead,
             "conv_ch": self.conv_ch,
+            "conv_k_enc": self.conv_k_enc,
+            "conv_k_dec": self.conv_k_dec,
+            "conv_width_factor": self.conv_width_factor,
+            "conv_dec_mode": self.conv_dec_mode,
             "conv_depthwise": self.conv_depthwise,
             "convt_depthwise": self.convt_depthwise,
             "conv_kernel": self.conv_kernel,
@@ -126,11 +137,14 @@ class DeepFilterNetConfig:
             "emb_gru_skip": self.emb_gru_skip,
             "emb_gru_skip_enc": self.emb_gru_skip_enc,
             "df_gru_skip": self.df_gru_skip,
+            "gru_groups": self.gru_groups,
             "linear_groups": self.linear_groups,
             "enc_linear_groups": self.enc_linear_groups,
+            "group_shuffle": self.group_shuffle,
             "mask_pf": self.mask_pf,
             "pf_beta": self.pf_beta,
             "enc_concat": self.enc_concat,
+            "dfop_method": self.dfop_method,
             "lsnr_max": self.lsnr_max,
             "lsnr_min": self.lsnr_min,
             "lsnr_dropout": self.lsnr_dropout,

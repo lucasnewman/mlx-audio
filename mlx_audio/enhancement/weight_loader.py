@@ -65,6 +65,11 @@ def _sequential_layer_candidates(name: str) -> List[str]:
         ".df_fc_a.1.": ".df_fc_a.layers.1.",
         ".df_out.0.": ".df_out.layers.0.",
         ".df_out.1.": ".df_out.layers.1.",
+        ".clc_fc_a.0.": ".clc_fc_a.layers.0.",
+        ".clc_fc_a.1.": ".clc_fc_a.layers.1.",
+        ".clc_fc_out.0.": ".clc_fc_out.layers.0.",
+        ".clc_fc_out.1.": ".clc_fc_out.layers.1.",
+        ".fc_emb.0.": ".fc_emb.layers.0.",
     }
 
     for src, dst in replacements.items():
@@ -83,10 +88,12 @@ def get_weight_mapping(pt_names: Set[str], mlx_names: Set[str]) -> Dict[str, str
     has_model_prefix = any(name.startswith("model.") for name in mlx_names)
 
     for pt_name in pt_names:
-        if "num_batches_tracked" in pt_name:
+        if "num_batches_tracked" in pt_name or pt_name.endswith(".h0"):
             continue
 
         base = _apply_stride_conv_index_offset(_apply_gru_mapping(pt_name))
+        # DF1 conv blocks expose pointwise conv as `pwconv`.
+        base = base.replace(".1x1conv.", ".pwconv.")
         candidates: List[str] = []
 
         # Keep raw pt_name as a fallback because some names are already aligned.
@@ -163,6 +170,26 @@ def set_weight(model, name: str, value: mx.array) -> bool:
         # No reshaping needed if groups match
         
         if hasattr(obj, final_part):
+            # MLX nn.GRU uses bhn shape [H] (n-gate only), while PyTorch bias_hh is [3H].
+            # Preserve PyTorch behavior by storing r/z bias_hh for later fold into b.
+            if final_part == "bhn":
+                current = getattr(obj, final_part)
+                if hasattr(current, "shape") and len(current.shape) == 1 and len(value.shape) == 1:
+                    if current.shape[0] * 3 == value.shape[0]:
+                        h = current.shape[0]
+                        rz = value[: 2 * h]
+                        setattr(obj, "_pt_bhn_rz", rz)
+                        setattr(obj, final_part, value[2 * h :])
+                        setattr(obj, "_pt_bhn_folded", False)
+                        return True
+            if final_part == "b" and hasattr(obj, "_pt_bhn_rz"):
+                rz = getattr(obj, "_pt_bhn_rz")
+                h = value.shape[0] // 3
+                rz_pad = mx.concatenate([rz, mx.zeros((h,), dtype=value.dtype)], axis=0)
+                setattr(obj, final_part, value + rz_pad)
+                setattr(obj, "_pt_bhn_folded", True)
+                return True
+
             setattr(obj, final_part, value)
             return True
         elif isinstance(obj, dict) and final_part in obj:
@@ -204,6 +231,28 @@ def load_weights(model, weights: Dict[str, mx.array]) -> int:
         value = weights[pt_name]
         if set_weight(model, mlx_name, value):
             loaded += 1
+
+    # Finalize GRU bias folding for cases where bias_ih loaded before bias_hh.
+    def _finalize_bias_fold(obj):
+        if hasattr(obj, "_pt_bhn_rz") and hasattr(obj, "b") and getattr(obj, "b") is not None:
+            if not getattr(obj, "_pt_bhn_folded", False):
+                rz = getattr(obj, "_pt_bhn_rz")
+                b = getattr(obj, "b")
+                h = b.shape[0] // 3
+                rz_pad = mx.concatenate([rz, mx.zeros((h,), dtype=b.dtype)], axis=0)
+                setattr(obj, "b", b + rz_pad)
+                setattr(obj, "_pt_bhn_folded", True)
+        for v in getattr(obj, "__dict__", {}).values():
+            if isinstance(v, list):
+                for it in v:
+                    _finalize_bias_fold(it)
+            elif isinstance(v, dict):
+                for it in v.values():
+                    _finalize_bias_fold(it)
+            elif hasattr(v, "__dict__"):
+                _finalize_bias_fold(v)
+
+    _finalize_bias_fold(model)
     
     # Load filterbanks - handle both wrapper and direct model cases
     if 'erb_fb' in weights:
