@@ -43,6 +43,7 @@ class DeepFilterNetConfig:
 
     # ERB and Deep Filtering parameters
     nb_erb: int = 32
+    erb_widths: Optional[List[int]] = None
     nb_df: int = 96
     df_order: int = 5
     df_lookahead: int = 0
@@ -107,6 +108,7 @@ class DeepFilterNetConfig:
             "fft_size": self.fft_size,
             "hop_size": self.hop_size,
             "nb_erb": self.nb_erb,
+            "erb_widths": self.erb_widths,
             "nb_df": self.nb_df,
             "df_order": self.df_order,
             "df_lookahead": self.df_lookahead,

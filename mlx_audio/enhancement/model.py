@@ -80,6 +80,7 @@ class DeepFilterNetModel:
         # Filterbanks loaded from model weights via weight_loader fallback
         self.erb_fb = self.model.erb_fb
         self.erb_inv_fb = self.model.mask.erb_inv_fb
+        self.erb_widths = config.erb_widths
 
     @classmethod
     def from_pretrained(
@@ -139,8 +140,10 @@ class DeepFilterNetModel:
 
         orig_len = x.shape[0]
 
-        # Match DeepFilterNet inference path: end-pad by fft size
-        x = mx.pad(x, [(0, p.fft_size)])
+        # Match libDF streaming analysis:
+        # - implicit left context of one hop (analysis memory initialized with zeros)
+        # - right padding by fft_size for delay compensation path
+        x = mx.pad(x, [(p.hop_size, p.fft_size)])
 
         # STFT [T, F], no center padding
         spec = stft(
@@ -152,15 +155,16 @@ class DeepFilterNetModel:
             center=False,
         )
 
-        # Match libDF analysis normalization
+        # Match libDF analysis normalization.
         spec = spec * self.wnorm
 
         alpha = self._norm_alpha()
 
         # ERB features
         spec_mag_sq = (mx.real(spec) ** 2 + mx.imag(spec) ** 2)  # [T, F]
-        erb = spec_mag_sq @ self.erb_fb  # [T, E]
-        erb_db = 10.0 * mx.log10(mx.maximum(erb, 1e-10))
+        erb = self._erb(spec_mag_sq)  # [T, E]
+        # Match libDF exactly: 10*log10(erb + 1e-10), not clamp-based log.
+        erb_db = 10.0 * mx.log10(erb + 1e-10)
         erb_norm = self._band_mean_norm(erb_db, alpha, p.nb_erb)
         feat_erb = erb_norm[None, None, :, :]  # [B, 1, T, E]
 
@@ -187,22 +191,28 @@ class DeepFilterNetModel:
             win_length=p.fft_size,
             window=self._vorbis,
             center=False,
-            length=orig_len + p.fft_size,
+            # Include the explicit left hop padding used before STFT.
+            length=orig_len + p.hop_size + p.fft_size,
             # Match libDF overlap-add scaling behavior.
             normalized=True,
         )
 
-        # `mlx_audio.dsp.istft` alignment differs from libDF's synthesis by one hop.
-        # For DeepFilterNet configs (hop = fft/2), this yields zero net delay here.
-        d = max(0, p.fft_size - 2 * p.hop_size)
+        # Match official DeepFilterNet/libDF delay compensation.
+        d = p.fft_size - p.hop_size
         audio_out = audio_out[d : orig_len + d]
 
         y = np.array(audio_out, dtype=np.float32)
         return np.clip(y, -1.0, 1.0)
 
     def _norm_alpha(self) -> float:
-        # Same as DeepFilterNet defaults (tau=1.0)
-        return math.exp(-self.config.hop_size / self.config.sample_rate)
+        # Match df.utils.get_norm_alpha() rounding behavior exactly.
+        a_raw = math.exp(-self.config.hop_size / self.config.sample_rate)
+        precision = 3
+        a = 1.0
+        while a >= 1.0:
+            a = round(a_raw, precision)
+            precision += 1
+        return a
 
     def _band_mean_norm(self, x: mx.array, alpha: float, nb_bands: int) -> mx.array:
         # libDF init state: linearly spaced [-60, -90]
@@ -222,11 +232,25 @@ class DeepFilterNetModel:
         outs_i = []
         for i in range(x.shape[0]):
             state = mag[i] * (1.0 - alpha) + state * alpha
-            denom = mx.sqrt(state + 1e-8)
+            # Match libDF band_unit_norm: divide by sqrt(state) with no extra epsilon.
+            denom = mx.sqrt(state)
             outs_r.append(mx.real(x[i]) / denom)
             outs_i.append(mx.imag(x[i]) / denom)
 
         return mx.stack(outs_r, axis=0), mx.stack(outs_i, axis=0)
+
+    def _erb(self, spec_mag_sq: mx.array) -> mx.array:
+        """Compute ERB energies like libDF using contiguous band widths when available."""
+        if self.erb_widths is None:
+            return spec_mag_sq @ self.erb_fb
+
+        bands = []
+        start = 0
+        for width in self.erb_widths:
+            stop = start + int(width)
+            bands.append(mx.mean(spec_mag_sq[:, start:stop], axis=1))
+            start = stop
+        return mx.stack(bands, axis=1)
 
     @staticmethod
     def _vorbis_window(size: int) -> mx.array:
