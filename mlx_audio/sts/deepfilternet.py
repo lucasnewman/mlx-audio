@@ -17,13 +17,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         type=int,
         choices=[1, 2, 3],
-        default=3,
-        help="DeepFilterNet version to use (1, 2, or 3)",
+        default=None,
+        help="DeepFilterNet version to use (1, 2, or 3). Used when --model-path is not set.",
     )
     parser.add_argument(
         "--model-dir",
         default=None,
-        help="Optional local model directory override",
+        help="Optional local model directory override (legacy alias).",
+    )
+    parser.add_argument(
+        "--model-path",
+        default=None,
+        help=(
+            "Path to DeepFilterNet model directory, config.json, model.safetensors, "
+            "or weights.npz. Version is auto-detected from config.json."
+        ),
     )
     parser.add_argument(
         "--stream",
@@ -63,7 +71,14 @@ def main() -> None:
         else in_path.with_stem(in_path.stem + "_enhanced_mlx")
     )
 
-    model = DeepFilterNetModel.from_pretrained(version=args.model, model_dir=args.model_dir)
+    if args.model_path and args.model_dir:
+        raise ValueError("Use either --model-path or --model-dir, not both.")
+
+    model = DeepFilterNetModel.from_pretrained(
+        version=args.model,
+        model_path=args.model_path,
+        model_dir=args.model_dir,
+    )
     if args.stream:
         sr = model.config.sample_rate
         chunk_samples = max(model.config.hop_size, int(sr * args.chunk_ms / 1000.0))
@@ -76,12 +91,14 @@ def main() -> None:
                 compensate_delay=(not args.no_delay_compensation),
             )
         except NotImplementedError as exc:
-            raise NotImplementedError(f"Streaming mode is unavailable for DeepFilterNet{args.model}: {exc}") from exc
+            raise NotImplementedError(
+                f"Streaming mode is unavailable for {model.model_version}: {exc}"
+            ) from exc
     else:
         model.enhance_file(in_path, out_path)
 
     print(f"Input : {in_path}")
-    print(f"Model : DeepFilterNet{args.model}")
+    print(f"Model : {model.model_version}")
     print(f"Mode  : {'streaming' if args.stream else 'offline'}")
     print(f"Output: {out_path}")
 

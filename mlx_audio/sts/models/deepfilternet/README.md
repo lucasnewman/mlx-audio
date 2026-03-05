@@ -11,6 +11,12 @@ model = DeepFilterNetModel.from_pretrained(version=3)
 model.enhance_file("noisy.wav", "clean.wav")
 ```
 
+Or load a custom/finetuned checkpoint path directly (version auto-detected from `config.json`):
+
+```python
+model = DeepFilterNetModel.from_pretrained(model_path="./models/MyDeepFilterNet")
+```
+
 Streaming/chunked mode (true per-hop stateful processing for DF2/DF3):
 
 ```python
@@ -26,15 +32,16 @@ out_tail = streamer.flush()
 - `version=2`: DeepFilterNet2
 - `version=3`: DeepFilterNet3
 
-Optional local override:
+Optional explicit model path:
 
 ```python
-model = DeepFilterNetModel.from_pretrained(version=2, model_dir="./models/DeepFilterNet2")
+model = DeepFilterNetModel.from_pretrained(model_path="./models/DeepFilterNet2/model.safetensors")
 ```
 
 ## Example Script
 
 ```bash
 python examples/deepfilternet.py examples/denoise/test_audio_10s.wav -m 3
+python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --model-path ./models/DeepFilterNet3
 python examples/deepfilternet.py examples/denoise/test_audio_10s.wav -m 3 --stream
 ```

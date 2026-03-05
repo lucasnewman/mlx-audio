@@ -49,7 +49,7 @@ DEFAULT_CONFIGS = {
 def resolve_model_dir(version: int, model_dir: Optional[Union[str, Path]] = None) -> Path:
     if model_dir is not None:
         p = Path(model_dir).expanduser().resolve()
-        if p.exists():
+        if p.exists() and p.is_dir():
             return p
         raise FileNotFoundError(f"Model directory not found: {p}")
 
@@ -64,13 +64,45 @@ def resolve_model_dir(version: int, model_dir: Optional[Union[str, Path]] = None
     )
 
 
+def resolve_model_artifacts(
+    *,
+    version: int,
+    model_path: Optional[Union[str, Path]] = None,
+    model_dir: Optional[Union[str, Path]] = None,
+) -> tuple[Path, Optional[Path]]:
+    if model_path is not None and model_dir is not None:
+        raise ValueError("Provide either model_path or model_dir, not both.")
+
+    if model_path is not None:
+        p = Path(model_path).expanduser().resolve()
+        if not p.exists():
+            raise FileNotFoundError(f"Model path not found: {p}")
+        if p.is_dir():
+            return p, None
+        if p.name in {"config.json", "model.safetensors", "weights.npz"}:
+            return p.parent, p
+        raise ValueError(
+            f"Unsupported model path: {p}. Expected a model directory or one of "
+            "'config.json', 'model.safetensors', or 'weights.npz'."
+        )
+
+    return resolve_model_dir(version=version, model_dir=model_dir), None
+
+
 class DeepFilterNetModel:
     """Pure-MLX DeepFilterNet inference runtime."""
 
-    def __init__(self, model: DfNet, config: DeepFilterNetConfig, model_dir: Path):
+    def __init__(
+        self,
+        model: DfNet,
+        config: DeepFilterNetConfig,
+        model_dir: Path,
+        model_version: str = "DeepFilterNet3",
+    ):
         self.model = model
         self.config = config
         self.model_dir = model_dir
+        self.model_version = model_version
 
         # From libDF: wnorm = 1 / (fft_size^2 / (2 * hop_size))
         self.wnorm = 1.0 / (config.fft_size * config.fft_size / (2.0 * config.hop_size))
@@ -85,10 +117,16 @@ class DeepFilterNetModel:
     @classmethod
     def from_pretrained(
         cls,
-        version: int = 3,
+        version: Optional[int] = None,
+        model_path: Optional[Union[str, Path]] = None,
         model_dir: Optional[Union[str, Path]] = None,
     ) -> "DeepFilterNetModel":
-        model_dir_resolved = resolve_model_dir(version=version, model_dir=model_dir)
+        version_value = 3 if version is None else version
+        model_dir_resolved, explicit_file = resolve_model_artifacts(
+            version=version_value,
+            model_path=model_path,
+            model_dir=model_dir,
+        )
 
         config_path = model_dir_resolved / "config.json"
         if not config_path.exists():
@@ -97,7 +135,9 @@ class DeepFilterNetModel:
         with open(config_path, encoding="utf-8") as f:
             config_dict = json.load(f)
 
-        model_version = config_dict.get("model_version", f"DeepFilterNet{version}")
+        model_version = config_dict.get("model_version")
+        if not model_version:
+            model_version = f"DeepFilterNet{version_value}"
         config_class = DEFAULT_CONFIGS.get(model_version, DeepFilterNetConfig)
         config = config_class.from_dict(config_dict)
 
@@ -121,19 +161,27 @@ class DeepFilterNetModel:
         else:
             model = DfNet(config)
 
-        weights_path = model_dir_resolved / "model.safetensors"
-        if not weights_path.exists():
-            npz_fallback = model_dir_resolved / "weights.npz"
-            if npz_fallback.exists():
-                weights_path = npz_fallback
-            else:
-                raise FileNotFoundError(f"Missing model weights in {model_dir_resolved}")
+        if explicit_file is not None and explicit_file.name in {"model.safetensors", "weights.npz"}:
+            weights_path = explicit_file
+        else:
+            weights_path = model_dir_resolved / "model.safetensors"
+            if not weights_path.exists():
+                npz_fallback = model_dir_resolved / "weights.npz"
+                if npz_fallback.exists():
+                    weights_path = npz_fallback
+                else:
+                    raise FileNotFoundError(f"Missing model weights in {model_dir_resolved}")
 
         weights = mx.load(str(weights_path))
         loaded = load_df_weights(model, weights)
         print(f"Loaded DeepFilterNet weights: {loaded} tensors from {weights_path}")
 
-        return cls(model=model, config=config, model_dir=model_dir_resolved)
+        return cls(
+            model=model,
+            config=config,
+            model_dir=model_dir_resolved,
+            model_version=model_version,
+        )
 
     def enhance_file(self, input_path: Union[str, Path], output_path: Union[str, Path]) -> Path:
         input_path = Path(input_path)
