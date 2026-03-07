@@ -328,6 +328,8 @@ class Model(nn.Module):
                 continue
             if key == "log_softmax.mlp.log_softmax":
                 continue
+            if "num_batches_tracked" in key:
+                continue
 
             if "conv" in new_key and "weight" in new_key and value.ndim >= 3:
                 if value.ndim == 3:
