@@ -341,6 +341,7 @@ class TestEcapaTdnnModel(unittest.TestCase):
 
     def test_classifier_matches_speechbrain_order(self):
         model = self.Model(self.config)
+        model.eval()
         classifier = model.classifier
         x = mx.random.normal((1, 1, self.config.embedding_dim))
 
