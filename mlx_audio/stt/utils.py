@@ -17,6 +17,7 @@ MODEL_REMAPPING = {
     "qwen3_asr": "qwen3_asr",
     "canary": "canary",
     "moonshine": "moonshine",
+    "mms": "mms",
 }
 
 
