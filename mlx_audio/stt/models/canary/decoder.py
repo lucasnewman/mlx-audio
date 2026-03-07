@@ -46,7 +46,6 @@ class MultiHeadCrossAttention(nn.Module):
 
         mask = None
         if encoder_mask is not None:
-            # encoder_mask: (B, S) -> (B, 1, 1, S) for broadcasting
             mask = encoder_mask[:, None, None, :].astype(mx.float32)
             mask = mx.where(mask == 0, -1e9, 0.0)
 
@@ -110,15 +109,12 @@ class TransformerDecoderBlock(nn.Module):
     def __init__(self, d_model: int, n_heads: int, inner_size: int):
         super().__init__()
 
-        # Self-attention
         self.self_attn_norm = nn.LayerNorm(d_model)
         self.self_attn = MultiHeadSelfAttention(d_model, n_heads)
 
-        # Cross-attention
         self.cross_attn_norm = nn.LayerNorm(d_model)
         self.cross_attn = MultiHeadCrossAttention(d_model, n_heads)
 
-        # Feed-forward
         self.ff_norm = nn.LayerNorm(d_model)
         self.ff1 = nn.Linear(d_model, inner_size, bias=True)
         self.ff2 = nn.Linear(inner_size, d_model, bias=True)
@@ -132,13 +128,11 @@ class TransformerDecoderBlock(nn.Module):
         self_attn_cache: Optional[Tuple[mx.array, mx.array]] = None,
         cross_attn_cache: Optional[Tuple[mx.array, mx.array]] = None,
     ) -> Tuple[mx.array, Tuple[mx.array, mx.array], Tuple[mx.array, mx.array]]:
-        # Self-attention
         residual = x
         x_norm = self.self_attn_norm(x)
         x_sa, new_self_cache = self.self_attn(x_norm, mask=self_attn_mask, cache=self_attn_cache)
         x = residual + x_sa
 
-        # Cross-attention
         residual = x
         x_norm = self.cross_attn_norm(x)
         x_ca, new_cross_cache = self.cross_attn(
@@ -146,7 +140,6 @@ class TransformerDecoderBlock(nn.Module):
         )
         x = residual + x_ca
 
-        # Feed-forward
         residual = x
         x_norm = self.ff_norm(x)
         x = residual + self.ff2(nn.relu(self.ff1(x_norm)))
@@ -159,7 +152,6 @@ class FixedPositionalEncoding(nn.Module):
 
     def __init__(self, d_model: int, max_len: int = 1024):
         super().__init__()
-        # pos_enc will be loaded from weights
         self.pos_enc = mx.zeros((max_len, d_model))
 
     def __call__(self, position_ids: mx.array) -> mx.array:
@@ -181,7 +173,6 @@ class CanaryDecoder(nn.Module):
         self.num_layers = config.num_layers
         self.vocab_size = vocab_size
 
-        # Embedding layers (matching NeMo TransformerEmbedding)
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.position_embedding = FixedPositionalEncoding(d_model)
         self.embedding_layer_norm = nn.LayerNorm(d_model)
@@ -220,7 +211,6 @@ class CanaryDecoder(nn.Module):
         """
         B, T = tokens.shape
 
-        # Token + position embedding + layer norm
         x = self.embedding(tokens)
 
         position_ids = mx.arange(start_pos, start_pos + T)
@@ -232,13 +222,10 @@ class CanaryDecoder(nn.Module):
         if cache is None:
             cache = [{"self_attn": None, "cross_attn": None} for _ in range(self.num_layers)]
 
-        # Create causal mask for self-attention
         if T > 1:
             causal_mask = nn.MultiHeadAttention.create_additive_causal_mask(T)
-            # Offset the causal mask if we have cached keys
             if cache[0]["self_attn"] is not None:
                 cached_len = cache[0]["self_attn"][0].shape[2]
-                # Extend mask to cover cached positions
                 prefix = mx.zeros((T, cached_len))
                 causal_mask = mx.concatenate([prefix, causal_mask], axis=1)
         else:

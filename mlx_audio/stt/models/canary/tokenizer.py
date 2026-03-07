@@ -23,7 +23,6 @@ class CanaryTokenizer:
 
         self.vocab_size = self.sp.get_piece_size()
 
-        # Build special token maps
         self.token2id: Dict[str, int] = {}
         self.id2token: Dict[int, str] = {}
 

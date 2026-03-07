@@ -46,7 +46,6 @@ class CanaryEncoder(nn.Module):
         )
         self.conformer = Conformer(conformer_args)
 
-        # Only add projection if encoder and decoder dims differ
         if enc_cfg.d_model != config.enc_output_dim:
             self.projection = nn.Linear(enc_cfg.d_model, config.enc_output_dim)
         else:
@@ -74,17 +73,12 @@ class Model(nn.Module):
             config = ModelConfig.from_dict(config)
         self.config = config
 
-        # Encoder
         self.encoder = CanaryEncoder(config)
-
-        # Decoder
         self.decoder = CanaryDecoder(
             config=config.transf_decoder,
             vocab_size=config.vocab_size,
             d_model=config.enc_output_dim,
         )
-
-        # Tokenizer (loaded in post_load_hook)
         self._tokenizer: Optional[CanaryTokenizer] = None
 
     @property
@@ -111,7 +105,6 @@ class Model(nn.Module):
             audio = mx.array(audio)
 
         if audio.ndim == 3:
-            # Already a mel spectrogram
             return audio
 
         preprocess_args = PPreprocessArgs(
@@ -144,7 +137,6 @@ class Model(nn.Module):
         enc_out, enc_len = self.encoder(mel, lengths)
         mx.eval(enc_out, enc_len)
 
-        # Create mask from lengths
         max_len = enc_out.shape[1]
         arange = mx.arange(max_len)
         enc_mask = (arange[None, :] < enc_len[:, None]).astype(mx.float32)
@@ -189,18 +181,15 @@ class Model(nn.Module):
 
         start_time = time.time()
 
-        # Preprocess audio
         mel = self._preprocess_audio(audio)
         if mel.dtype != dtype:
             mel = mel.astype(dtype)
 
-        # Encode
         enc_out, enc_len, enc_mask = self._encode_audio(mel)
 
         if self._tokenizer is None:
             raise RuntimeError("Tokenizer not loaded. Use post_load_hook or set _tokenizer.")
 
-        # Build prompt tokens
         prompt_tokens = self._tokenizer.build_prompt_tokens(
             source_lang=source_lang,
             target_lang=target_lang,
@@ -210,19 +199,16 @@ class Model(nn.Module):
         if verbose:
             print(f"Prompt tokens ({len(prompt_tokens)}): {prompt_tokens}")
 
-        # Run decoder autoregressively
         eos_id = self._tokenizer.eos_id
         generated_tokens = []
         cache = None
 
-        # Process prompt tokens (all at once for efficiency)
         prompt_ids = mx.array([prompt_tokens], dtype=mx.int32)
         logits, cache = self.decoder(
             prompt_ids, enc_out, encoder_mask=enc_mask, cache=cache, start_pos=0
         )
         mx.eval(logits)
 
-        # Get first generated token from last position
         if temperature > 0:
             next_token = int(mx.random.categorical(logits[:, -1, :] / temperature))
         else:
@@ -233,7 +219,6 @@ class Model(nn.Module):
         else:
             generated_tokens.append(next_token)
 
-            # Continue generating
             for step in range(max_tokens - 1):
                 token_ids = mx.array([[next_token]], dtype=mx.int32)
                 logits, cache = self.decoder(
@@ -251,7 +236,6 @@ class Model(nn.Module):
                     break
                 generated_tokens.append(next_token)
 
-        # Decode to text
         text = self._tokenizer.decode(generated_tokens)
 
         end_time = time.time()
@@ -281,34 +265,27 @@ class Model(nn.Module):
             new_key = key
 
             # Encoder weights: encoder.* -> encoder.conformer.*
-            # NeMo uses encoder.layers.X.*, we map to encoder.conformer.layers.X.*
             if key.startswith("encoder.") and not key.startswith("encoder_decoder"):
                 new_key = "encoder.conformer." + key[len("encoder."):]
 
-            # Encoder-decoder projection (Identity for 1B, skip)
             elif key.startswith("encoder_decoder_proj."):
-                continue  # Identity projection, no weights
+                continue
 
-            # Decoder embedding: transf_decoder._embedding.token_embedding.weight -> decoder.embedding.weight
             elif key.startswith("transf_decoder._embedding.token_embedding."):
                 new_key = key.replace("transf_decoder._embedding.token_embedding.", "decoder.embedding.")
 
-            # Decoder position embedding
             elif key.startswith("transf_decoder._embedding.position_embedding."):
                 new_key = key.replace("transf_decoder._embedding.position_embedding.", "decoder.position_embedding.")
 
-            # Decoder embedding layer norm
             elif key.startswith("transf_decoder._embedding.layer_norm."):
                 new_key = key.replace("transf_decoder._embedding.layer_norm.", "decoder.embedding_layer_norm.")
 
-            # Decoder layers
             elif key.startswith("transf_decoder._decoder.layers."):
                 rest = key[len("transf_decoder._decoder.layers."):]
                 parts = rest.split(".", 1)
                 layer_idx = parts[0]
                 sub_rest = parts[1]
 
-                # Self-attention sub-layer (first_sub_layer)
                 if sub_rest.startswith("first_sub_layer."):
                     inner = sub_rest[len("first_sub_layer."):]
                     inner = inner.replace("query_net.", "self_attn.q_proj.")
@@ -317,7 +294,6 @@ class Model(nn.Module):
                     inner = inner.replace("out_projection.", "self_attn.out_proj.")
                     new_key = f"decoder.blocks.{layer_idx}.{inner}"
 
-                # Cross-attention sub-layer (second_sub_layer)
                 elif sub_rest.startswith("second_sub_layer."):
                     inner = sub_rest[len("second_sub_layer."):]
                     inner = inner.replace("query_net.", "cross_attn.q_proj.")
@@ -326,50 +302,37 @@ class Model(nn.Module):
                     inner = inner.replace("out_projection.", "cross_attn.out_proj.")
                     new_key = f"decoder.blocks.{layer_idx}.{inner}"
 
-                # FFN sub-layer (third_sub_layer)
                 elif sub_rest.startswith("third_sub_layer."):
                     inner = sub_rest[len("third_sub_layer."):]
                     inner = inner.replace("dense_in.", "ff1.")
                     inner = inner.replace("dense_out.", "ff2.")
                     new_key = f"decoder.blocks.{layer_idx}.{inner}"
 
-                # Layer norms (layer_norm_1 -> self_attn_norm, etc.)
                 elif sub_rest.startswith("layer_norm_1."):
-                    inner = sub_rest.replace("layer_norm_1.", "self_attn_norm.")
-                    new_key = f"decoder.blocks.{layer_idx}.{inner}"
+                    new_key = f"decoder.blocks.{layer_idx}.{sub_rest.replace('layer_norm_1.', 'self_attn_norm.')}"
                 elif sub_rest.startswith("layer_norm_2."):
-                    inner = sub_rest.replace("layer_norm_2.", "cross_attn_norm.")
-                    new_key = f"decoder.blocks.{layer_idx}.{inner}"
+                    new_key = f"decoder.blocks.{layer_idx}.{sub_rest.replace('layer_norm_2.', 'cross_attn_norm.')}"
                 elif sub_rest.startswith("layer_norm_3."):
-                    inner = sub_rest.replace("layer_norm_3.", "ff_norm.")
-                    new_key = f"decoder.blocks.{layer_idx}.{inner}"
+                    new_key = f"decoder.blocks.{layer_idx}.{sub_rest.replace('layer_norm_3.', 'ff_norm.')}"
 
                 else:
                     new_key = f"decoder.blocks.{layer_idx}.{sub_rest}"
 
-            # Decoder final layer norm
             elif key.startswith("transf_decoder._decoder.final_layer_norm."):
                 new_key = key.replace("transf_decoder._decoder.final_layer_norm.", "decoder.final_norm.")
 
-            # Output projection: log_softmax.mlp.layer0.* -> decoder.output_proj.*
             elif key.startswith("log_softmax.mlp.layer0."):
                 new_key = key.replace("log_softmax.mlp.layer0.", "decoder.output_proj.")
 
-            # Skip dropout/non-weight keys
             if "attn_dropout" in key or "layer_dropout" in key:
                 continue
             if key == "log_softmax.mlp.log_softmax":
                 continue
 
-            # Handle conv weight transposition
-            # NeMo/PyTorch: Conv1d=(out, in, K), Conv2d=(out, in, H, W)
-            # MLX: Conv1d=(out, K, in), Conv2d=(out, H, W, in)
             if "conv" in new_key and "weight" in new_key and value.ndim >= 3:
                 if value.ndim == 3:
-                    # Conv1d: (out, in, K) -> (out, K, in)
                     value = mx.transpose(value, (0, 2, 1))
                 elif value.ndim == 4:
-                    # Conv2d: (out, in, H, W) -> (out, H, W, in)
                     value = mx.transpose(value, (0, 2, 3, 1))
 
             sanitized[new_key] = value
@@ -381,7 +344,6 @@ class Model(nn.Module):
         """Load tokenizer after weights are loaded."""
         model_path = Path(model_path)
 
-        # Try to load sentencepiece tokenizer
         sp_path = model_path / "tokenizer.model"
         tokens_path = model_path / "tokens.txt"
 
@@ -391,7 +353,6 @@ class Model(nn.Module):
                 str(tokens_path) if tokens_path.exists() else None,
             )
         elif tokens_path.exists():
-            # Fallback: build a minimal tokenizer from tokens.txt only
             model._tokenizer = CanaryTokenizer.__new__(CanaryTokenizer)
             model._tokenizer.token2id = {}
             model._tokenizer.id2token = {}

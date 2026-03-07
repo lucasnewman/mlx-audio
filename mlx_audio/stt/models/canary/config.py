@@ -83,7 +83,6 @@ class DecoderConfig:
 
     @classmethod
     def from_dict(cls, params: Dict[str, Any]) -> "DecoderConfig":
-        # Handle nested "decoder" key from NeMo config
         if "decoder" in params and isinstance(params["decoder"], dict):
             params = params["decoder"]
         return cls(
@@ -106,13 +105,11 @@ class ModelConfig:
     vocab_size: int = 16384
     enc_output_dim: int = 1024  # Decoder hidden dimension (same as encoder d_model for this model)
 
-    # Special token IDs (populated from tokens.txt or config)
     startofcontext_id: int = 0
     startoftranscript_id: int = 1
     emo_undefined_id: int = 2
     endoftext_id: int = 3
 
-    # Supported languages
     supported_languages: List[str] = field(default_factory=lambda: [
         "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de",
         "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk",
