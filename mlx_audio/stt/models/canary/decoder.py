@@ -1,14 +1,3 @@
-"""Transformer decoder with cross-attention for Canary model.
-
-The NeMo Canary decoder uses:
-- Token embedding (no positional embedding - uses start_pos for position)
-- N transformer blocks, each with:
-  - Self-attention (causal, with KV-cache)
-  - Cross-attention (attends to encoder output)
-  - Feed-forward network
-  - LayerNorm (pre-norm style)
-"""
-
 from typing import List, Optional, Tuple
 
 import mlx.core as mx

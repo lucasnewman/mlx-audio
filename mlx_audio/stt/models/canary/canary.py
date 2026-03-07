@@ -1,14 +1,3 @@
-"""Canary model for multilingual speech-to-text transcription using MLX.
-
-This implements the NVIDIA Canary-1B-v2 model architecture:
-- FastConformer encoder (reused from parakeet)
-- Encoder-decoder projection (Linear)
-- Transformer decoder with cross-attention
-- SentencePiece tokenizer
-
-The model supports 25 EU languages + Russian + Ukrainian.
-"""
-
 import json
 import time
 import warnings
@@ -285,36 +274,7 @@ class Model(nn.Module):
         )
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-        """Map NeMo weight names to MLX weight names.
-
-        NeMo weight naming (verified from actual model state_dict):
-            encoder.layers.X.self_attn.linear_q.weight
-            encoder.pre_encode.conv.0.weight  (Conv2d)
-            transf_decoder._embedding.token_embedding.weight
-            transf_decoder._embedding.position_embedding.pos_enc
-            transf_decoder._embedding.layer_norm.weight
-            transf_decoder._decoder.layers.X.first_sub_layer.query_net.weight   (self-attn)
-            transf_decoder._decoder.layers.X.layer_norm_1.weight                (self-attn LN)
-            transf_decoder._decoder.layers.X.second_sub_layer.query_net.weight  (cross-attn)
-            transf_decoder._decoder.layers.X.layer_norm_2.weight                (cross-attn LN)
-            transf_decoder._decoder.layers.X.third_sub_layer.dense_in.weight    (FFN)
-            transf_decoder._decoder.layers.X.layer_norm_3.weight                (FFN LN)
-            transf_decoder._decoder.final_layer_norm.weight
-            log_softmax.mlp.layer0.weight
-
-        MLX weight naming:
-            encoder.conformer.layers.X.self_attn.linear_q.weight
-            encoder.conformer.pre_encode.conv.0.weight
-            decoder.embedding.weight
-            decoder.blocks.X.self_attn.q_proj.weight
-            decoder.blocks.X.self_attn_norm.weight
-            decoder.blocks.X.cross_attn.q_proj.weight
-            decoder.blocks.X.cross_attn_norm.weight
-            decoder.blocks.X.ff1.weight
-            decoder.blocks.X.ff_norm.weight
-            decoder.final_norm.weight
-            decoder.output_proj.weight
-        """
+        """Map NeMo weight names to MLX weight names."""
         sanitized = {}
 
         for key, value in weights.items():

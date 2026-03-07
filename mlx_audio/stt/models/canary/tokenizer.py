@@ -1,5 +1,3 @@
-"""SentencePiece tokenizer for Canary model."""
-
 from pathlib import Path
 from typing import Dict, List, Optional
 

@@ -1,5 +1,3 @@
-"""Configuration for canary-1b-v2 model."""
-
 import inspect
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
