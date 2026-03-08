@@ -7,10 +7,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from ..base import STTOutput
-from ..wav2vec.wav2vec import (
-    ModelConfig,
-    Wav2Vec2Model,
-)
+from ..wav2vec.wav2vec import ModelConfig, Wav2Vec2Model
 
 
 class Model(nn.Module):
@@ -74,6 +71,7 @@ class Model(nn.Module):
 
         if isinstance(audio, (str, Path)):
             from mlx_audio.stt.utils import load_audio
+
             audio = load_audio(str(audio), sr=self.sample_rate, dtype=dtype)
         elif not isinstance(audio, mx.array):
             audio = mx.array(audio)
@@ -84,7 +82,9 @@ class Model(nn.Module):
         if audio.dtype != dtype:
             audio = audio.astype(dtype)
 
-        audio = (audio - mx.mean(audio, axis=-1, keepdims=True)) / (mx.std(audio, axis=-1, keepdims=True) + 1e-7)
+        audio = (audio - mx.mean(audio, axis=-1, keepdims=True)) / (
+            mx.std(audio, axis=-1, keepdims=True) + 1e-7
+        )
 
         logits = self(audio)
         mx.eval(logits)
@@ -147,13 +147,16 @@ class Model(nn.Module):
             with open(vocab_path) as f:
                 vocab = json.load(f)
             if isinstance(next(iter(vocab.values())), dict):
-                lang_vocab = vocab.get("eng", vocab.get("en", next(iter(vocab.values()))))
+                lang_vocab = vocab.get(
+                    "eng", vocab.get("en", next(iter(vocab.values())))
+                )
                 model._vocab = {v: k for k, v in lang_vocab.items()}
             else:
                 model._vocab = {v: k for k, v in vocab.items()}
 
         try:
             from transformers import AutoProcessor
+
             model._processor = AutoProcessor.from_pretrained(str(model_path))
         except Exception:
             model._processor = None

@@ -85,12 +85,16 @@ class TestModelSanitize(unittest.TestCase):
         self.assertIn("lm_head.weight", sanitized)
 
     def test_keeps_wav2vec2_prefix(self):
-        weights = {"wav2vec2.encoder.layers.0.attention.q_proj.weight": mx.zeros((32, 32))}
+        weights = {
+            "wav2vec2.encoder.layers.0.attention.q_proj.weight": mx.zeros((32, 32))
+        }
         sanitized = self.model.sanitize(weights)
         self.assertIn("wav2vec2.encoder.layers.0.attention.q_proj.weight", sanitized)
 
     def test_conv_transpose(self):
-        weights = {"wav2vec2.feature_extractor.conv_layers.0.conv.weight": mx.zeros((16, 1, 4))}
+        weights = {
+            "wav2vec2.feature_extractor.conv_layers.0.conv.weight": mx.zeros((16, 1, 4))
+        }
         sanitized = self.model.sanitize(weights)
         key = "wav2vec2.feature_extractor.conv_layers.0.conv.weight"
         self.assertEqual(sanitized[key].shape, (16, 4, 1))
