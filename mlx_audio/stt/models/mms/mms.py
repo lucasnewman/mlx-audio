@@ -84,6 +84,8 @@ class Model(nn.Module):
         if audio.dtype != dtype:
             audio = audio.astype(dtype)
 
+        audio = (audio - mx.mean(audio, axis=-1, keepdims=True)) / (mx.std(audio, axis=-1, keepdims=True) + 1e-7)
+
         logits = self(audio)
         mx.eval(logits)
 
