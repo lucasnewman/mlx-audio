@@ -4,6 +4,7 @@ import mlx.core as mx
 
 from mlx_audio.stt.models.moonshine.config import ModelConfig
 from mlx_audio.stt.models.moonshine.moonshine import (
+    Model,
     MoonshineAttention,
     MoonshineDecoder,
     MoonshineDecoderLayer,
@@ -11,7 +12,6 @@ from mlx_audio.stt.models.moonshine.moonshine import (
     MoonshineEncoder,
     MoonshineEncoderLayer,
     MoonshineEncoderMLP,
-    Model,
 )
 
 
@@ -198,7 +198,9 @@ class TestModelSanitize(unittest.TestCase):
         self.assertIn("decoder.layers.0.self_attn.q_proj.weight", sanitized)
 
     def test_cross_attn_mapping(self):
-        weights = {"model.decoder.layers.0.encoder_attn.q_proj.weight": mx.zeros((32, 32))}
+        weights = {
+            "model.decoder.layers.0.encoder_attn.q_proj.weight": mx.zeros((32, 32))
+        }
         sanitized = self.model.sanitize(weights)
         self.assertIn("decoder.layers.0.encoder_attn.q_proj.weight", sanitized)
 

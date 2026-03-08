@@ -11,15 +11,21 @@ from .config import ModelConfig
 
 
 class MoonshineRotaryEmbedding(nn.Module):
-    def __init__(self, dim: int, max_position_embeddings: int = 512, base: float = 10000.0):
+    def __init__(
+        self, dim: int, max_position_embeddings: int = 512, base: float = 10000.0
+    ):
         super().__init__()
         inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
         self._inv_freq = inv_freq  # shape: (dim // 2,)
         self._dim = dim
         self._max_seq_len = max_position_embeddings
 
-    def __call__(self, x: mx.array, position_ids: mx.array) -> Tuple[mx.array, mx.array]:
-        freqs = position_ids[:, :, None].astype(mx.float32) * self._inv_freq[None, None, :]
+    def __call__(
+        self, x: mx.array, position_ids: mx.array
+    ) -> Tuple[mx.array, mx.array]:
+        freqs = (
+            position_ids[:, :, None].astype(mx.float32) * self._inv_freq[None, None, :]
+        )
         emb = mx.concatenate([freqs, freqs], axis=-1)
         cos = mx.cos(emb)
         sin = mx.sin(emb)
@@ -185,7 +191,9 @@ class MoonshineEncoderLayer(nn.Module):
         self.input_layernorm = nn.LayerNorm(config.hidden_size, bias=False)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size, bias=False)
 
-    def __call__(self, x: mx.array, position_ids: Optional[mx.array] = None) -> mx.array:
+    def __call__(
+        self, x: mx.array, position_ids: Optional[mx.array] = None
+    ) -> mx.array:
         residual = x
         x = self.input_layernorm(x)
         x, _ = self.self_attn(x, position_ids=position_ids)
@@ -262,7 +270,10 @@ class MoonshineEncoder(nn.Module):
         self.groupnorm = nn.GroupNorm(1, dim)
         self.conv2 = nn.Conv1d(dim, 2 * dim, kernel_size=7, stride=3, bias=True)
         self.conv3 = nn.Conv1d(2 * dim, dim, kernel_size=3, stride=2, bias=True)
-        self.layers = [MoonshineEncoderLayer(config) for _ in range(config.encoder_num_hidden_layers)]
+        self.layers = [
+            MoonshineEncoderLayer(config)
+            for _ in range(config.encoder_num_hidden_layers)
+        ]
         self.layer_norm = nn.LayerNorm(dim, bias=False)
 
     def __call__(self, audio: mx.array) -> mx.array:
@@ -285,7 +296,10 @@ class MoonshineDecoder(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = [MoonshineDecoderLayer(config) for _ in range(config.decoder_num_hidden_layers)]
+        self.layers = [
+            MoonshineDecoderLayer(config)
+            for _ in range(config.decoder_num_hidden_layers)
+        ]
         self.norm = nn.LayerNorm(config.hidden_size, bias=False)
 
     def __call__(
@@ -297,7 +311,9 @@ class MoonshineDecoder(nn.Module):
         x = self.embed_tokens(tokens)
 
         if cache is None:
-            cache = [{"self_attn": None, "cross_attn": None} for _ in range(len(self.layers))]
+            cache = [
+                {"self_attn": None, "cross_attn": None} for _ in range(len(self.layers))
+            ]
 
         new_cache = []
         for i, layer in enumerate(self.layers):
@@ -353,6 +369,7 @@ class Model(nn.Module):
 
         if isinstance(audio, (str, Path)):
             from mlx_audio.stt.utils import load_audio
+
             audio = load_audio(str(audio), sr=self.sample_rate, dtype=dtype)
         elif not isinstance(audio, mx.array):
             audio = mx.array(audio)
@@ -415,10 +432,10 @@ class Model(nn.Module):
             new_key = key
 
             if key.startswith("model.encoder."):
-                new_key = key[len("model."):]
+                new_key = key[len("model.") :]
 
             elif key.startswith("model.decoder."):
-                new_key = key[len("model."):]
+                new_key = key[len("model.") :]
 
             elif key.startswith("proj_out."):
                 if self.config.tie_word_embeddings:
@@ -440,6 +457,7 @@ class Model(nn.Module):
         model_path = Path(model_path)
         try:
             from transformers import AutoTokenizer
+
             model._tokenizer = AutoTokenizer.from_pretrained(str(model_path))
         except Exception:
             pass
@@ -453,4 +471,5 @@ class Model(nn.Module):
             stacklevel=2,
         )
         from mlx_audio.stt.utils import load
+
         return load(path_or_repo)
