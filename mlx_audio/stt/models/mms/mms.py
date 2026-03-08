@@ -22,6 +22,7 @@ class Model(nn.Module):
         self.wav2vec2 = Wav2Vec2Model(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
         self._vocab = None
+        self._processor = None
 
     @property
     def sample_rate(self) -> int:
@@ -47,6 +48,8 @@ class Model(nn.Module):
         return batch_tokens
 
     def _tokens_to_text(self, tokens: List[int]) -> str:
+        if self._processor is not None:
+            return self._processor.decode(tokens)
         if self._vocab is None:
             return " ".join(str(t) for t in tokens)
         return "".join(self._vocab.get(t, "") for t in tokens).replace("|", " ")
@@ -129,5 +132,14 @@ class Model(nn.Module):
         if vocab_path.exists():
             with open(vocab_path) as f:
                 vocab = json.load(f)
-            model._vocab = {v: k for k, v in vocab.items()}
+            if isinstance(next(iter(vocab.values())), dict):
+                lang_vocab = vocab.get("eng", vocab.get("en", next(iter(vocab.values()))))
+                model._vocab = {v: k for k, v in lang_vocab.items()}
+            else:
+                model._vocab = {v: k for k, v in vocab.items()}
+        try:
+            from transformers import AutoProcessor
+            model._processor = AutoProcessor.from_pretrained(str(model_path))
+        except Exception:
+            model._processor = None
         return model
