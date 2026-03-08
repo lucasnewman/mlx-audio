@@ -450,11 +450,6 @@ class Wav2Vec2EncoderLayer(nn.Module):
             config.hidden_size, eps=config.layer_norm_eps
         )
 
-        if getattr(config, "adapter_attn_dim", None) is not None:
-            self.adapter_layer = Wav2Vec2AttnAdapterLayer(config)
-        else:
-            self.adapter_layer = None
-
     def __call__(self, hidden_states, attention_mask=None):
         attn_residual = hidden_states
         hidden_states, _ = self.attention(hidden_states, attention_mask=attention_mask)
@@ -464,9 +459,6 @@ class Wav2Vec2EncoderLayer(nn.Module):
         hidden_states = self.layer_norm(hidden_states)
         hidden_states = hidden_states + self.feed_forward(hidden_states)
         hidden_states = self.final_layer_norm(hidden_states)
-
-        if self.adapter_layer is not None:
-            hidden_states = hidden_states + self.adapter_layer(hidden_states)
 
         outputs = (hidden_states,)
 
