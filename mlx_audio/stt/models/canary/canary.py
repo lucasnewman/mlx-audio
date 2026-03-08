@@ -9,7 +9,7 @@ import mlx.nn as nn
 import numpy as np
 
 from ..base import STTOutput
-from .config import ModelConfig, PreprocessorConfig, EncoderConfig, DecoderConfig
+from .config import DecoderConfig, EncoderConfig, ModelConfig, PreprocessorConfig
 from .decoder import CanaryDecoder
 from .tokenizer import CanaryTokenizer
 
@@ -51,9 +51,7 @@ class CanaryEncoder(nn.Module):
         else:
             self.projection = None
 
-    def __call__(
-        self, mel: mx.array, lengths: mx.array
-    ) -> Tuple[mx.array, mx.array]:
+    def __call__(self, mel: mx.array, lengths: mx.array) -> Tuple[mx.array, mx.array]:
         """Encode mel spectrogram."""
         enc_out, enc_len = self.conformer(mel, lengths)
         if self.projection is not None:
@@ -93,8 +91,8 @@ class Model(nn.Module):
         """
         from mlx_audio.stt.models.parakeet.audio import (
             PreprocessArgs as PPreprocessArgs,
-            log_mel_spectrogram,
         )
+        from mlx_audio.stt.models.parakeet.audio import log_mel_spectrogram
         from mlx_audio.stt.utils import load_audio
 
         pp = self.config.preprocessor
@@ -188,7 +186,9 @@ class Model(nn.Module):
         enc_out, enc_len, enc_mask = self._encode_audio(mel)
 
         if self._tokenizer is None:
-            raise RuntimeError("Tokenizer not loaded. Use post_load_hook or set _tokenizer.")
+            raise RuntimeError(
+                "Tokenizer not loaded. Use post_load_hook or set _tokenizer."
+            )
 
         prompt_tokens = self._tokenizer.build_prompt_tokens(
             source_lang=source_lang,
@@ -222,13 +222,18 @@ class Model(nn.Module):
             for step in range(max_tokens - 1):
                 token_ids = mx.array([[next_token]], dtype=mx.int32)
                 logits, cache = self.decoder(
-                    token_ids, enc_out, encoder_mask=enc_mask, cache=cache,
+                    token_ids,
+                    enc_out,
+                    encoder_mask=enc_mask,
+                    cache=cache,
                     start_pos=len(prompt_tokens) + step,
                 )
                 mx.eval(logits)
 
                 if temperature > 0:
-                    next_token = int(mx.random.categorical(logits[:, -1, :] / temperature))
+                    next_token = int(
+                        mx.random.categorical(logits[:, -1, :] / temperature)
+                    )
                 else:
                     next_token = int(logits[:, -1, :].argmax())
 
@@ -266,28 +271,36 @@ class Model(nn.Module):
 
             # Encoder weights: encoder.* -> encoder.conformer.*
             if key.startswith("encoder.") and not key.startswith("encoder_decoder"):
-                new_key = "encoder.conformer." + key[len("encoder."):]
+                new_key = "encoder.conformer." + key[len("encoder.") :]
 
             elif key.startswith("encoder_decoder_proj."):
                 continue
 
             elif key.startswith("transf_decoder._embedding.token_embedding."):
-                new_key = key.replace("transf_decoder._embedding.token_embedding.", "decoder.embedding.")
+                new_key = key.replace(
+                    "transf_decoder._embedding.token_embedding.", "decoder.embedding."
+                )
 
             elif key.startswith("transf_decoder._embedding.position_embedding."):
-                new_key = key.replace("transf_decoder._embedding.position_embedding.", "decoder.position_embedding.")
+                new_key = key.replace(
+                    "transf_decoder._embedding.position_embedding.",
+                    "decoder.position_embedding.",
+                )
 
             elif key.startswith("transf_decoder._embedding.layer_norm."):
-                new_key = key.replace("transf_decoder._embedding.layer_norm.", "decoder.embedding_layer_norm.")
+                new_key = key.replace(
+                    "transf_decoder._embedding.layer_norm.",
+                    "decoder.embedding_layer_norm.",
+                )
 
             elif key.startswith("transf_decoder._decoder.layers."):
-                rest = key[len("transf_decoder._decoder.layers."):]
+                rest = key[len("transf_decoder._decoder.layers.") :]
                 parts = rest.split(".", 1)
                 layer_idx = parts[0]
                 sub_rest = parts[1]
 
                 if sub_rest.startswith("first_sub_layer."):
-                    inner = sub_rest[len("first_sub_layer."):]
+                    inner = sub_rest[len("first_sub_layer.") :]
                     inner = inner.replace("query_net.", "self_attn.q_proj.")
                     inner = inner.replace("key_net.", "self_attn.k_proj.")
                     inner = inner.replace("value_net.", "self_attn.v_proj.")
@@ -295,7 +308,7 @@ class Model(nn.Module):
                     new_key = f"decoder.blocks.{layer_idx}.{inner}"
 
                 elif sub_rest.startswith("second_sub_layer."):
-                    inner = sub_rest[len("second_sub_layer."):]
+                    inner = sub_rest[len("second_sub_layer.") :]
                     inner = inner.replace("query_net.", "cross_attn.q_proj.")
                     inner = inner.replace("key_net.", "cross_attn.k_proj.")
                     inner = inner.replace("value_net.", "cross_attn.v_proj.")
@@ -303,7 +316,7 @@ class Model(nn.Module):
                     new_key = f"decoder.blocks.{layer_idx}.{inner}"
 
                 elif sub_rest.startswith("third_sub_layer."):
-                    inner = sub_rest[len("third_sub_layer."):]
+                    inner = sub_rest[len("third_sub_layer.") :]
                     inner = inner.replace("dense_in.", "ff1.")
                     inner = inner.replace("dense_out.", "ff2.")
                     new_key = f"decoder.blocks.{layer_idx}.{inner}"
@@ -319,7 +332,9 @@ class Model(nn.Module):
                     new_key = f"decoder.blocks.{layer_idx}.{sub_rest}"
 
             elif key.startswith("transf_decoder._decoder.final_layer_norm."):
-                new_key = key.replace("transf_decoder._decoder.final_layer_norm.", "decoder.final_norm.")
+                new_key = key.replace(
+                    "transf_decoder._decoder.final_layer_norm.", "decoder.final_norm."
+                )
 
             elif key.startswith("log_softmax.mlp.layer0."):
                 new_key = key.replace("log_softmax.mlp.layer0.", "decoder.output_proj.")
@@ -388,4 +403,5 @@ class Model(nn.Module):
             stacklevel=2,
         )
         from mlx_audio.stt.utils import load
+
         return load(path_or_repo)

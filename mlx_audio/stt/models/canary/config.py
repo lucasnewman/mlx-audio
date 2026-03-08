@@ -103,18 +103,44 @@ class ModelConfig:
     encoder: EncoderConfig = None
     transf_decoder: DecoderConfig = None
     vocab_size: int = 16384
-    enc_output_dim: int = 1024  # Decoder hidden dimension (same as encoder d_model for this model)
+    enc_output_dim: int = (
+        1024  # Decoder hidden dimension (same as encoder d_model for this model)
+    )
 
     startofcontext_id: int = 0
     startoftranscript_id: int = 1
     emo_undefined_id: int = 2
     endoftext_id: int = 3
 
-    supported_languages: List[str] = field(default_factory=lambda: [
-        "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de",
-        "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk",
-        "sl", "es", "sv", "ru", "uk",
-    ])
+    supported_languages: List[str] = field(
+        default_factory=lambda: [
+            "bg",
+            "hr",
+            "cs",
+            "da",
+            "nl",
+            "en",
+            "et",
+            "fi",
+            "fr",
+            "de",
+            "el",
+            "hu",
+            "it",
+            "lv",
+            "lt",
+            "mt",
+            "pl",
+            "pt",
+            "ro",
+            "sk",
+            "sl",
+            "es",
+            "sv",
+            "ru",
+            "uk",
+        ]
+    )
 
     def __post_init__(self):
         if self.preprocessor is None:
@@ -148,8 +174,7 @@ class ModelConfig:
             transf_decoder = DecoderConfig.from_dict(transf_decoder)
 
         filtered_params = {
-            k: v for k, v in params.items()
-            if k in inspect.signature(cls).parameters
+            k: v for k, v in params.items() if k in inspect.signature(cls).parameters
         }
 
         return cls(

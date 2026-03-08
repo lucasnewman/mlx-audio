@@ -3,6 +3,7 @@ import unittest
 import mlx.core as mx
 import mlx.nn as nn
 
+from mlx_audio.stt.models.canary.canary import CanaryEncoder, Model
 from mlx_audio.stt.models.canary.config import (
     DecoderConfig,
     EncoderConfig,
@@ -15,7 +16,6 @@ from mlx_audio.stt.models.canary.decoder import (
     MultiHeadSelfAttention,
     TransformerDecoderBlock,
 )
-from mlx_audio.stt.models.canary.canary import CanaryEncoder, Model
 
 
 def _small_encoder_config():
@@ -64,7 +64,9 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config.normalize, "per_feature")
 
     def test_preprocessor_win_hop_length(self):
-        config = PreprocessorConfig(sample_rate=16000, window_size=0.025, window_stride=0.01)
+        config = PreprocessorConfig(
+            sample_rate=16000, window_size=0.025, window_stride=0.01
+        )
         self.assertEqual(config.win_length, 400)
         self.assertEqual(config.hop_length, 160)
 
@@ -75,13 +77,25 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config.d_model, 1024)
 
     def test_decoder_config_from_dict(self):
-        d = {"num_layers": 8, "hidden_size": 1024, "num_attention_heads": 8, "inner_size": 4096}
+        d = {
+            "num_layers": 8,
+            "hidden_size": 1024,
+            "num_attention_heads": 8,
+            "inner_size": 4096,
+        }
         config = DecoderConfig.from_dict(d)
         self.assertEqual(config.num_layers, 8)
         self.assertEqual(config.inner_size, 4096)
 
     def test_decoder_config_from_nested_dict(self):
-        d = {"decoder": {"num_layers": 8, "hidden_size": 1024, "num_attention_heads": 8, "inner_size": 4096}}
+        d = {
+            "decoder": {
+                "num_layers": 8,
+                "hidden_size": 1024,
+                "num_attention_heads": 8,
+                "inner_size": 4096,
+            }
+        }
         config = DecoderConfig.from_dict(d)
         self.assertEqual(config.num_layers, 8)
 
@@ -90,7 +104,12 @@ class TestConfig(unittest.TestCase):
             "model_type": "canary",
             "preprocessor": {"features": 128, "sample_rate": 16000},
             "encoder": {"feat_in": 128, "n_layers": 32, "d_model": 1024, "n_heads": 8},
-            "transf_decoder": {"num_layers": 8, "hidden_size": 1024, "num_attention_heads": 8, "inner_size": 4096},
+            "transf_decoder": {
+                "num_layers": 8,
+                "hidden_size": 1024,
+                "num_attention_heads": 8,
+                "inner_size": 4096,
+            },
             "vocab_size": 16384,
             "enc_output_dim": 1024,
         }
@@ -205,27 +224,43 @@ class TestModelSanitize(unittest.TestCase):
         self.assertIn("encoder.conformer.layers.0.self_attn.linear_q.weight", sanitized)
 
     def test_decoder_embedding_mapping(self):
-        weights = {"transf_decoder._embedding.token_embedding.weight": mx.zeros((64, 32))}
+        weights = {
+            "transf_decoder._embedding.token_embedding.weight": mx.zeros((64, 32))
+        }
         sanitized = self.model.sanitize(weights)
         self.assertIn("decoder.embedding.weight", sanitized)
 
     def test_decoder_position_mapping(self):
-        weights = {"transf_decoder._embedding.position_embedding.pos_enc": mx.zeros((1024, 32))}
+        weights = {
+            "transf_decoder._embedding.position_embedding.pos_enc": mx.zeros((1024, 32))
+        }
         sanitized = self.model.sanitize(weights)
         self.assertIn("decoder.position_embedding.pos_enc", sanitized)
 
     def test_decoder_layer_self_attn_mapping(self):
-        weights = {"transf_decoder._decoder.layers.0.first_sub_layer.query_net.weight": mx.zeros((32, 32))}
+        weights = {
+            "transf_decoder._decoder.layers.0.first_sub_layer.query_net.weight": mx.zeros(
+                (32, 32)
+            )
+        }
         sanitized = self.model.sanitize(weights)
         self.assertIn("decoder.blocks.0.self_attn.q_proj.weight", sanitized)
 
     def test_decoder_layer_cross_attn_mapping(self):
-        weights = {"transf_decoder._decoder.layers.0.second_sub_layer.key_net.weight": mx.zeros((32, 32))}
+        weights = {
+            "transf_decoder._decoder.layers.0.second_sub_layer.key_net.weight": mx.zeros(
+                (32, 32)
+            )
+        }
         sanitized = self.model.sanitize(weights)
         self.assertIn("decoder.blocks.0.cross_attn.k_proj.weight", sanitized)
 
     def test_decoder_layer_ffn_mapping(self):
-        weights = {"transf_decoder._decoder.layers.0.third_sub_layer.dense_in.weight": mx.zeros((64, 32))}
+        weights = {
+            "transf_decoder._decoder.layers.0.third_sub_layer.dense_in.weight": mx.zeros(
+                (64, 32)
+            )
+        }
         sanitized = self.model.sanitize(weights)
         self.assertIn("decoder.blocks.0.ff1.weight", sanitized)
 
@@ -252,14 +287,20 @@ class TestModelSanitize(unittest.TestCase):
 
     def test_skips_dropout_keys(self):
         weights = {
-            "transf_decoder._decoder.layers.0.first_sub_layer.attn_dropout.p": mx.array([0.1]),
-            "transf_decoder._decoder.layers.0.first_sub_layer.layer_dropout.p": mx.array([0.1]),
+            "transf_decoder._decoder.layers.0.first_sub_layer.attn_dropout.p": mx.array(
+                [0.1]
+            ),
+            "transf_decoder._decoder.layers.0.first_sub_layer.layer_dropout.p": mx.array(
+                [0.1]
+            ),
         }
         sanitized = self.model.sanitize(weights)
         self.assertEqual(len(sanitized), 0)
 
     def test_conv1d_transpose(self):
-        weights = {"encoder.layers.0.conv.pointwise_conv1.weight": mx.zeros((64, 32, 1))}
+        weights = {
+            "encoder.layers.0.conv.pointwise_conv1.weight": mx.zeros((64, 32, 1))
+        }
         sanitized = self.model.sanitize(weights)
         key = "encoder.conformer.layers.0.conv.pointwise_conv1.weight"
         self.assertEqual(sanitized[key].shape, (64, 1, 32))

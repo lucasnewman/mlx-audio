@@ -85,7 +85,9 @@ class CanaryTokenizer:
         tokens.append(self.token2id["<|emo:undefined|>"])
         tokens.append(self.token2id[f"<|{source_lang}|>"])
         tokens.append(self.token2id[f"<|{target_lang}|>"])
-        tokens.append(self.token2id["<|pnc|>"] if use_pnc else self.token2id["<|nopnc|>"])
+        tokens.append(
+            self.token2id["<|pnc|>"] if use_pnc else self.token2id["<|nopnc|>"]
+        )
         tokens.append(self.token2id["<|noitn|>"])
         tokens.append(self.token2id["<|notimestamp|>"])
         tokens.append(self.token2id["<|nodiarize|>"])

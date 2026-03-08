@@ -49,9 +49,7 @@ class MultiHeadCrossAttention(nn.Module):
             mask = encoder_mask[:, None, None, :].astype(mx.float32)
             mask = mx.where(mask == 0, -1e9, 0.0)
 
-        o = mx.fast.scaled_dot_product_attention(
-            q, k, v, scale=self.scale, mask=mask
-        )
+        o = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
         o = o.transpose(0, 2, 1, 3).reshape(B, T, -1)
 
         return self.out_proj(o), (k, v)
@@ -92,9 +90,7 @@ class MultiHeadSelfAttention(nn.Module):
             k = mx.concatenate([prev_k, k], axis=2)
             v = mx.concatenate([prev_v, v], axis=2)
 
-        o = mx.fast.scaled_dot_product_attention(
-            q, k, v, scale=self.scale, mask=mask
-        )
+        o = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
         o = o.transpose(0, 2, 1, 3).reshape(B, T, -1)
 
         return self.out_proj(o), (k, v)
@@ -130,7 +126,9 @@ class TransformerDecoderBlock(nn.Module):
     ) -> Tuple[mx.array, Tuple[mx.array, mx.array], Tuple[mx.array, mx.array]]:
         residual = x
         x_norm = self.self_attn_norm(x)
-        x_sa, new_self_cache = self.self_attn(x_norm, mask=self_attn_mask, cache=self_attn_cache)
+        x_sa, new_self_cache = self.self_attn(
+            x_norm, mask=self_attn_mask, cache=self_attn_cache
+        )
         x = residual + x_sa
 
         residual = x
@@ -220,7 +218,9 @@ class CanaryDecoder(nn.Module):
         x = self.embedding_layer_norm(x)
 
         if cache is None:
-            cache = [{"self_attn": None, "cross_attn": None} for _ in range(self.num_layers)]
+            cache = [
+                {"self_attn": None, "cross_attn": None} for _ in range(self.num_layers)
+            ]
 
         if T > 1:
             causal_mask = nn.MultiHeadAttention.create_additive_causal_mask(T)
