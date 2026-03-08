@@ -357,9 +357,7 @@ class TestEcapaTdnnModel(unittest.TestCase):
         actual = classifier(x)
         mx.eval(expected, actual)
 
-        self.assertTrue(
-            mx.allclose(actual, expected, atol=1e-5, rtol=1e-5).item()
-        )
+        self.assertTrue(mx.allclose(actual, expected, atol=1e-5, rtol=1e-5).item())
 
     def test_predict_returns_sorted(self):
         model = self.Model(self.config)
