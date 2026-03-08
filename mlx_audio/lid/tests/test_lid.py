@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 
 
@@ -328,6 +329,35 @@ class TestEcapaTdnnModel(unittest.TestCase):
         mx.eval(probs)
         total = float(mx.sum(probs[0]).item())
         self.assertAlmostEqual(total, 1.0, places=3)
+
+    def test_sentence_mean_normalize_centers_each_mel_bin(self):
+        mel = mx.array([[[1.0, 3.0], [3.0, 5.0], [5.0, 7.0]]])
+        normalized = self.Model.sentence_mean_normalize(mel)
+        mean_per_bin = mx.mean(normalized, axis=1)
+        mx.eval(mean_per_bin)
+
+        self.assertAlmostEqual(float(mean_per_bin[0, 0].item()), 0.0, places=5)
+        self.assertAlmostEqual(float(mean_per_bin[0, 1].item()), 0.0, places=5)
+
+    def test_classifier_matches_speechbrain_order(self):
+        model = self.Model(self.config)
+        model.eval()
+        classifier = model.classifier
+        x = mx.random.normal((1, 1, self.config.embedding_dim))
+
+        expected = mx.squeeze(x, axis=1)
+        expected = nn.leaky_relu(expected, negative_slope=0.01)
+        expected = classifier.norm(expected)
+        expected = classifier.DNN.block_0.linear(expected)
+        expected = nn.leaky_relu(expected, negative_slope=0.01)
+        expected = classifier.DNN.block_0.norm(expected)
+        expected = classifier.out(expected)
+        expected = mx.log(mx.softmax(expected, axis=-1) + 1e-10)
+
+        actual = classifier(x)
+        mx.eval(expected, actual)
+
+        self.assertTrue(mx.allclose(actual, expected, atol=1e-5, rtol=1e-5).item())
 
     def test_predict_returns_sorted(self):
         model = self.Model(self.config)
