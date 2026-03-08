@@ -128,6 +128,18 @@ class Model(nn.Module):
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
         model_path = Path(model_path)
+
+        adapter_path = model_path / "adapter.eng.safetensors"
+        if not adapter_path.exists():
+            adapters = list(model_path.glob("adapter.*.safetensors"))
+            if adapters:
+                adapter_path = adapters[0]
+
+        if adapter_path.exists():
+            adapter_weights = mx.load(str(adapter_path))
+            sanitized = model.sanitize(adapter_weights)
+            model.load_weights(list(sanitized.items()), strict=False)
+
         vocab_path = model_path / "vocab.json"
         if vocab_path.exists():
             with open(vocab_path) as f:
@@ -137,6 +149,7 @@ class Model(nn.Module):
                 model._vocab = {v: k for k, v in lang_vocab.items()}
             else:
                 model._vocab = {v: k for k, v in vocab.items()}
+
         try:
             from transformers import AutoProcessor
             model._processor = AutoProcessor.from_pretrained(str(model_path))
