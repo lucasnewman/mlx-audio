@@ -1,5 +1,4 @@
 import time
-import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -462,14 +461,3 @@ class Model(nn.Module):
         except Exception:
             pass
         return model
-
-    @classmethod
-    def from_pretrained(cls, path_or_repo: str, *, dtype: mx.Dtype = mx.float32):
-        warnings.warn(
-            "Model.from_pretrained() is deprecated. Use mlx_audio.stt.load() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        from mlx_audio.stt.utils import load
-
-        return load(path_or_repo)
