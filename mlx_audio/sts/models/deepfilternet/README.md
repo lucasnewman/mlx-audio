@@ -11,10 +11,10 @@ model = DeepFilterNetModel.from_pretrained()
 model.enhance_file("noisy.wav", "clean.wav")
 ```
 
-Or load a custom/finetuned checkpoint directly (model version auto-detected from `config.json`):
+Or load from a local model directory (must contain `config.json` and weights):
 
 ```python
-model = DeepFilterNetModel.from_pretrained(model_path="./models/MyDeepFilterNet")
+model = DeepFilterNetModel.from_pretrained("./models/MyDeepFilterNet")
 ```
 
 Or load from a Hugging Face repo id:
@@ -35,17 +35,12 @@ out_tail = streamer.flush()
 ## Model Selection
 
 Model architecture is selected from `config.json` (`model_version`).
-For example:
-
-```python
-model = DeepFilterNetModel.from_pretrained(model_path="./models/DeepFilterNet2/model.safetensors")
-```
 
 ## Example Script
 
 ```bash
 python examples/deepfilternet.py examples/denoise/test_audio_10s.wav
-python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --model-path ./models/DeepFilterNet3
+python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --model ./models/DeepFilterNet3
 python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --model iky1e/DeepFilterNet3-MLX
 python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --stream
 ```

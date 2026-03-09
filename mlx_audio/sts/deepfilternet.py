@@ -18,21 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Model name or path. Can be a Hugging Face repo id, local model directory, "
-            "or local config/weights file."
-        ),
-    )
-    parser.add_argument(
-        "--model-dir",
-        default=None,
-        help="Optional local model directory override (legacy alias).",
-    )
-    parser.add_argument(
-        "--model-path",
-        default=None,
-        help=(
-            "Path to DeepFilterNet model directory, config.json, model.safetensors, "
-            "or weights.npz. Version is auto-detected from config.json."
+            "Model name or path. Can be a Hugging Face repo id or local model directory."
         ),
     )
     parser.add_argument(
@@ -73,16 +59,7 @@ def main() -> None:
         else in_path.with_stem(in_path.stem + "_enhanced_mlx")
     )
 
-    if args.model_path and args.model_dir:
-        raise ValueError("Use either --model-path or --model-dir, not both.")
-    if args.model and (args.model_path or args.model_dir):
-        raise ValueError("Use either --model, or --model-path/--model-dir, not both.")
-
-    model = DeepFilterNetModel.from_pretrained(
-        model_name_or_path=args.model,
-        model_path=args.model_path,
-        model_dir=args.model_dir,
-    )
+    model = DeepFilterNetModel.from_pretrained(model_name_or_path=args.model)
     if args.stream:
         sr = model.config.sample_rate
         chunk_samples = max(model.config.hop_size, int(sr * args.chunk_ms / 1000.0))

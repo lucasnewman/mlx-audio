@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 import mlx.core as mx
 import numpy as np
@@ -39,12 +39,16 @@ DEFAULT_CONFIGS = {
 }
 
 
-def resolve_model_dir(model_dir: Optional[Union[str, Path]] = None) -> Path:
-    if model_dir is not None:
-        p = Path(model_dir).expanduser().resolve()
-        if p.exists() and p.is_dir():
-            return p
-        raise FileNotFoundError(f"Model directory not found: {p}")
+def resolve_model_dir(model_name_or_path: Optional[str] = None) -> Path:
+    if model_name_or_path:
+        p = Path(model_name_or_path).expanduser().resolve()
+        if not p.exists():
+            raise FileNotFoundError(f"Model directory not found: {p}")
+        if not p.is_dir():
+            raise ValueError(
+                f"Local model path must be a directory containing config.json and model.safetensors: {p}"
+            )
+        return p
 
     default_dir = Path(DEFAULT_MODEL_DIR)
     if default_dir.exists() and default_dir.is_dir():
@@ -54,30 +58,6 @@ def resolve_model_dir(model_dir: Optional[Union[str, Path]] = None) -> Path:
         "No local default DeepFilterNet model directory found. "
         f"Tried: {DEFAULT_MODEL_DIR}"
     )
-
-
-def resolve_model_artifacts(
-    *,
-    model_path: Optional[Union[str, Path]] = None,
-    model_dir: Optional[Union[str, Path]] = None,
-) -> tuple[Path, Optional[Path]]:
-    if model_path is not None and model_dir is not None:
-        raise ValueError("Provide either model_path or model_dir, not both.")
-
-    if model_path is not None:
-        p = Path(model_path).expanduser().resolve()
-        if not p.exists():
-            raise FileNotFoundError(f"Model path not found: {p}")
-        if p.is_dir():
-            return p, None
-        if p.name in {"config.json", "model.safetensors", "weights.npz"}:
-            return p.parent, p
-        raise ValueError(
-            f"Unsupported model path: {p}. Expected a model directory or one of "
-            "'config.json', 'model.safetensors', or 'weights.npz'."
-        )
-
-    return resolve_model_dir(model_dir=model_dir), None
 
 
 class DeepFilterNetModel:
@@ -115,69 +95,63 @@ class DeepFilterNetModel:
     def from_pretrained(
         cls,
         model_name_or_path: Optional[str] = None,
-        model_path: Optional[Union[str, Path]] = None,
-        model_dir: Optional[Union[str, Path]] = None,
     ) -> "DeepFilterNetModel":
-        # If a model_name_or_path is given, treat it as a local path or HF repo ID.
         if model_name_or_path is not None:
             local = Path(model_name_or_path).expanduser().resolve()
             if local.exists():
-                model_dir = local
-            else:
-                # Treat as HuggingFace repo ID — download config + weights.
-                config_path = hf_hub_download(
-                    repo_id=model_name_or_path, filename="config.json"
-                )
-                weights_path = hf_hub_download(
-                    repo_id=model_name_or_path, filename="model.safetensors"
-                )
+                model_dir_resolved = resolve_model_dir(model_name_or_path)
+                config_path = model_dir_resolved / "config.json"
+                weights_path = model_dir_resolved / "model.safetensors"
+                if not config_path.exists():
+                    raise FileNotFoundError(
+                        f"Missing config.json in model directory: {model_dir_resolved}"
+                    )
+                if not weights_path.exists():
+                    npz_fallback = model_dir_resolved / "weights.npz"
+                    if npz_fallback.exists():
+                        weights_path = npz_fallback
+                    else:
+                        raise FileNotFoundError(
+                            f"Missing model.safetensors/weights.npz in model directory: {model_dir_resolved}"
+                        )
                 return cls._load_from_files(
-                    config_path=Path(config_path),
-                    weights_path=Path(weights_path),
-                    model_dir=Path(config_path).parent,
+                    config_path=config_path,
+                    weights_path=weights_path,
+                    model_dir=model_dir_resolved,
                 )
-
-        explicit_local_target = model_path is not None or model_dir is not None
-        if explicit_local_target:
-            model_dir_resolved, explicit_file = resolve_model_artifacts(
-                model_path=model_path,
-                model_dir=model_dir,
+            # Treat as HuggingFace repo ID.
+            config_path = hf_hub_download(repo_id=model_name_or_path, filename="config.json")
+            weights_path = hf_hub_download(
+                repo_id=model_name_or_path, filename="model.safetensors"
             )
-        else:
-            try:
-                model_dir_resolved, explicit_file = resolve_model_artifacts(
-                    model_path=model_path,
-                    model_dir=model_dir,
-                )
-            except FileNotFoundError:
-                # No explicit local target and no default local model — fall back to HuggingFace.
-                print(f"No local model found, downloading from {DEFAULT_REPO}...")
-                config_path = hf_hub_download(
-                    repo_id=DEFAULT_REPO, filename="config.json"
-                )
-                weights_path = hf_hub_download(
-                    repo_id=DEFAULT_REPO, filename="model.safetensors"
-                )
-                return cls._load_from_files(
-                    config_path=Path(config_path),
-                    weights_path=Path(weights_path),
-                    model_dir=Path(config_path).parent,
-                )
+            return cls._load_from_files(
+                config_path=Path(config_path),
+                weights_path=Path(weights_path),
+                model_dir=Path(config_path).parent,
+            )
 
+        try:
+            model_dir_resolved = resolve_model_dir()
+        except FileNotFoundError:
+            print(f"No local model found, downloading from {DEFAULT_REPO}...")
+            config_path = hf_hub_download(repo_id=DEFAULT_REPO, filename="config.json")
+            weights_path = hf_hub_download(repo_id=DEFAULT_REPO, filename="model.safetensors")
+            return cls._load_from_files(
+                config_path=Path(config_path),
+                weights_path=Path(weights_path),
+                model_dir=Path(config_path).parent,
+            )
         config_path = model_dir_resolved / "config.json"
         if not config_path.exists():
             raise FileNotFoundError(f"Missing config.json in model directory: {model_dir_resolved}")
 
-        if explicit_file is not None and explicit_file.name in {"model.safetensors", "weights.npz"}:
-            weights_path = explicit_file
-        else:
-            weights_path = model_dir_resolved / "model.safetensors"
-            if not weights_path.exists():
-                npz_fallback = model_dir_resolved / "weights.npz"
-                if npz_fallback.exists():
-                    weights_path = npz_fallback
-                else:
-                    raise FileNotFoundError(f"Missing model weights in {model_dir_resolved}")
+        weights_path = model_dir_resolved / "model.safetensors"
+        if not weights_path.exists():
+            npz_fallback = model_dir_resolved / "weights.npz"
+            if npz_fallback.exists():
+                weights_path = npz_fallback
+            else:
+                raise FileNotFoundError(f"Missing model weights in {model_dir_resolved}")
 
         return cls._load_from_files(
             config_path=config_path,

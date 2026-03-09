@@ -91,35 +91,25 @@ class TestDeepFilterNetRuntimeHelpers(unittest.TestCase):
         from mlx_audio.sts.models.deepfilternet.model import resolve_model_dir
 
         with self.assertRaises(FileNotFoundError):
-            resolve_model_dir(model_dir="/definitely/not/a/model/dir")
+            resolve_model_dir("/definitely/not/a/model/dir")
 
-    def test_resolve_model_artifacts_from_dir_and_file(self):
-        from mlx_audio.sts.models.deepfilternet.model import resolve_model_artifacts
+    def test_resolve_model_dir_from_existing_dir(self):
+        from mlx_audio.sts.models.deepfilternet.model import resolve_model_dir
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             model_dir = root / "my_model"
             model_dir.mkdir(parents=True, exist_ok=True)
-            weights = model_dir / "model.safetensors"
-            weights.touch()
+            self.assertEqual(resolve_model_dir(str(model_dir)), model_dir.resolve())
 
-            resolved_dir, resolved_file = resolve_model_artifacts(
-                model_path=str(model_dir),
-            )
-            self.assertEqual(resolved_dir, model_dir.resolve())
-            self.assertIsNone(resolved_file)
+    def test_resolve_model_dir_rejects_file(self):
+        from mlx_audio.sts.models.deepfilternet.model import resolve_model_dir
 
-            resolved_dir, resolved_file = resolve_model_artifacts(
-                model_path=str(weights),
-            )
-            self.assertEqual(resolved_dir, model_dir.resolve())
-            self.assertEqual(resolved_file, weights.resolve())
-
-    def test_resolve_model_artifacts_rejects_conflicting_inputs(self):
-        from mlx_audio.sts.models.deepfilternet.model import resolve_model_artifacts
-
-        with self.assertRaises(ValueError):
-            resolve_model_artifacts(model_path="a", model_dir="b")
+        with tempfile.TemporaryDirectory() as tmp:
+            file_path = Path(tmp) / "model.safetensors"
+            file_path.touch()
+            with self.assertRaises(ValueError):
+                resolve_model_dir(str(file_path))
 
     def test_streamer_rejects_df1_backend(self):
         from mlx_audio.sts.models.deepfilternet.config import DeepFilterNetConfig
