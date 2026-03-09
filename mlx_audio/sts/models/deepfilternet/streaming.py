@@ -48,7 +48,9 @@ class DeepFilterNetStreamer:
                 "True stateful streaming is currently implemented for DeepFilterNet2/3."
             )
         if not isinstance(model.model, DfNet):
-            raise TypeError(f"Unsupported model type for streaming: {type(model.model)}")
+            raise TypeError(
+                f"Unsupported model type for streaming: {type(model.model)}"
+            )
 
         self.net: DfNet = model.model
         self.reset()
@@ -113,7 +115,9 @@ class DeepFilterNetStreamer:
                 out_frames.append(y)
 
         if is_last:
-            pad = np.zeros((self.config.pad_end_frames * self.p.hop_size,), dtype=np.float32)
+            pad = np.zeros(
+                (self.config.pad_end_frames * self.p.hop_size,), dtype=np.float32
+            )
             if pad.size:
                 self._sample_in = np.concatenate([self._sample_in, pad], axis=0)
             while self._sample_in.shape[0] >= self.p.hop_size:
@@ -171,7 +175,9 @@ class DeepFilterNetStreamer:
         p = self.p
         frame_td = np.concatenate([self._analysis_mem, hop_td], axis=0)
         frame_win = frame_td * np.asarray(self.model._vorbis, dtype=np.float32)
-        spec = np.fft.rfft(frame_win, n=p.fft_size).astype(np.complex64) * np.float32(self.model.wnorm)
+        spec = np.fft.rfft(frame_win, n=p.fft_size).astype(np.complex64) * np.float32(
+            self.model.wnorm
+        )
 
         if self._analysis_mem.size:
             split = self._analysis_mem.size - p.hop_size
@@ -183,7 +189,9 @@ class DeepFilterNetStreamer:
     def _synthesis_frame(self, spec_norm: np.ndarray) -> np.ndarray:
         p = self.p
         # Rust realfft inverse is unnormalized. NumPy irfft is normalized, so multiply by N.
-        td = np.fft.irfft(spec_norm, n=p.fft_size).astype(np.float32) * np.float32(p.fft_size)
+        td = np.fft.irfft(spec_norm, n=p.fft_size).astype(np.float32) * np.float32(
+            p.fft_size
+        )
         td *= np.asarray(self.model._vorbis, dtype=np.float32)
 
         out = td[: p.hop_size] + self._synth_mem[: p.hop_size]
@@ -192,12 +200,14 @@ class DeepFilterNetStreamer:
             self._synth_mem[:split] = self._synth_mem[p.hop_size :]
             self._synth_mem[split:] = td[p.hop_size : p.hop_size + p.hop_size]
         else:
-            self._synth_mem[:] = td[p.hop_size:]
+            self._synth_mem[:] = td[p.hop_size :]
         return out
 
     def _features_frame(self, spec: np.ndarray):
         p = self.p
-        mag_sq = np.square(spec.real, dtype=np.float32) + np.square(spec.imag, dtype=np.float32)
+        mag_sq = np.square(spec.real, dtype=np.float32) + np.square(
+            spec.imag, dtype=np.float32
+        )
 
         if self._has_erb_fb:
             erb_e = mag_sq @ self._erb_fb_np
@@ -220,7 +230,9 @@ class DeepFilterNetStreamer:
         mag = np.abs(df).astype(np.float32)
         self._df_state = mag * self._one_minus_alpha + self._df_state * self._alpha
         denom = np.sqrt(self._df_state)
-        feat_df = np.stack([df.real / denom, df.imag / denom], axis=-1).astype(np.float32)
+        feat_df = np.stack([df.real / denom, df.imag / denom], axis=-1).astype(
+            np.float32
+        )
 
         return feat_erb.astype(np.float32), feat_df
 
@@ -233,9 +245,15 @@ class DeepFilterNetStreamer:
         p = self.p
         b = 1
 
-        spec_mx = mx.array(np.stack([spec_t.real, spec_t.imag], axis=-1)[None, None, None, :, :].astype(np.float32))
+        spec_mx = mx.array(
+            np.stack([spec_t.real, spec_t.imag], axis=-1)[
+                None, None, None, :, :
+            ].astype(np.float32)
+        )
         feat_erb_mx = mx.array(feat_erb_t[None, None, None, :].astype(np.float32))
-        feat_df_mx = mx.array(feat_df_t[None, None, :, :].astype(np.float32))  # [B,T,F,2]
+        feat_df_mx = mx.array(
+            feat_df_t[None, None, :, :].astype(np.float32)
+        )  # [B,T,F,2]
         feat_df_mx = mx.transpose(feat_df_mx, (0, 3, 1, 2))  # [B,2,T,F]
 
         self._enc_erb0_hist = self._append_history(self._enc_erb0_hist, feat_erb_mx)
@@ -254,8 +272,13 @@ class DeepFilterNetStreamer:
         emb = mx.transpose(e3, (0, 2, 3, 1)).reshape(b, 1, -1)
         emb = mx.concatenate([emb, cemb], axis=-1) if p.enc_concat else emb + cemb
 
-        emb, self._enc_emb_state = self._squeezed_gru_step(self.net.enc.emb_gru, emb, self._enc_emb_state)
-        lsnr = self.net.enc.lsnr_fc(emb) * self.net.enc.lsnr_scale + self.net.enc.lsnr_offset
+        emb, self._enc_emb_state = self._squeezed_gru_step(
+            self.net.enc.emb_gru, emb, self._enc_emb_state
+        )
+        lsnr = (
+            self.net.enc.lsnr_fc(emb) * self.net.enc.lsnr_scale
+            + self.net.enc.lsnr_offset
+        )
 
         m = self._erb_decoder_step(emb, e3, e2, e1, e0)
         spec_m = self.net.mask(spec_mx, m)
@@ -265,7 +288,9 @@ class DeepFilterNetStreamer:
         df_coefs = mx.transpose(df_coefs, (0, 3, 1, 2, 4))  # [B,O,T,F,2]
 
         spec_e = self._df_assign_step(spec_mx, spec_m, df_coefs, spec_t)
-        spec_e_np = np.array(spec_e[0, 0, 0, :, 0] + 1j * spec_e[0, 0, 0, :, 1], dtype=np.complex64)
+        spec_e_np = np.array(
+            spec_e[0, 0, 0, :, 0] + 1j * spec_e[0, 0, 0, :, 1], dtype=np.complex64
+        )
         return spec_e_np
 
     def _append_history(self, history: mx.array, frame: mx.array) -> mx.array:
@@ -302,10 +327,14 @@ class DeepFilterNetStreamer:
             cur = gru_mod.linear_out(cur)
         return cur, new_state
 
-    def _erb_decoder_step(self, emb: mx.array, e3: mx.array, e2: mx.array, e1: mx.array, e0: mx.array) -> mx.array:
+    def _erb_decoder_step(
+        self, emb: mx.array, e3: mx.array, e2: mx.array, e1: mx.array, e0: mx.array
+    ) -> mx.array:
         b, t = emb.shape[:2]
         f8 = e3.shape[3]
-        emb_d, self._erb_dec_state = self._squeezed_gru_step(self.net.erb_dec.emb_gru, emb, self._erb_dec_state)
+        emb_d, self._erb_dec_state = self._squeezed_gru_step(
+            self.net.erb_dec.emb_gru, emb, self._erb_dec_state
+        )
         emb_d = emb_d.reshape(b, t, f8, -1)
         emb_d = mx.transpose(emb_d, (0, 3, 1, 2))
 
@@ -320,7 +349,9 @@ class DeepFilterNetStreamer:
         return m
 
     def _df_decoder_step(self, emb: mx.array, c0: mx.array) -> mx.array:
-        c, self._df_dec_state = self._squeezed_gru_step(self.net.df_dec.df_gru, emb, self._df_dec_state)
+        c, self._df_dec_state = self._squeezed_gru_step(
+            self.net.df_dec.df_gru, emb, self._df_dec_state
+        )
         if self.net.df_dec.df_skip is not None:
             c = c + self.net.df_dec.df_skip(emb)
 
@@ -329,7 +360,15 @@ class DeepFilterNetStreamer:
         c0p = mx.transpose(c0p, (0, 2, 3, 1))  # [B,1,F,O*2]
 
         c_out = self.net.df_dec.df_out(c)
-        c_out = c_out.reshape(c.shape[0], c.shape[1], self.net.df_dec.df_bins, self.net.df_dec.df_out_ch) + c0p
+        c_out = (
+            c_out.reshape(
+                c.shape[0],
+                c.shape[1],
+                self.net.df_dec.df_bins,
+                self.net.df_dec.df_out_ch,
+            )
+            + c0p
+        )
         return c_out
 
     def _df_assign_step(
@@ -345,7 +384,9 @@ class DeepFilterNetStreamer:
 
         past: List[np.ndarray] = list(self._spec_past)[:-1]
         need_past = max(0, left - len(past))
-        spec_window: List[np.ndarray] = [np.zeros((p.freq_bins,), dtype=np.complex64) for _ in range(need_past)]
+        spec_window: List[np.ndarray] = [
+            np.zeros((p.freq_bins,), dtype=np.complex64) for _ in range(need_past)
+        ]
         if left:
             spec_window.extend(past[-left:])
         spec_window.append(spec_t.astype(np.complex64))
@@ -371,5 +412,9 @@ class DeepFilterNetStreamer:
 
         spec_df = mx.concatenate([low, spec[:, :, :, self.net.nb_df :, :]], axis=3)
         return mx.concatenate(
-            [spec_df[:, :, :, : self.net.nb_df, :], spec_m[:, :, :, self.net.nb_df :, :]], axis=3
+            [
+                spec_df[:, :, :, : self.net.nb_df, :],
+                spec_m[:, :, :, self.net.nb_df :, :],
+            ],
+            axis=3,
         )

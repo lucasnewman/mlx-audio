@@ -4,8 +4,9 @@ Weight loading utilities for DeepFilterNet models.
 Handles conversion between PyTorch and MLX parameter naming conventions.
 """
 
-from typing import Dict, Set, List
 import re
+from typing import Dict, List, Set
+
 import mlx.core as mx
 from mlx.utils import tree_flatten, tree_unflatten
 
@@ -80,7 +81,7 @@ def _sequential_layer_candidates(name: str) -> List[str]:
 
 def get_weight_mapping(pt_names: Set[str], mlx_names: Set[str]) -> Dict[str, str]:
     """Build mapping from PyTorch weight names to MLX names.
-    
+
     Returns:
         Dictionary mapping PyTorch names to MLX names
     """
@@ -115,26 +116,26 @@ def get_weight_mapping(pt_names: Set[str], mlx_names: Set[str]) -> Dict[str, str
             if cand in mlx_names:
                 mapping[pt_name] = cand
                 break
-    
+
     return mapping
 
 
 def set_weight(model, name: str, value: mx.array) -> bool:
     """Set a weight in the model by dot-separated path.
-    
+
     Handles dict-based modules with string keys and integer indices for lists.
-    
+
     Args:
         model: The model object
         name: Dot-separated path (e.g., 'enc.erb_conv0.1.weight')
         value: The weight value
-        
+
     Returns:
         True if successful, False otherwise
     """
-    parts = name.split('.')
+    parts = name.split(".")
     obj = model
-    
+
     try:
         # Navigate to the parent object
         for part in parts[:-1]:
@@ -147,34 +148,38 @@ def set_weight(model, name: str, value: mx.array) -> bool:
             # Try integer index for lists/tuples
             elif part.isdigit():
                 idx = int(part)
-                if hasattr(obj, '__getitem__') and len(obj) > idx:
+                if hasattr(obj, "__getitem__") and len(obj) > idx:
                     obj = obj[idx]
                 else:
                     return False
             # Try string key access
-            elif hasattr(obj, '__getitem__'):
+            elif hasattr(obj, "__getitem__"):
                 try:
                     obj = obj[part]
                 except (KeyError, IndexError, TypeError):
                     return False
             else:
                 return False
-        
+
         # Set the final attribute
         final_part = parts[-1]
-        
+
         # Special handling for GroupedLinearEinsum weight reshaping
         # PyTorch uses groups=8, MLX model uses groups=8
         # Both use weight shape (groups, ws_per_group, hs_per_group)
         # PyTorch: (8, 64, 32), MLX: (8, 64, 32)
         # No reshaping needed if groups match
-        
+
         if hasattr(obj, final_part):
             # MLX nn.GRU uses bhn shape [H] (n-gate only), while PyTorch bias_hh is [3H].
             # Preserve PyTorch behavior by storing r/z bias_hh for later fold into b.
             if final_part == "bhn":
                 current = getattr(obj, final_part)
-                if hasattr(current, "shape") and len(current.shape) == 1 and len(value.shape) == 1:
+                if (
+                    hasattr(current, "shape")
+                    and len(current.shape) == 1
+                    and len(value.shape) == 1
+                ):
                     if current.shape[0] * 3 == value.shape[0]:
                         h = current.shape[0]
                         rz = value[: 2 * h]
@@ -197,23 +202,23 @@ def set_weight(model, name: str, value: mx.array) -> bool:
             return True
         elif final_part.isdigit():
             idx = int(final_part)
-            if hasattr(obj, '__setitem__'):
+            if hasattr(obj, "__setitem__"):
                 obj[idx] = value
                 return True
-        
+
     except (KeyError, AttributeError, TypeError, IndexError):
         pass
-    
+
     return False
 
 
 def load_weights(model, weights: Dict[str, mx.array]) -> int:
     """Load PyTorch weights into MLX model.
-    
+
     Args:
         model: MLX DfNet model
         weights: Dictionary of weights from PyTorch checkpoint
-        
+
     Returns:
         Number of weights loaded
     """
@@ -221,10 +226,10 @@ def load_weights(model, weights: Dict[str, mx.array]) -> int:
     param_tree = tree_flatten(model.parameters())
     mlx_names = {k for k, v in param_tree}
     pt_names = set(weights.keys())
-    
+
     # Build mapping
     mapping = get_weight_mapping(pt_names, mlx_names)
-    
+
     # Load weights
     loaded = 0
     for pt_name, mlx_name in mapping.items():
@@ -234,7 +239,11 @@ def load_weights(model, weights: Dict[str, mx.array]) -> int:
 
     # Finalize GRU bias folding for cases where bias_ih loaded before bias_hh.
     def _finalize_bias_fold(obj):
-        if hasattr(obj, "_pt_bhn_rz") and hasattr(obj, "b") and getattr(obj, "b") is not None:
+        if (
+            hasattr(obj, "_pt_bhn_rz")
+            and hasattr(obj, "b")
+            and getattr(obj, "b") is not None
+        ):
             if not getattr(obj, "_pt_bhn_folded", False):
                 rz = getattr(obj, "_pt_bhn_rz")
                 b = getattr(obj, "b")
@@ -253,23 +262,23 @@ def load_weights(model, weights: Dict[str, mx.array]) -> int:
                 _finalize_bias_fold(v)
 
     _finalize_bias_fold(model)
-    
+
     # Load filterbanks - handle both wrapper and direct model cases
-    if 'erb_fb' in weights:
-        if hasattr(model, 'model') and hasattr(model.model, 'erb_fb'):
-            model.model.erb_fb = weights['erb_fb']
-        elif hasattr(model, 'erb_fb'):
-            model.erb_fb = weights['erb_fb']
-    
-    if 'mask.erb_inv_fb' in weights:
-        if hasattr(model, 'model'):
+    if "erb_fb" in weights:
+        if hasattr(model, "model") and hasattr(model.model, "erb_fb"):
+            model.model.erb_fb = weights["erb_fb"]
+        elif hasattr(model, "erb_fb"):
+            model.erb_fb = weights["erb_fb"]
+
+    if "mask.erb_inv_fb" in weights:
+        if hasattr(model, "model"):
             # DeepFilterNet wrapper
-            if hasattr(model.model, 'erb_inv_fb'):
-                model.model.erb_inv_fb = weights['mask.erb_inv_fb']
-            if hasattr(model.model, 'mask'):
-                model.model.mask.erb_inv_fb = weights['mask.erb_inv_fb']
-        elif hasattr(model, 'mask'):
+            if hasattr(model.model, "erb_inv_fb"):
+                model.model.erb_inv_fb = weights["mask.erb_inv_fb"]
+            if hasattr(model.model, "mask"):
+                model.model.mask.erb_inv_fb = weights["mask.erb_inv_fb"]
+        elif hasattr(model, "mask"):
             # Direct DfNet
-            model.mask.erb_inv_fb = weights['mask.erb_inv_fb']
-    
+            model.mask.erb_inv_fb = weights["mask.erb_inv_fb"]
+
     return loaded

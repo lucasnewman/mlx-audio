@@ -1,8 +1,8 @@
 """Tests for DeepFilterNet STS model."""
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
@@ -117,7 +117,9 @@ class TestDeepFilterNetRuntimeHelpers(unittest.TestCase):
         from mlx_audio.sts.models.deepfilternet.network_df1 import DfNetV1
 
         cfg = DeepFilterNetConfig()
-        runtime = DeepFilterNetModel(model=DfNetV1(cfg), config=cfg, model_dir=Path("."))
+        runtime = DeepFilterNetModel(
+            model=DfNetV1(cfg), config=cfg, model_dir=Path(".")
+        )
         with self.assertRaises(NotImplementedError):
             runtime.create_streamer()
 

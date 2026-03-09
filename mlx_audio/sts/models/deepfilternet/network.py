@@ -7,8 +7,8 @@ Based on the DeepFilterNet architecture by Hendrik Schröter et al.
 https://github.com/Rikorose/DeepFilterNet
 """
 
-from typing import Optional, Tuple, List
 import math
+from typing import List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -30,21 +30,21 @@ class GroupedLinearEinsum(nn.Module):
     def __call__(self, x: mx.array) -> mx.array:
         b, t, _ = x.shape
         x = x.reshape(b, t, self.groups, self.ws)
-        x = mx.einsum('btgi,gih->btgh', x, self.weight)
+        x = mx.einsum("btgi,gih->btgh", x, self.weight)
         return x.reshape(b, t, self.groups * self.hs)
 
 
 class PyTorchGRU(nn.Module):
     """GRU implementation matching PyTorch's behavior exactly.
-    
+
     PyTorch applies bias_hh even when h=None (uses h=zeros internally).
     This implementation matches PyTorch's GRU equations:
-    
+
     r = σ(W_ir @ x + b_ir + W_hr @ h + b_hr)
-    z = σ(W_iz @ x + b_iz + W_hz @ h + b_hz)  
+    z = σ(W_iz @ x + b_iz + W_hz @ h + b_hz)
     n = tanh(W_in @ x + b_in + r ⊙ (W_hn @ h + b_hn))
     h' = (1 - z) ⊙ n + z ⊙ h
-    
+
     Key difference from MLX's GRU: PyTorch applies bias_hh to ALL gates (r, z, n),
     while MLX's default only applies it to the n gate.
     """
@@ -53,16 +53,22 @@ class PyTorchGRU(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         scale = 1.0 / math.sqrt(hidden_size)
-        
+
         # Weights: Wx = weight_ih, Wh = weight_hh (PyTorch naming)
         # Shape: [3*H, input_size] and [3*H, hidden_size]
-        self.Wx = mx.random.uniform(low=-scale, high=scale, shape=(3 * hidden_size, input_size))
-        self.Wh = mx.random.uniform(low=-scale, high=scale, shape=(3 * hidden_size, hidden_size))
-        
+        self.Wx = mx.random.uniform(
+            low=-scale, high=scale, shape=(3 * hidden_size, input_size)
+        )
+        self.Wh = mx.random.uniform(
+            low=-scale, high=scale, shape=(3 * hidden_size, hidden_size)
+        )
+
         if bias:
             # b = bias_ih [3*H], bhn = bias_hh [3*H] - FULL bias for all gates!
             self.b = mx.random.uniform(low=-scale, high=scale, shape=(3 * hidden_size,))
-            self.bhn = mx.random.uniform(low=-scale, high=scale, shape=(3 * hidden_size,))
+            self.bhn = mx.random.uniform(
+                low=-scale, high=scale, shape=(3 * hidden_size,)
+            )
         else:
             self.b = None
             self.bhn = None
@@ -70,48 +76,48 @@ class PyTorchGRU(nn.Module):
     def __call__(self, x: mx.array, hidden: Optional[mx.array] = None) -> mx.array:
         """Forward pass. Input shape: [T, B, H]. Returns [T, B, H]."""
         H = self.hidden_size
-        
+
         # Input projection with bias_ih
         if self.b is not None:
             gates_x = mx.addmm(self.b, x, self.Wx.T)  # [T, B, 3*H]
         else:
             gates_x = x @ self.Wx.T
-        
+
         # Split into [r, z, n] components
-        gates_x_r = gates_x[..., :H]         # [T, B, H]
-        gates_x_z = gates_x[..., H:2*H]     # [T, B, H]
-        gates_x_n = gates_x[..., 2*H:]      # [T, B, H]
-        
+        gates_x_r = gates_x[..., :H]  # [T, B, H]
+        gates_x_z = gates_x[..., H : 2 * H]  # [T, B, H]
+        gates_x_n = gates_x[..., 2 * H :]  # [T, B, H]
+
         # Split bias_hh into [b_hr, b_hz, b_hn]
         if self.bhn is not None:
             bhn_r = self.bhn[:H]
-            bhn_z = self.bhn[H:2*H]
-            bhn_n = self.bhn[2*H:]
+            bhn_z = self.bhn[H : 2 * H]
+            bhn_n = self.bhn[2 * H :]
         else:
             bhn_r = bhn_z = bhn_n = None
-        
+
         all_hidden = []
         h = hidden
-        
+
         for t_idx in range(x.shape[0]):
             # Get input gates for this timestep
             r_x = gates_x_r[t_idx, ...]  # [B, H]
             z_x = gates_x_z[t_idx, ...]  # [B, H]
             n_x = gates_x_n[t_idx, ...]  # [B, H]
-            
+
             if h is not None:
                 # Hidden projection: h @ Wh.T
                 gates_h = h @ self.Wh.T  # [B, 3*H]
-                r_h = gates_h[..., :H]     # [B, H]
-                z_h = gates_h[..., H:2*H]  # [B, H]
-                n_h = gates_h[..., 2*H:]   # [B, H]
-                
+                r_h = gates_h[..., :H]  # [B, H]
+                z_h = gates_h[..., H : 2 * H]  # [B, H]
+                n_h = gates_h[..., 2 * H :]  # [B, H]
+
                 # Add bias_hh to each gate's hidden contribution
                 if bhn_r is not None:
                     r_h = r_h + bhn_r
                     z_h = z_h + bhn_z
                     n_h = n_h + bhn_n
-                
+
                 # Compute gates
                 r = mx.sigmoid(r_x + r_h)
                 z = mx.sigmoid(z_x + z_h)
@@ -128,42 +134,53 @@ class PyTorchGRU(nn.Module):
                     r = mx.sigmoid(r_x)
                     z = mx.sigmoid(z_x)
                     n_h = mx.zeros_like(n_x)
-            
+
             # n gate: n = tanh(n_x + r * n_h)
             n = mx.tanh(n_x + r * n_h)
-            
+
             # New hidden: h' = (1 - z) * n + z * h
             if h is not None:
                 h_new = (1 - z) * n + z * h
             else:
                 h_new = (1 - z) * n
-            
+
             all_hidden.append(h_new)
             h = h_new
-        
-        return mx.stack(all_hidden, axis=0)
 
+        return mx.stack(all_hidden, axis=0)
 
 
 class SqueezedGRU(nn.Module):
     """GRU with input/output projections matching PyTorch SqueezedGRU_S."""
 
-    def __init__(self, input_size: int, hidden_size: int, output_size: Optional[int] = None,
-                 num_layers: int = 1, linear_groups: int = 8):
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        output_size: Optional[int] = None,
+        num_layers: int = 1,
+        linear_groups: int = 8,
+    ):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        
+
         self.linear_in = nn.Sequential(
             GroupedLinearEinsum(input_size, hidden_size, linear_groups),
             nn.ReLU(),
         )
         # Use MLX native GRU kernels (batch-first) for better runtime.
         self.gru_layers = [nn.GRU(hidden_size, hidden_size) for _ in range(num_layers)]
-        self.linear_out = nn.Sequential(
-            GroupedLinearEinsum(hidden_size, output_size or hidden_size, linear_groups),
-            nn.ReLU(),
-        ) if output_size else None
+        self.linear_out = (
+            nn.Sequential(
+                GroupedLinearEinsum(
+                    hidden_size, output_size or hidden_size, linear_groups
+                ),
+                nn.ReLU(),
+            )
+            if output_size
+            else None
+        )
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.linear_in(x)
@@ -186,7 +203,9 @@ class Encoder(nn.Module):
         self._is_v2_style = p.enc_concat
         self.emb_in_dim = p.conv_ch * p.nb_erb // 4
         self.emb_dim = p.emb_hidden_dim
-        self.emb_out_dim = p.emb_hidden_dim if self._is_v2_style else (p.conv_ch * p.nb_erb // 4)
+        self.emb_out_dim = (
+            p.emb_hidden_dim if self._is_v2_style else (p.conv_ch * p.nb_erb // 4)
+        )
         self.enc_concat = p.enc_concat
         self.lsnr_scale = p.lsnr_max - p.lsnr_min
         self.lsnr_offset = p.lsnr_min
@@ -195,27 +214,46 @@ class Encoder(nn.Module):
         # erb_conv0: separable=False (gcd(1,64)=1), indices: 0=pad, 1=conv, 2=bn, 3=relu
         self.erb_conv0 = self._make_conv(1, p.conv_ch, p.conv_kernel_inp, False)
         # erb_conv1/2/3: separable=True, indices: 0=pad, 1=conv, 2=pointwise, 3=bn, 4=relu
-        self.erb_conv1 = self._make_conv(p.conv_ch, p.conv_ch, p.conv_kernel, True, fstride=2)
-        self.erb_conv2 = self._make_conv(p.conv_ch, p.conv_ch, p.conv_kernel, True, fstride=2)
-        self.erb_conv3 = self._make_conv(p.conv_ch, p.conv_ch, p.conv_kernel, True, fstride=1)
-        
+        self.erb_conv1 = self._make_conv(
+            p.conv_ch, p.conv_ch, p.conv_kernel, True, fstride=2
+        )
+        self.erb_conv2 = self._make_conv(
+            p.conv_ch, p.conv_ch, p.conv_kernel, True, fstride=2
+        )
+        self.erb_conv3 = self._make_conv(
+            p.conv_ch, p.conv_ch, p.conv_kernel, True, fstride=1
+        )
+
         # df_conv0: separable=True (gcd(2,64)=2), indices: 0=pad, 1=conv, 2=pointwise, 3=bn, 4=relu
         self.df_conv0 = self._make_conv(2, p.conv_ch, p.conv_kernel_inp, True)
-        self.df_conv1 = self._make_conv(p.conv_ch, p.conv_ch, p.conv_kernel, True, fstride=2)
+        self.df_conv1 = self._make_conv(
+            p.conv_ch, p.conv_ch, p.conv_kernel, True, fstride=2
+        )
 
         # Linear layers
         self.df_fc_emb = nn.Sequential(
-            GroupedLinearEinsum(p.conv_ch * p.nb_df // 2, self.emb_in_dim, p.enc_linear_groups),
+            GroupedLinearEinsum(
+                p.conv_ch * p.nb_df // 2, self.emb_in_dim, p.enc_linear_groups
+            ),
             nn.ReLU(),
         )
-        
+
         emb_gru_in_dim = self.emb_in_dim * 2 if self.enc_concat else self.emb_in_dim
         emb_gru_out_size = None if self._is_v2_style else self.emb_out_dim
-        self.emb_gru = SqueezedGRU(emb_gru_in_dim, self.emb_dim, emb_gru_out_size, 1, p.linear_groups)
-        
+        self.emb_gru = SqueezedGRU(
+            emb_gru_in_dim, self.emb_dim, emb_gru_out_size, 1, p.linear_groups
+        )
+
         self.lsnr_fc = nn.Sequential(nn.Linear(self.emb_out_dim, 1), nn.Sigmoid())
 
-    def _make_conv(self, in_ch: int, out_ch: int, kernel: List[int], separable: bool, fstride: int = 1):
+    def _make_conv(
+        self,
+        in_ch: int,
+        out_ch: int,
+        kernel: List[int],
+        separable: bool,
+        fstride: int = 1,
+    ):
         """Create conv layer dict matching PyTorch Sequential indices."""
         # PyTorch order: calculate groups, then check separable conditions
         groups = math.gcd(in_ch, out_ch) if separable else 1
@@ -223,21 +261,21 @@ class Encoder(nn.Module):
             separable = False
         if max(kernel) == 1:
             separable = False  # No pointwise after 1x1 conv, but keep groups
-        
+
         layer = {}
         # Index 0: padding (no weights)
         # Index 1: conv
-        layer['1'] = ConvBlock(in_ch, out_ch, tuple(kernel), groups, fstride)
-        
+        layer["1"] = ConvBlock(in_ch, out_ch, tuple(kernel), groups, fstride)
+
         if groups > 1:
             # Index 2: pointwise conv
-            layer['2'] = ConvBlock(out_ch, out_ch, (1, 1), 1, 1)
+            layer["2"] = ConvBlock(out_ch, out_ch, (1, 1), 1, 1)
             # Index 3: bn
-            layer['3'] = BatchNorm(out_ch)
+            layer["3"] = BatchNorm(out_ch)
         else:
             # Index 2: bn
-            layer['2'] = BatchNorm(out_ch)
-        
+            layer["2"] = BatchNorm(out_ch)
+
         return layer
 
     def __call__(self, feat_erb: mx.array, feat_spec: mx.array):
@@ -267,17 +305,17 @@ class Encoder(nn.Module):
 
     def _apply_conv(self, layer: dict, x: mx.array) -> mx.array:
         """Apply conv layer from dict."""
-        x = layer['1'](x)  # Main conv
-        
+        x = layer["1"](x)  # Main conv
+
         # Check if separable (has pointwise conv at index '2')
-        if '3' in layer:
+        if "3" in layer:
             # Separable: '2' is pointwise, '3' is BatchNorm
-            x = layer['2'](x)
-            x = layer['3'].norm(x)
+            x = layer["2"](x)
+            x = layer["3"].norm(x)
         else:
             # Non-separable: '2' is BatchNorm
-            x = layer['2'].norm(x)
-        
+            x = layer["2"].norm(x)
+
         return nn.relu(x)
 
 
@@ -287,12 +325,19 @@ class ErbDecoder(nn.Module):
     def __init__(self, config: DeepFilterNetConfig):
         super().__init__()
         p = config
-        self.emb_in_dim = p.emb_hidden_dim if p.enc_concat else (p.conv_ch * p.nb_erb // 4)
+        self.emb_in_dim = (
+            p.emb_hidden_dim if p.enc_concat else (p.conv_ch * p.nb_erb // 4)
+        )
         self.emb_dim = p.emb_hidden_dim
         self.emb_out_dim = p.conv_ch * p.nb_erb // 4
 
-        self.emb_gru = SqueezedGRU(self.emb_in_dim, self.emb_dim, self.emb_out_dim, 
-                                    max(1, p.emb_num_layers - 1), p.linear_groups)
+        self.emb_gru = SqueezedGRU(
+            self.emb_in_dim,
+            self.emb_dim,
+            self.emb_out_dim,
+            max(1, p.emb_num_layers - 1),
+            p.linear_groups,
+        )
 
         # Pathway convs (1x1, no activation)
         self.conv3p = self._make_pathway_conv(p.conv_ch)
@@ -305,39 +350,38 @@ class ErbDecoder(nn.Module):
         self.convt3 = self._make_regular_conv(p.conv_ch, p.convt_kernel)
         self.convt2 = self._make_transpose_conv(p.conv_ch, p.convt_kernel, fstride=2)
         self.convt1 = self._make_transpose_conv(p.conv_ch, p.convt_kernel, fstride=2)
-        
+
         # Output conv
         self.conv0_out = self._make_output_conv(p.conv_ch, p.convt_kernel)
 
     def _make_pathway_conv(self, ch: int):
         """1x1 conv + bn, no activation. Uses depthwise groups for 1x1."""
         groups = ch  # depthwise for 1x1 conv with same in/out channels
-        return {'0': ConvBlock(ch, ch, (1, 1), groups, 1), '1': BatchNorm(ch)}
+        return {"0": ConvBlock(ch, ch, (1, 1), groups, 1), "1": BatchNorm(ch)}
 
     def _make_regular_conv(self, ch: int, kernel: List[int]):
         """Regular decoder conv block."""
         return {
-            '0': ConvBlock(ch, ch, tuple(kernel), ch, 1),
-            '1': ConvBlock(ch, ch, (1, 1), 1, 1),
-            '2': BatchNorm(ch)
+            "0": ConvBlock(ch, ch, tuple(kernel), ch, 1),
+            "1": ConvBlock(ch, ch, (1, 1), 1, 1),
+            "2": BatchNorm(ch),
         }
 
     def _make_transpose_conv(self, ch: int, kernel: List[int], fstride: int = 1):
         """Transposed conv with upsample + conv."""
         return {
-            '0': ConvTransposeBlock(ch, ch, tuple(kernel), ch, fstride),
-            '1': ConvBlock(ch, ch, (1, 1), 1, 1),
-            '2': BatchNorm(ch)
+            "0": ConvTransposeBlock(ch, ch, tuple(kernel), ch, fstride),
+            "1": ConvBlock(ch, ch, (1, 1), 1, 1),
+            "2": BatchNorm(ch),
         }
 
     def _make_output_conv(self, in_ch: int, kernel: List[int]):
         """Output conv with sigmoid activation."""
-        return {
-            '0': ConvBlock(in_ch, 1, kernel, 1, 1),
-            '1': BatchNorm(1)
-        }
+        return {"0": ConvBlock(in_ch, 1, kernel, 1, 1), "1": BatchNorm(1)}
 
-    def __call__(self, emb: mx.array, e3: mx.array, e2: mx.array, e1: mx.array, e0: mx.array):
+    def __call__(
+        self, emb: mx.array, e3: mx.array, e2: mx.array, e1: mx.array, e0: mx.array
+    ):
         b, t = emb.shape[:2]
         f8 = e3.shape[3]
 
@@ -357,19 +401,19 @@ class ErbDecoder(nn.Module):
         return m
 
     def _apply_pathway(self, layer: dict, x: mx.array) -> mx.array:
-        x = layer['0'](x)
-        x = layer['1'].norm(x)
+        x = layer["0"](x)
+        x = layer["1"].norm(x)
         return nn.relu(x)
 
     def _apply_transpose(self, layer: dict, x: mx.array) -> mx.array:
-        x = layer['0'](x)
-        x = layer['1'](x)
-        x = layer['2'].norm(x)
+        x = layer["0"](x)
+        x = layer["1"](x)
+        x = layer["2"].norm(x)
         return x
 
     def _apply_output(self, layer: dict, x: mx.array) -> mx.array:
-        x = layer['0'](x)
-        x = layer['1'].norm(x)
+        x = layer["0"](x)
+        x = layer["1"].norm(x)
         return x
 
 
@@ -379,28 +423,39 @@ class DfDecoder(nn.Module):
     def __init__(self, config: DeepFilterNetConfig):
         super().__init__()
         p = config
-        self.emb_in_dim = p.emb_hidden_dim if p.enc_concat else (p.conv_ch * p.nb_erb // 4)
+        self.emb_in_dim = (
+            p.emb_hidden_dim if p.enc_concat else (p.conv_ch * p.nb_erb // 4)
+        )
         self.emb_dim = p.df_hidden_dim
         self.df_order = p.df_order
         self.df_bins = p.nb_df
         self.df_out_ch = p.df_order * 2
 
         self.df_convp = {
-            '1': ConvBlock(p.conv_ch, self.df_out_ch, (p.df_pathway_kernel_size_t, 1), 
-                          math.gcd(p.conv_ch, self.df_out_ch), 1),
-            '2': ConvBlock(self.df_out_ch, self.df_out_ch, (1, 1), 1, 1),
-            '3': BatchNorm(self.df_out_ch)
+            "1": ConvBlock(
+                p.conv_ch,
+                self.df_out_ch,
+                (p.df_pathway_kernel_size_t, 1),
+                math.gcd(p.conv_ch, self.df_out_ch),
+                1,
+            ),
+            "2": ConvBlock(self.df_out_ch, self.df_out_ch, (1, 1), 1, 1),
+            "3": BatchNorm(self.df_out_ch),
         }
 
         # DeepFilterNet2/3 checkpoints both use 8 groups for df_gru.linear_in.
-        self.df_gru = SqueezedGRU(self.emb_in_dim, self.emb_dim, None, p.df_num_layers, 8)
+        self.df_gru = SqueezedGRU(
+            self.emb_in_dim, self.emb_dim, None, p.df_num_layers, 8
+        )
         self.df_skip = (
             GroupedLinearEinsum(self.emb_in_dim, self.emb_dim, p.linear_groups)
             if p.df_gru_skip == "groupedlinear"
             else None
         )
         self.df_out = nn.Sequential(
-            GroupedLinearEinsum(self.emb_dim, self.df_bins * self.df_out_ch, p.linear_groups),
+            GroupedLinearEinsum(
+                self.emb_dim, self.df_bins * self.df_out_ch, p.linear_groups
+            ),
             nn.Tanh(),
         )
         self.df_fc_a = nn.Sequential(nn.Linear(self.emb_dim, 1), nn.Sigmoid())
@@ -421,9 +476,9 @@ class DfDecoder(nn.Module):
         return c_out
 
     def _apply_convp(self, x: mx.array) -> mx.array:
-        x = self.df_convp['1'](x)
-        x = self.df_convp['2'](x)
-        x = self.df_convp['3'].norm(x)
+        x = self.df_convp["1"](x)
+        x = self.df_convp["2"](x)
+        x = self.df_convp["3"].norm(x)
         return nn.relu(x)
 
 
@@ -455,7 +510,7 @@ class ConvBlock(nn.Module):
         self.in_ch = in_ch
         self.out_ch = out_ch
         self.use_bias = use_bias
-        
+
         # Weight: stored in PyTorch format [out_ch, in_ch // groups, kH, kW]
         # Will be transposed for MLX conv2d which expects [out_ch, kH, kW, in_ch // groups]
         self.weight = mx.zeros((out_ch, in_ch // groups, kernel[0], kernel[1]))
@@ -480,10 +535,20 @@ class ConvBlock(nn.Module):
         if self.time_crop > 0:
             x = x[:, self.time_crop :, :, :]
 
-        x = mx.pad(x, [(0, 0), (self.time_pad[0], self.time_pad[1]), (self.freq_pad, self.freq_pad), (0, 0)])
+        x = mx.pad(
+            x,
+            [
+                (0, 0),
+                (self.time_pad[0], self.time_pad[1]),
+                (self.freq_pad, self.freq_pad),
+                (0, 0),
+            ],
+        )
 
         # Use native grouped conv2d instead of Python per-group loops.
-        x = mx.conv2d(x, self._weight_cache(), stride=(1, self.fstride), groups=self.groups)
+        x = mx.conv2d(
+            x, self._weight_cache(), stride=(1, self.fstride), groups=self.groups
+        )
         if self.bias is not None:
             x = x + self.bias.reshape((1, 1, 1, -1))
 
@@ -494,7 +559,9 @@ class ConvBlock(nn.Module):
 class ConvTransposeBlock(nn.Module):
     """2D transposed convolution block matching PyTorch ConvTranspose2d semantics."""
 
-    def __init__(self, in_ch: int, out_ch: int, kernel: tuple, groups: int, fstride: int):
+    def __init__(
+        self, in_ch: int, out_ch: int, kernel: tuple, groups: int, fstride: int
+    ):
         super().__init__()
         self.kernel = kernel
         self.groups = groups
@@ -530,12 +597,17 @@ class ConvTransposeBlock(nn.Module):
         blocks = []
         grouped = []
         for g in range(self.groups):
-            w_g = self.weight[g * in_pg : (g + 1) * in_pg, :, :, :]  # [I_pg, O_pg, kT, kF]
+            w_g = self.weight[
+                g * in_pg : (g + 1) * in_pg, :, :, :
+            ]  # [I_pg, O_pg, kT, kF]
             w_t = mx.transpose(w_g, (1, 2, 3, 0))  # [O_pg, kT, kF, I_pg]
             grouped.append(w_t)
-            left = mx.zeros((out_pg, w_t.shape[1], w_t.shape[2], g * in_pg), dtype=w_t.dtype)
+            left = mx.zeros(
+                (out_pg, w_t.shape[1], w_t.shape[2], g * in_pg), dtype=w_t.dtype
+            )
             right = mx.zeros(
-                (out_pg, w_t.shape[1], w_t.shape[2], total_in - (g + 1) * in_pg), dtype=w_t.dtype
+                (out_pg, w_t.shape[1], w_t.shape[2], total_in - (g + 1) * in_pg),
+                dtype=w_t.dtype,
             )
             blocks.append(mx.concatenate([left, w_t, right], axis=3))
         self._group_weights = grouped
@@ -618,18 +690,20 @@ class DeepFilterOp(nn.Module):
         self.df_order = df_order
         self.lookahead = lookahead
 
-    def __call__(self, spec: mx.array, coefs: mx.array, alpha: Optional[mx.array] = None) -> mx.array:
+    def __call__(
+        self, spec: mx.array, coefs: mx.array, alpha: Optional[mx.array] = None
+    ) -> mx.array:
         # spec: [B, 1, T, F, 2], coefs: [B, O, T, F_df, 2]
         b, _, t, _, _ = spec.shape
-        
+
         # Padding: (df_order - 1 - lookahead) on left, lookahead on right
         # This matches PyTorch's ConstantPad2d((0, 0, frame_size - 1 - lookahead, lookahead), 0.0)
         pad_left = self.df_order - 1 - self.lookahead
         pad_right = self.lookahead
 
         # Remove channel dimension for processing
-        spec_df = spec[:, 0, :, :self.df_bins, :]  # [B, T, F_df, 2]
-        
+        spec_df = spec[:, 0, :, : self.df_bins, :]  # [B, T, F_df, 2]
+
         # Pad along time dimension: [(0,0), (pad_left, pad_right), (0,0), (0,0)]
         spec_padded = mx.pad(spec_df, [(0, 0), (pad_left, pad_right), (0, 0), (0, 0)])
         # spec_padded shape: [B, T + pad_left + pad_right, F_df, 2]
@@ -647,7 +721,9 @@ class DeepFilterOp(nn.Module):
             out_r = out_r + (sr * cr - si * ci)
             out_i = out_i + (sr * ci + si * cr)
 
-        spec_f = mx.expand_dims(mx.stack([out_r, out_i], axis=-1), axis=1)  # [B, 1, T, F, 2]
+        spec_f = mx.expand_dims(
+            mx.stack([out_r, out_i], axis=-1), axis=1
+        )  # [B, 1, T, F, 2]
 
         # Match libDF assign_df: only replace/blend first df_bins bins; keep others unchanged.
         out = spec
@@ -704,7 +780,7 @@ class DfNet(nn.Module):
 
         feat_erb = self._apply_lookahead(feat_erb, self.conv_lookahead, time_axis=2)
         feat_spec = self._apply_lookahead(feat_spec, self.conv_lookahead, time_axis=2)
-        
+
         e0, e1, e2, e3, emb, c0, lsnr = self.enc(feat_erb, feat_spec)
 
         m = self.erb_dec(emb, e3, e2, e1, e0)
@@ -723,7 +799,8 @@ class DfNet(nn.Module):
         else:
             spec_df = self.df_op(spec, df_coefs)
             spec_e = mx.concatenate(
-                [spec_df[:, :, :, : self.nb_df, :], spec_m[:, :, :, self.nb_df :, :]], axis=3
+                [spec_df[:, :, :, : self.nb_df, :], spec_m[:, :, :, self.nb_df :, :]],
+                axis=3,
             )
 
         return spec_e, m, lsnr, df_coefs

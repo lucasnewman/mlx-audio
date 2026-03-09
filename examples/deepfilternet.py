@@ -3,6 +3,5 @@
 
 from mlx_audio.sts.deepfilternet import main
 
-
 if __name__ == "__main__":
     main()

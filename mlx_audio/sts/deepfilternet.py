@@ -9,7 +9,9 @@ from mlx_audio.sts.models.deepfilternet import DeepFilterNetModel
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Denoise audio with DeepFilterNet (MLX)")
+    parser = argparse.ArgumentParser(
+        description="Denoise audio with DeepFilterNet (MLX)"
+    )
     parser.add_argument("input", help="Input noisy audio file (48 kHz)")
     parser.add_argument("-o", "--output", help="Output denoised audio path")
     parser.add_argument(

@@ -1,8 +1,3 @@
-from .models.mossformer2_se import (
-    MossFormer2SE,
-    MossFormer2SEConfig,
-    MossFormer2SEModel,
-)
 from .models.deepfilternet import (
     DeepFilterNet2Config,
     DeepFilterNet3Config,
@@ -10,6 +5,11 @@ from .models.deepfilternet import (
     DeepFilterNetModel,
     DeepFilterNetStreamer,
     DeepFilterNetStreamingConfig,
+)
+from .models.mossformer2_se import (
+    MossFormer2SE,
+    MossFormer2SEConfig,
+    MossFormer2SEModel,
 )
 from .models.sam_audio import (
     Batch,
@@ -19,6 +19,7 @@ from .models.sam_audio import (
     SeparationResult,
     save_audio,
 )
+
 try:
     from .voice_pipeline import VoicePipeline
 except ImportError:

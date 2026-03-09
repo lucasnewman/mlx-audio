@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import soundfile as sf
 
-
 ROOT = Path("/Users/kylehowells/Developer/Example-Projects/mlx-audio-master-codex")
 PY = ROOT / ".venv" / "bin" / "python"
 DEEPFILTER_CLI = ROOT / ".venv" / "bin" / "deepFilter"
@@ -85,7 +84,10 @@ def main() -> None:
     rows: list[dict] = []
     for name, base in configs:
         for i in range(1, RUNS + 1):
-            out = OUT_DIR / f"{name.lower().replace(' ', '_').replace('/', '_')}_run{i}.wav"
+            out = (
+                OUT_DIR
+                / f"{name.lower().replace(' ', '_').replace('/', '_')}_run{i}.wav"
+            )
             cmd = base.copy()
             out_idx = cmd.index("-o") + 1
             cmd[out_idx] = str(out)
@@ -103,7 +105,9 @@ def main() -> None:
 
     csv_path = OUT_DIR / "benchmark_results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["method", "run", "elapsed_s", "rtf", "output"])
+        w = csv.DictWriter(
+            f, fieldnames=["method", "run", "elapsed_s", "rtf", "output"]
+        )
         w.writeheader()
         w.writerows(rows)
 
@@ -111,8 +115,12 @@ def main() -> None:
     json_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
 
     methods = sorted({r["method"] for r in rows})
-    means_elapsed = [np.mean([r["elapsed_s"] for r in rows if r["method"] == m]) for m in methods]
-    std_elapsed = [np.std([r["elapsed_s"] for r in rows if r["method"] == m]) for m in methods]
+    means_elapsed = [
+        np.mean([r["elapsed_s"] for r in rows if r["method"] == m]) for m in methods
+    ]
+    std_elapsed = [
+        np.std([r["elapsed_s"] for r in rows if r["method"] == m]) for m in methods
+    ]
     means_rtf = [np.mean([r["rtf"] for r in rows if r["method"] == m]) for m in methods]
     std_rtf = [np.std([r["rtf"] for r in rows if r["method"] == m]) for m in methods]
 

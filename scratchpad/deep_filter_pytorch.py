@@ -7,12 +7,12 @@ Usage:
 """
 
 import argparse
-import soundfile as sf
-import numpy as np
 from pathlib import Path
 from typing import Optional
 
-from df.enhance import init_df, df_features
+import numpy as np
+import soundfile as sf
+from df.enhance import df_features, init_df
 from df.utils import as_complex
 
 
@@ -30,7 +30,9 @@ def _enhance_array_offline(model, df_state, audio: np.ndarray) -> np.ndarray:
     from df.model import ModelParams
 
     p = ModelParams()
-    spec, erb_feat, spec_feat = df_features(audio_padded, df_state, p.nb_df, device="cpu")
+    spec, erb_feat, spec_feat = df_features(
+        audio_padded, df_state, p.nb_df, device="cpu"
+    )
 
     with torch.no_grad():
         if hasattr(model, "reset_h0"):
@@ -143,11 +145,17 @@ def denoise(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Denoise audio with DeepFilterNet (PyTorch)")
+    parser = argparse.ArgumentParser(
+        description="Denoise audio with DeepFilterNet (PyTorch)"
+    )
     parser.add_argument("input", help="Input audio file")
-    parser.add_argument("-o", "--output", help="Output audio file (default: input_enhanced.wav)")
+    parser.add_argument(
+        "-o", "--output", help="Output audio file (default: input_enhanced.wav)"
+    )
     parser.add_argument("-m", "--model", help="Path to DeepFilterNet model (optional)")
-    parser.add_argument("--stream", action="store_true", help="Run streaming-reference mode")
+    parser.add_argument(
+        "--stream", action="store_true", help="Run streaming-reference mode"
+    )
     parser.add_argument(
         "--chunk-ms",
         type=float,
@@ -161,16 +169,16 @@ def main():
         help="Stable tail holdback for --stream mode in milliseconds (default: auto)",
     )
     args = parser.parse_args()
-    
+
     input_path = Path(args.input)
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
-    
+
     if args.output:
         output_path = args.output
     else:
         output_path = str(input_path.with_stem(input_path.stem + "_enhanced"))
-    
+
     denoise(
         str(input_path),
         output_path,

@@ -120,7 +120,9 @@ class DeepFilterNetModel:
                     model_dir=model_dir_resolved,
                 )
             # Treat as HuggingFace repo ID.
-            config_path = hf_hub_download(repo_id=model_name_or_path, filename="config.json")
+            config_path = hf_hub_download(
+                repo_id=model_name_or_path, filename="config.json"
+            )
             weights_path = hf_hub_download(
                 repo_id=model_name_or_path, filename="model.safetensors"
             )
@@ -135,7 +137,9 @@ class DeepFilterNetModel:
         except FileNotFoundError:
             print(f"No local model found, downloading from {DEFAULT_REPO}...")
             config_path = hf_hub_download(repo_id=DEFAULT_REPO, filename="config.json")
-            weights_path = hf_hub_download(repo_id=DEFAULT_REPO, filename="model.safetensors")
+            weights_path = hf_hub_download(
+                repo_id=DEFAULT_REPO, filename="model.safetensors"
+            )
             return cls._load_from_files(
                 config_path=Path(config_path),
                 weights_path=Path(weights_path),
@@ -143,7 +147,9 @@ class DeepFilterNetModel:
             )
         config_path = model_dir_resolved / "config.json"
         if not config_path.exists():
-            raise FileNotFoundError(f"Missing config.json in model directory: {model_dir_resolved}")
+            raise FileNotFoundError(
+                f"Missing config.json in model directory: {model_dir_resolved}"
+            )
 
         weights_path = model_dir_resolved / "model.safetensors"
         if not weights_path.exists():
@@ -151,7 +157,9 @@ class DeepFilterNetModel:
             if npz_fallback.exists():
                 weights_path = npz_fallback
             else:
-                raise FileNotFoundError(f"Missing model weights in {model_dir_resolved}")
+                raise FileNotFoundError(
+                    f"Missing model weights in {model_dir_resolved}"
+                )
 
         return cls._load_from_files(
             config_path=config_path,
@@ -206,7 +214,9 @@ class DeepFilterNetModel:
             model_version=model_version,
         )
 
-    def enhance_file(self, input_path: Union[str, Path], output_path: Union[str, Path]) -> Path:
+    def enhance_file(
+        self, input_path: Union[str, Path], output_path: Union[str, Path]
+    ) -> Path:
         input_path = Path(input_path)
         output_path = Path(output_path)
 
@@ -261,7 +271,9 @@ class DeepFilterNetModel:
 
         outs = []
         for start in range(0, x.shape[0], chunk_samples):
-            out = streamer.process_chunk(x[start : start + chunk_samples], is_last=False)
+            out = streamer.process_chunk(
+                x[start : start + chunk_samples], is_last=False
+            )
             if out.size > 0:
                 outs.append(out)
         tail = streamer.flush()
@@ -327,7 +339,7 @@ class DeepFilterNetModel:
         alpha = self._norm_alpha()
 
         # ERB features
-        spec_mag_sq = (mx.real(spec) ** 2 + mx.imag(spec) ** 2)  # [T, F]
+        spec_mag_sq = mx.real(spec) ** 2 + mx.imag(spec) ** 2  # [T, F]
         erb = self._erb(spec_mag_sq)  # [T, E]
         # Match libDF exactly: 10*log10(erb + 1e-10), not clamp-based log.
         erb_db = 10.0 * mx.log10(erb + 1e-10)
@@ -337,7 +349,9 @@ class DeepFilterNetModel:
         # DF complex features
         df_spec = spec[:, : p.nb_df]  # [T, D]
         df_re, df_im = self._band_unit_norm(df_spec, alpha, p.nb_df)
-        feat_df = mx.stack([df_re, df_im], axis=-1)[None, None, :, :, :]  # [B, 1, T, D, 2]
+        feat_df = mx.stack([df_re, df_im], axis=-1)[
+            None, None, :, :, :
+        ]  # [B, 1, T, D, 2]
 
         spec_in = mx.stack([mx.real(spec), mx.imag(spec)], axis=-1)[None, None, :, :, :]
 

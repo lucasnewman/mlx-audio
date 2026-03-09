@@ -15,7 +15,9 @@ from .network import BatchNorm, ConvBlock, ConvTransposeBlock, DeepFilterOp, Mas
 class GroupedLinear(nn.Module):
     """Grouped linear layer matching df.modules.GroupedLinear."""
 
-    def __init__(self, input_size: int, hidden_size: int, groups: int = 1, shuffle: bool = True):
+    def __init__(
+        self, input_size: int, hidden_size: int, groups: int = 1, shuffle: bool = True
+    ):
         super().__init__()
         assert input_size % groups == 0
         assert hidden_size % groups == 0
@@ -23,7 +25,9 @@ class GroupedLinear(nn.Module):
         self.input_size = input_size // groups
         self.hidden_size = hidden_size // groups
         self.shuffle = shuffle if groups > 1 else False
-        self.layers = [nn.Linear(self.input_size, self.hidden_size) for _ in range(groups)]
+        self.layers = [
+            nn.Linear(self.input_size, self.hidden_size) for _ in range(groups)
+        ]
 
     def __call__(self, x: mx.array) -> mx.array:
         ys = []
@@ -53,7 +57,9 @@ class PyTorchGRUCell(nn.Module):
             self.bias_ih_l0 = None
             self.bias_hh_l0 = None
 
-    def __call__(self, x: mx.array, h: Optional[mx.array] = None) -> Tuple[mx.array, mx.array]:
+    def __call__(
+        self, x: mx.array, h: Optional[mx.array] = None
+    ) -> Tuple[mx.array, mx.array]:
         # x: [T, B, I], h: [B, H]
         h_t = h
         if h_t is None:
@@ -99,9 +105,13 @@ class GroupedGRULayer(nn.Module):
         self.batch_first = batch_first
         self.input_size = input_size // groups
         self.hidden_size = hidden_size // groups
-        self.layers = [PyTorchGRUCell(self.input_size, self.hidden_size) for _ in range(groups)]
+        self.layers = [
+            PyTorchGRUCell(self.input_size, self.hidden_size) for _ in range(groups)
+        ]
 
-    def __call__(self, x: mx.array, h0: Optional[mx.array] = None) -> Tuple[mx.array, mx.array]:
+    def __call__(
+        self, x: mx.array, h0: Optional[mx.array] = None
+    ) -> Tuple[mx.array, mx.array]:
         # x: [B, T, I] if batch_first else [T, B, I]
         if self.batch_first:
             x_tbi = mx.transpose(x, (1, 0, 2))
@@ -162,11 +172,15 @@ class GroupedGRU(nn.Module):
             for i in range(num_layers)
         ]
 
-    def __call__(self, x: mx.array, state: Optional[mx.array] = None) -> Tuple[mx.array, mx.array]:
+    def __call__(
+        self, x: mx.array, state: Optional[mx.array] = None
+    ) -> Tuple[mx.array, mx.array]:
         dim0, dim1, _ = x.shape
         b = dim0 if self.batch_first else dim1
         if state is None:
-            state = mx.zeros((self.num_layers * self.groups, b, self.hidden_size), dtype=x.dtype)
+            state = mx.zeros(
+                (self.num_layers * self.groups, b, self.hidden_size), dtype=x.dtype
+            )
 
         out = mx.zeros((dim0, dim1, self.hidden_size * self.groups), dtype=x.dtype)
         outstates = []
@@ -177,7 +191,9 @@ class GroupedGRU(nn.Module):
             outstates.append(s)
             if self.shuffle and i < self.num_layers - 1:
                 cur = cur.reshape(cur.shape[0], cur.shape[1], -1, self.groups)
-                cur = mx.transpose(cur, (0, 1, 3, 2)).reshape(cur.shape[0], cur.shape[1], -1)
+                cur = mx.transpose(cur, (0, 1, 3, 2)).reshape(
+                    cur.shape[0], cur.shape[1], -1
+                )
             out = out + cur if self.add_outputs else cur
 
         return out, mx.concatenate(outstates, axis=0)
@@ -259,18 +275,66 @@ class EncoderV1(nn.Module):
         k0 = 1 if k == 1 and p.conv_lookahead == 0 else max(2, k)
 
         cl = 1 if p.conv_lookahead > 0 else 0
-        self.erb_conv0 = ConvKxF(1, layer_width, k=k0, fstride=1, lookahead=cl, batch_norm=True, depthwise=p.conv_depthwise)
+        self.erb_conv0 = ConvKxF(
+            1,
+            layer_width,
+            k=k0,
+            fstride=1,
+            lookahead=cl,
+            batch_norm=True,
+            depthwise=p.conv_depthwise,
+        )
         cl = 1 if p.conv_lookahead > 1 else 0
-        self.erb_conv1 = ConvKxF(layer_width * wf**0, layer_width * wf**1, k=k, lookahead=cl, batch_norm=True, depthwise=p.conv_depthwise)
+        self.erb_conv1 = ConvKxF(
+            layer_width * wf**0,
+            layer_width * wf**1,
+            k=k,
+            lookahead=cl,
+            batch_norm=True,
+            depthwise=p.conv_depthwise,
+        )
         cl = 1 if p.conv_lookahead > 2 else 0
-        self.erb_conv2 = ConvKxF(layer_width * wf**1, layer_width * wf**2, k=k, lookahead=cl, batch_norm=True, depthwise=p.conv_depthwise)
-        self.erb_conv3 = ConvKxF(layer_width * wf**2, layer_width * wf**2, k=k, fstride=1, batch_norm=True, depthwise=p.conv_depthwise)
+        self.erb_conv2 = ConvKxF(
+            layer_width * wf**1,
+            layer_width * wf**2,
+            k=k,
+            lookahead=cl,
+            batch_norm=True,
+            depthwise=p.conv_depthwise,
+        )
+        self.erb_conv3 = ConvKxF(
+            layer_width * wf**2,
+            layer_width * wf**2,
+            k=k,
+            fstride=1,
+            batch_norm=True,
+            depthwise=p.conv_depthwise,
+        )
 
-        self.clc_conv0 = ConvKxF(2, layer_width, k=k0, fstride=1, lookahead=p.conv_lookahead, batch_norm=True, depthwise=p.conv_depthwise)
-        self.clc_conv1 = ConvKxF(layer_width, layer_width * wf**1, k=k, batch_norm=True, depthwise=p.conv_depthwise)
+        self.clc_conv0 = ConvKxF(
+            2,
+            layer_width,
+            k=k0,
+            fstride=1,
+            lookahead=p.conv_lookahead,
+            batch_norm=True,
+            depthwise=p.conv_depthwise,
+        )
+        self.clc_conv1 = ConvKxF(
+            layer_width,
+            layer_width * wf**1,
+            k=k,
+            batch_norm=True,
+            depthwise=p.conv_depthwise,
+        )
 
         self.emb_dim = layer_width * p.nb_erb // 4 * wf**2
-        self.clc_fc_emb = GroupedLinear(layer_width * p.nb_df // 2, self.emb_dim, groups=p.linear_groups, shuffle=p.group_shuffle)
+        self.clc_fc_emb = GroupedLinear(
+            layer_width * p.nb_df // 2,
+            self.emb_dim,
+            groups=p.linear_groups,
+            shuffle=p.group_shuffle,
+        )
 
         self.emb_gru = GroupedGRU(
             self.emb_dim,
@@ -319,12 +383,19 @@ class ErbDecoderV1(nn.Module):
         self.emb_width = layer_width * wf**2
         self.emb_dim = self.emb_width * (p.nb_erb // 4)
         self.fc_emb = nn.Sequential(
-            GroupedLinear(p.emb_hidden_dim, self.emb_dim, groups=p.linear_groups, shuffle=p.group_shuffle),
+            GroupedLinear(
+                p.emb_hidden_dim,
+                self.emb_dim,
+                groups=p.linear_groups,
+                shuffle=p.group_shuffle,
+            ),
             nn.ReLU(),
         )
 
         k = p.conv_k_dec
-        self.conv3p = ConvKxF(layer_width * wf**2, self.emb_width, k=1, f=1, fstride=1, batch_norm=True)
+        self.conv3p = ConvKxF(
+            layer_width * wf**2, self.emb_width, k=1, f=1, fstride=1, batch_norm=True
+        )
         self.convt3 = ConvKxF(
             self.emb_width,
             layer_width * wf**2,
@@ -333,14 +404,48 @@ class ErbDecoderV1(nn.Module):
             batch_norm=True,
             depthwise=p.conv_depthwise,
         )
-        self.conv2p = ConvKxF(layer_width * wf**2, layer_width * wf**2, k=1, f=1, fstride=1, batch_norm=True)
-        self.convt2 = ConvKxF(layer_width * wf**2, layer_width * wf**1, k=k, batch_norm=True, depthwise=p.convt_depthwise, mode=p.conv_dec_mode)
-        self.conv1p = ConvKxF(layer_width * wf**1, layer_width * wf**1, k=1, f=1, fstride=1, batch_norm=True)
-        self.convt1 = ConvKxF(layer_width * wf**1, layer_width * wf**0, k=k, batch_norm=True, depthwise=p.convt_depthwise, mode=p.conv_dec_mode)
-        self.conv0p = ConvKxF(layer_width, layer_width, k=1, f=1, fstride=1, batch_norm=True)
-        self.conv0_out = ConvKxF(layer_width, 1, k=k, fstride=1, batch_norm=False, act="sigmoid")
+        self.conv2p = ConvKxF(
+            layer_width * wf**2,
+            layer_width * wf**2,
+            k=1,
+            f=1,
+            fstride=1,
+            batch_norm=True,
+        )
+        self.convt2 = ConvKxF(
+            layer_width * wf**2,
+            layer_width * wf**1,
+            k=k,
+            batch_norm=True,
+            depthwise=p.convt_depthwise,
+            mode=p.conv_dec_mode,
+        )
+        self.conv1p = ConvKxF(
+            layer_width * wf**1,
+            layer_width * wf**1,
+            k=1,
+            f=1,
+            fstride=1,
+            batch_norm=True,
+        )
+        self.convt1 = ConvKxF(
+            layer_width * wf**1,
+            layer_width * wf**0,
+            k=k,
+            batch_norm=True,
+            depthwise=p.convt_depthwise,
+            mode=p.conv_dec_mode,
+        )
+        self.conv0p = ConvKxF(
+            layer_width, layer_width, k=1, f=1, fstride=1, batch_norm=True
+        )
+        self.conv0_out = ConvKxF(
+            layer_width, 1, k=k, fstride=1, batch_norm=False, act="sigmoid"
+        )
 
-    def __call__(self, emb: mx.array, e3: mx.array, e2: mx.array, e1: mx.array, e0: mx.array) -> mx.array:
+    def __call__(
+        self, emb: mx.array, e3: mx.array, e2: mx.array, e1: mx.array, e0: mx.array
+    ) -> mx.array:
         b, _, t, f8 = e3.shape
         emb = self.fc_emb(emb)
         emb = emb.reshape(b, t, -1, f8)
@@ -390,7 +495,9 @@ class DfDecoderV1(nn.Module):
             shuffle=p.group_shuffle,
             add_outputs=True,
         )
-        self.clc_fc_out = nn.Sequential(nn.Linear(p.df_hidden_dim, self.df_bins * self.df_order * 2), nn.Tanh())
+        self.clc_fc_out = nn.Sequential(
+            nn.Linear(p.df_hidden_dim, self.df_bins * self.df_order * 2), nn.Tanh()
+        )
         self.clc_fc_a = nn.Sequential(nn.Linear(p.df_hidden_dim, 1), nn.Sigmoid())
 
     def __call__(self, emb: mx.array, c0: mx.array):
@@ -434,8 +541,12 @@ class DfNetV1(nn.Module):
         df_coefs_bt = self.clc_dec(emb, c0)
         df_coefs, df_alpha = df_coefs_bt
         df_coefs = mx.transpose(df_coefs, (0, 2, 1, 3, 4))  # [B, O, T, F, 2]
-        df_coefs = self._align_time(df_coefs, spec.shape[2], fill_value=0.0, time_axis=2)
-        df_alpha = self._align_time(df_alpha, spec.shape[2], fill_value=0.0, time_axis=1)
+        df_coefs = self._align_time(
+            df_coefs, spec.shape[2], fill_value=0.0, time_axis=2
+        )
+        df_alpha = self._align_time(
+            df_alpha, spec.shape[2], fill_value=0.0, time_axis=1
+        )
         spec_e = self.df_op(spec_m, df_coefs, alpha=df_alpha)
 
         return spec_e, m, lsnr, df_coefs

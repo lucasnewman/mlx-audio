@@ -68,7 +68,9 @@ class DeepFilterNetConfig:
     # Deep filtering dimensions
     df_hidden_dim: int = 256
     df_num_layers: int = 3
-    df_pathway_kernel_size_t: int = 5  # Kernel size for DF pathway convolution in time dimension
+    df_pathway_kernel_size_t: int = (
+        5  # Kernel size for DF pathway convolution in time dimension
+    )
 
     # Skip connections
     emb_gru_skip: str = "none"
@@ -105,7 +107,9 @@ class DeepFilterNetConfig:
     @classmethod
     def from_dict(cls, config_dict: dict) -> "DeepFilterNetConfig":
         """Create config from dictionary."""
-        known_fields = {k: v for k, v in config_dict.items() if k in cls.__dataclass_fields__}
+        known_fields = {
+            k: v for k, v in config_dict.items() if k in cls.__dataclass_fields__
+        }
         return cls(**known_fields)
 
     def to_dict(self) -> dict:
