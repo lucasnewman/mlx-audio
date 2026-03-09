@@ -72,11 +72,19 @@ class DeepFilterNetStreamer:
         self._spec_q: Deque[np.ndarray] = deque()
         self._frame_count = 0
 
-        # Model temporal buffers (causal context).
-        self._enc_erb0_in: Deque[mx.array] = deque(maxlen=3)
-        self._enc_df0_in: Deque[mx.array] = deque(maxlen=3)
-        self._df_convp_in: Deque[mx.array] = deque(maxlen=self.p.df_pathway_kernel_size_t)
+        # Model temporal buffers (causal context) as fixed-size rolling tensors.
+        self._enc_erb0_hist = mx.zeros((1, 1, 3, p.nb_erb), dtype=mx.float32)
+        self._enc_df0_hist = mx.zeros((1, 2, 3, p.nb_df), dtype=mx.float32)
+        self._df_convp_hist = mx.zeros(
+            (1, p.conv_ch, self.p.df_pathway_kernel_size_t, p.nb_df), dtype=mx.float32
+        )
         self._spec_past: Deque[np.ndarray] = deque(maxlen=max(1, self.p.df_order))
+        self._erb_fb_np = np.asarray(self.model.erb_fb, dtype=np.float32)
+        self._has_erb_fb = (
+            self._erb_fb_np.ndim == 2
+            and self._erb_fb_np.shape[0] == self.p.freq_bins
+            and self._erb_fb_np.shape[1] == self.p.nb_erb
+        )
 
         # GRU hidden states for streaming.
         self._enc_emb_state: Optional[List[mx.array]] = None
@@ -191,9 +199,11 @@ class DeepFilterNetStreamer:
         p = self.p
         mag_sq = np.square(spec.real, dtype=np.float32) + np.square(spec.imag, dtype=np.float32)
 
-        if self.model.erb_widths is None:
-            erb_e = mag_sq @ np.asarray(self.model.erb_fb, dtype=np.float32)
+        if self._has_erb_fb:
+            erb_e = mag_sq @ self._erb_fb_np
         else:
+            if self.model.erb_widths is None:
+                raise ValueError("Missing both ERB filterbank and ERB band widths.")
             bands = []
             start = 0
             for w in self.model.erb_widths:
@@ -228,16 +238,16 @@ class DeepFilterNetStreamer:
         feat_df_mx = mx.array(feat_df_t[None, None, :, :].astype(np.float32))  # [B,T,F,2]
         feat_df_mx = mx.transpose(feat_df_mx, (0, 3, 1, 2))  # [B,2,T,F]
 
-        self._enc_erb0_in.append(feat_erb_mx)
-        self._enc_df0_in.append(feat_df_mx)
+        self._enc_erb0_hist = self._append_history(self._enc_erb0_hist, feat_erb_mx)
+        self._enc_df0_hist = self._append_history(self._enc_df0_hist, feat_df_mx)
 
-        e0 = self._apply_conv_last(self.net.enc.erb_conv0, list(self._enc_erb0_in))
-        e1 = self._apply_conv_last(self.net.enc.erb_conv1, [e0])
-        e2 = self._apply_conv_last(self.net.enc.erb_conv2, [e1])
-        e3 = self._apply_conv_last(self.net.enc.erb_conv3, [e2])
+        e0 = self._apply_conv_last(self.net.enc.erb_conv0, self._enc_erb0_hist)
+        e1 = self._apply_conv_last(self.net.enc.erb_conv1, e0)
+        e2 = self._apply_conv_last(self.net.enc.erb_conv2, e1)
+        e3 = self._apply_conv_last(self.net.enc.erb_conv3, e2)
 
-        c0 = self._apply_conv_last(self.net.enc.df_conv0, list(self._enc_df0_in))
-        c1 = self._apply_conv_last(self.net.enc.df_conv1, [c0])
+        c0 = self._apply_conv_last(self.net.enc.df_conv0, self._enc_df0_hist)
+        c1 = self._apply_conv_last(self.net.enc.df_conv1, c0)
 
         cemb = mx.transpose(c1, (0, 2, 3, 1)).reshape(b, 1, -1)
         cemb = self.net.enc.df_fc_emb(cemb)
@@ -258,8 +268,10 @@ class DeepFilterNetStreamer:
         spec_e_np = np.array(spec_e[0, 0, 0, :, 0] + 1j * spec_e[0, 0, 0, :, 1], dtype=np.complex64)
         return spec_e_np
 
-    def _apply_conv_last(self, layer: dict, xs: List[mx.array]) -> mx.array:
-        x = mx.concatenate(xs, axis=2)
+    def _append_history(self, history: mx.array, frame: mx.array) -> mx.array:
+        return mx.concatenate([history[:, :, 1:, :], frame], axis=2)
+
+    def _apply_conv_last(self, layer: dict, x: mx.array) -> mx.array:
         x = layer["1"](x)
         if "3" in layer:
             x = layer["2"](x)
@@ -312,9 +324,8 @@ class DeepFilterNetStreamer:
         if self.net.df_dec.df_skip is not None:
             c = c + self.net.df_dec.df_skip(emb)
 
-        self._df_convp_in.append(c0)
-        c0_seq = mx.concatenate(list(self._df_convp_in), axis=2)
-        c0p = self.net.df_dec._apply_convp(c0_seq)[:, :, -1:, :]
+        self._df_convp_hist = self._append_history(self._df_convp_hist, c0)
+        c0p = self.net.df_dec._apply_convp(self._df_convp_hist)[:, :, -1:, :]
         c0p = mx.transpose(c0p, (0, 2, 3, 1))  # [B,1,F,O*2]
 
         c_out = self.net.df_dec.df_out(c)

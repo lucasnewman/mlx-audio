@@ -460,6 +460,15 @@ class ConvBlock(nn.Module):
         # Will be transposed for MLX conv2d which expects [out_ch, kH, kW, in_ch // groups]
         self.weight = mx.zeros((out_ch, in_ch // groups, kernel[0], kernel[1]))
         self.bias = mx.zeros((out_ch,)) if use_bias else None
+        self._weight_ohwi: Optional[mx.array] = None
+        self._weight_token: Optional[int] = None
+
+    def _weight_cache(self) -> mx.array:
+        token = id(self.weight)
+        if self._weight_ohwi is None or self._weight_token != token:
+            self._weight_ohwi = mx.transpose(self.weight, (0, 2, 3, 1))
+            self._weight_token = token
+        return self._weight_ohwi
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [B, C, T, F]
@@ -473,11 +482,8 @@ class ConvBlock(nn.Module):
 
         x = mx.pad(x, [(0, 0), (self.time_pad[0], self.time_pad[1]), (self.freq_pad, self.freq_pad), (0, 0)])
 
-        # Transpose weight from PyTorch format [O, I, H, W] to MLX format [O, H, W, I]
-        weight = mx.transpose(self.weight, (0, 2, 3, 1))
-
         # Use native grouped conv2d instead of Python per-group loops.
-        x = mx.conv2d(x, weight, stride=(1, self.fstride), groups=self.groups)
+        x = mx.conv2d(x, self._weight_cache(), stride=(1, self.fstride), groups=self.groups)
         if self.bias is not None:
             x = x + self.bias.reshape((1, 1, 1, -1))
 
@@ -499,17 +505,51 @@ class ConvTransposeBlock(nn.Module):
         self.output_padding = (0, kernel[1] // 2)
         # PyTorch ConvTranspose2d layout: [in_ch, out_ch // groups, kH, kW]
         self.weight = mx.zeros((in_ch, out_ch // groups, kernel[0], kernel[1]))
+        self._weight_token: Optional[int] = None
+        self._dense_weight: Optional[mx.array] = None
+        self._group_weights: Optional[List[mx.array]] = None
+
+    def _refresh_weight_cache(self) -> None:
+        token = id(self.weight)
+        if self._weight_token == token:
+            return
+        self._weight_token = token
+        self._dense_weight = None
+        self._group_weights = None
+
+        if self.groups <= 1:
+            self._dense_weight = mx.transpose(self.weight, (1, 2, 3, 0))
+            return
+
+        in_pg = self.in_ch // self.groups
+        out_pg = self.out_ch // self.groups
+        total_in = in_pg * self.groups
+        if in_pg == 0 or out_pg == 0:
+            return
+
+        blocks = []
+        grouped = []
+        for g in range(self.groups):
+            w_g = self.weight[g * in_pg : (g + 1) * in_pg, :, :, :]  # [I_pg, O_pg, kT, kF]
+            w_t = mx.transpose(w_g, (1, 2, 3, 0))  # [O_pg, kT, kF, I_pg]
+            grouped.append(w_t)
+            left = mx.zeros((out_pg, w_t.shape[1], w_t.shape[2], g * in_pg), dtype=w_t.dtype)
+            right = mx.zeros(
+                (out_pg, w_t.shape[1], w_t.shape[2], total_in - (g + 1) * in_pg), dtype=w_t.dtype
+            )
+            blocks.append(mx.concatenate([left, w_t, right], axis=3))
+        self._group_weights = grouped
+        self._dense_weight = mx.concatenate(blocks, axis=0)
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [B, C, T, F] -> [B, T, F, C]
         x = mx.transpose(x, (0, 2, 3, 1))
+        self._refresh_weight_cache()
 
-        if self.groups == 1:
-            # [I, O, H, W] -> [O, H, W, I]
-            w = mx.transpose(self.weight, (1, 2, 3, 0))
+        if self._dense_weight is not None:
             x = mx.conv_transpose2d(
                 x,
-                w,
+                self._dense_weight,
                 stride=(1, self.fstride),
                 padding=self.padding,
                 output_padding=self.output_padding,
@@ -517,12 +557,11 @@ class ConvTransposeBlock(nn.Module):
         else:
             # MLX currently supports only groups=1 for conv_transpose2d, so run per-group.
             in_pg = self.in_ch // self.groups
-            out_pg = self.out_ch // self.groups
             outs = []
+            weights = self._group_weights or []
             for g in range(self.groups):
                 x_g = x[:, :, :, g * in_pg : (g + 1) * in_pg]
-                w_g = self.weight[g * in_pg : (g + 1) * in_pg, :, :, :]
-                w_g = mx.transpose(w_g, (1, 2, 3, 0))
+                w_g = weights[g]
                 y_g = mx.conv_transpose2d(
                     x_g,
                     w_g,
@@ -581,7 +620,7 @@ class DeepFilterOp(nn.Module):
 
     def __call__(self, spec: mx.array, coefs: mx.array, alpha: Optional[mx.array] = None) -> mx.array:
         # spec: [B, 1, T, F, 2], coefs: [B, O, T, F_df, 2]
-        b, _, t, f, _ = spec.shape
+        b, _, t, _, _ = spec.shape
         
         # Padding: (df_order - 1 - lookahead) on left, lookahead on right
         # This matches PyTorch's ConstantPad2d((0, 0, frame_size - 1 - lookahead, lookahead), 0.0)
@@ -595,23 +634,18 @@ class DeepFilterOp(nn.Module):
         spec_padded = mx.pad(spec_df, [(0, 0), (pad_left, pad_right), (0, 0), (0, 0)])
         # spec_padded shape: [B, T + pad_left + pad_right, F_df, 2]
 
-        # Create sliding windows - for each output frame j, get df_order consecutive input frames
-        # Result shape: [B, df_order, T, F_df, 2]
-        windows = mx.stack(
-            [spec_padded[:, j:j+self.df_order, :, :] for j in range(t)], 
-            axis=0  # Stack along new axis at position 0
-        )  # [T, B, df_order, F_df, 2]
-        
-        # Move batch to front, df_order to position 1, time to position 2: [B, df_order, T, F_df, 2]
-        windows = mx.transpose(windows, (1, 2, 0, 3, 4))
-
-        # Deep filtering: complex multiply and sum over order dimension
-        # (sr + j*si) * (cr + j*ci) = (sr*cr - si*ci) + j*(sr*ci + si*cr)
-        sr, si = windows[..., 0], windows[..., 1]  # [B, O, T, F]
-        cr, ci = coefs[..., 0], coefs[..., 1]  # [B, O, T, F]
-
-        out_r = mx.sum(sr * cr - si * ci, axis=1)  # [B, T, F]
-        out_i = mx.sum(sr * ci + si * cr, axis=1)  # [B, T, F]
+        # Loop over df_order (small: 5), not over time (large), to avoid
+        # building an O(T) stack of sliding windows.
+        out_r = mx.zeros((b, t, self.df_bins), dtype=spec.dtype)
+        out_i = mx.zeros((b, t, self.df_bins), dtype=spec.dtype)
+        for k in range(self.df_order):
+            window = spec_padded[:, k : (k + t), :, :]  # [B, T, F_df, 2]
+            sr = window[..., 0]
+            si = window[..., 1]
+            cr = coefs[:, k, :, :, 0]
+            ci = coefs[:, k, :, :, 1]
+            out_r = out_r + (sr * cr - si * ci)
+            out_i = out_i + (sr * ci + si * cr)
 
         spec_f = mx.expand_dims(mx.stack([out_r, out_i], axis=-1), axis=1)  # [B, 1, T, F, 2]
 

@@ -15,10 +15,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-m",
         "--model",
-        type=int,
-        choices=[1, 2, 3],
+        type=str,
         default=None,
-        help="DeepFilterNet version to use (1, 2, or 3). Used when --model-path is not set.",
+        help=(
+            "Model name or path. Can be a Hugging Face repo id, local model directory, "
+            "or local config/weights file."
+        ),
     )
     parser.add_argument(
         "--model-dir",
@@ -73,9 +75,11 @@ def main() -> None:
 
     if args.model_path and args.model_dir:
         raise ValueError("Use either --model-path or --model-dir, not both.")
+    if args.model and (args.model_path or args.model_dir):
+        raise ValueError("Use either --model, or --model-path/--model-dir, not both.")
 
     model = DeepFilterNetModel.from_pretrained(
-        version=args.model,
+        model_name_or_path=args.model,
         model_path=args.model_path,
         model_dir=args.model_dir,
     )

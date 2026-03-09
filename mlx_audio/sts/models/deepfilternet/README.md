@@ -7,14 +7,20 @@ DeepFilterNet speech enhancement in pure MLX with support for model versions 1, 
 ```python
 from mlx_audio.sts.models.deepfilternet import DeepFilterNetModel
 
-model = DeepFilterNetModel.from_pretrained(version=3)
+model = DeepFilterNetModel.from_pretrained()
 model.enhance_file("noisy.wav", "clean.wav")
 ```
 
-Or load a custom/finetuned checkpoint path directly (version auto-detected from `config.json`):
+Or load a custom/finetuned checkpoint directly (model version auto-detected from `config.json`):
 
 ```python
 model = DeepFilterNetModel.from_pretrained(model_path="./models/MyDeepFilterNet")
+```
+
+Or load from a Hugging Face repo id:
+
+```python
+model = DeepFilterNetModel.from_pretrained("iky1e/DeepFilterNet3-MLX")
 ```
 
 Streaming/chunked mode (true per-hop stateful processing for DF2/DF3):
@@ -28,11 +34,8 @@ out_tail = streamer.flush()
 
 ## Model Selection
 
-- `version=1`: DeepFilterNet
-- `version=2`: DeepFilterNet2
-- `version=3`: DeepFilterNet3
-
-Optional explicit model path:
+Model architecture is selected from `config.json` (`model_version`).
+For example:
 
 ```python
 model = DeepFilterNetModel.from_pretrained(model_path="./models/DeepFilterNet2/model.safetensors")
@@ -41,7 +44,8 @@ model = DeepFilterNetModel.from_pretrained(model_path="./models/DeepFilterNet2/m
 ## Example Script
 
 ```bash
-python examples/deepfilternet.py examples/denoise/test_audio_10s.wav -m 3
+python examples/deepfilternet.py examples/denoise/test_audio_10s.wav
 python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --model-path ./models/DeepFilterNet3
-python examples/deepfilternet.py examples/denoise/test_audio_10s.wav -m 3 --stream
+python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --model iky1e/DeepFilterNet3-MLX
+python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --stream
 ```

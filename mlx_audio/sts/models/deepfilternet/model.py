@@ -16,6 +16,7 @@ from typing import Optional, Union
 
 import mlx.core as mx
 import numpy as np
+from huggingface_hub import hf_hub_download
 
 from mlx_audio import audio_io
 from mlx_audio.dsp import istft, stft
@@ -27,17 +28,9 @@ from .weight_loader import load_weights as load_df_weights
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 
-DEFAULT_MODEL_DIRS = {
-    1: [
-        str(_REPO_ROOT / "models" / "DeepFilterNet1"),
-    ],
-    2: [
-        str(_REPO_ROOT / "models" / "DeepFilterNet2"),
-    ],
-    3: [
-        str(_REPO_ROOT / "models" / "DeepFilterNet3"),
-    ],
-}
+DEFAULT_REPO = "iky1e/DeepFilterNet3-MLX"
+
+DEFAULT_MODEL_DIR = str(_REPO_ROOT / "models" / "DeepFilterNet3")
 
 DEFAULT_CONFIGS = {
     "DeepFilterNet": DeepFilterNetConfig,
@@ -46,27 +39,25 @@ DEFAULT_CONFIGS = {
 }
 
 
-def resolve_model_dir(version: int, model_dir: Optional[Union[str, Path]] = None) -> Path:
+def resolve_model_dir(model_dir: Optional[Union[str, Path]] = None) -> Path:
     if model_dir is not None:
         p = Path(model_dir).expanduser().resolve()
         if p.exists() and p.is_dir():
             return p
         raise FileNotFoundError(f"Model directory not found: {p}")
 
-    for cand in DEFAULT_MODEL_DIRS.get(version, []):
-        p = Path(cand)
-        if p.exists():
-            return p
+    default_dir = Path(DEFAULT_MODEL_DIR)
+    if default_dir.exists() and default_dir.is_dir():
+        return default_dir
 
     raise FileNotFoundError(
-        f"No local model directory found for DeepFilterNet{version}. "
-        f"Tried: {DEFAULT_MODEL_DIRS.get(version, [])}"
+        "No local default DeepFilterNet model directory found. "
+        f"Tried: {DEFAULT_MODEL_DIR}"
     )
 
 
 def resolve_model_artifacts(
     *,
-    version: int,
     model_path: Optional[Union[str, Path]] = None,
     model_dir: Optional[Union[str, Path]] = None,
 ) -> tuple[Path, Optional[Path]]:
@@ -86,7 +77,7 @@ def resolve_model_artifacts(
             "'config.json', 'model.safetensors', or 'weights.npz'."
         )
 
-    return resolve_model_dir(version=version, model_dir=model_dir), None
+    return resolve_model_dir(model_dir=model_dir), None
 
 
 class DeepFilterNetModel:
@@ -113,31 +104,100 @@ class DeepFilterNetModel:
         self.erb_fb = self.model.erb_fb
         self.erb_inv_fb = self.model.mask.erb_inv_fb
         self.erb_widths = config.erb_widths
+        self._has_erb_fb = (
+            hasattr(self.erb_fb, "shape")
+            and len(self.erb_fb.shape) == 2
+            and self.erb_fb.shape[0] == (self.config.fft_size // 2 + 1)
+            and self.erb_fb.shape[1] == self.config.nb_erb
+        )
 
     @classmethod
     def from_pretrained(
         cls,
-        version: Optional[int] = None,
+        model_name_or_path: Optional[str] = None,
         model_path: Optional[Union[str, Path]] = None,
         model_dir: Optional[Union[str, Path]] = None,
     ) -> "DeepFilterNetModel":
-        version_value = 3 if version is None else version
-        model_dir_resolved, explicit_file = resolve_model_artifacts(
-            version=version_value,
-            model_path=model_path,
-            model_dir=model_dir,
-        )
+        # If a model_name_or_path is given, treat it as a local path or HF repo ID.
+        if model_name_or_path is not None:
+            local = Path(model_name_or_path).expanduser().resolve()
+            if local.exists():
+                model_dir = local
+            else:
+                # Treat as HuggingFace repo ID — download config + weights.
+                config_path = hf_hub_download(
+                    repo_id=model_name_or_path, filename="config.json"
+                )
+                weights_path = hf_hub_download(
+                    repo_id=model_name_or_path, filename="model.safetensors"
+                )
+                return cls._load_from_files(
+                    config_path=Path(config_path),
+                    weights_path=Path(weights_path),
+                    model_dir=Path(config_path).parent,
+                )
+
+        explicit_local_target = model_path is not None or model_dir is not None
+        if explicit_local_target:
+            model_dir_resolved, explicit_file = resolve_model_artifacts(
+                model_path=model_path,
+                model_dir=model_dir,
+            )
+        else:
+            try:
+                model_dir_resolved, explicit_file = resolve_model_artifacts(
+                    model_path=model_path,
+                    model_dir=model_dir,
+                )
+            except FileNotFoundError:
+                # No explicit local target and no default local model — fall back to HuggingFace.
+                print(f"No local model found, downloading from {DEFAULT_REPO}...")
+                config_path = hf_hub_download(
+                    repo_id=DEFAULT_REPO, filename="config.json"
+                )
+                weights_path = hf_hub_download(
+                    repo_id=DEFAULT_REPO, filename="model.safetensors"
+                )
+                return cls._load_from_files(
+                    config_path=Path(config_path),
+                    weights_path=Path(weights_path),
+                    model_dir=Path(config_path).parent,
+                )
 
         config_path = model_dir_resolved / "config.json"
         if not config_path.exists():
             raise FileNotFoundError(f"Missing config.json in model directory: {model_dir_resolved}")
 
+        if explicit_file is not None and explicit_file.name in {"model.safetensors", "weights.npz"}:
+            weights_path = explicit_file
+        else:
+            weights_path = model_dir_resolved / "model.safetensors"
+            if not weights_path.exists():
+                npz_fallback = model_dir_resolved / "weights.npz"
+                if npz_fallback.exists():
+                    weights_path = npz_fallback
+                else:
+                    raise FileNotFoundError(f"Missing model weights in {model_dir_resolved}")
+
+        return cls._load_from_files(
+            config_path=config_path,
+            weights_path=weights_path,
+            model_dir=model_dir_resolved,
+        )
+
+    @classmethod
+    def _load_from_files(
+        cls,
+        config_path: Path,
+        weights_path: Path,
+        model_dir: Path,
+    ) -> "DeepFilterNetModel":
         with open(config_path, encoding="utf-8") as f:
             config_dict = json.load(f)
 
         model_version = config_dict.get("model_version")
         if not model_version:
-            model_version = f"DeepFilterNet{version_value}"
+            model_version = "DeepFilterNet3"
         config_class = DEFAULT_CONFIGS.get(model_version, DeepFilterNetConfig)
         config = config_class.from_dict(config_dict)
 
@@ -161,17 +221,6 @@ class DeepFilterNetModel:
         else:
             model = DfNet(config)
 
-        if explicit_file is not None and explicit_file.name in {"model.safetensors", "weights.npz"}:
-            weights_path = explicit_file
-        else:
-            weights_path = model_dir_resolved / "model.safetensors"
-            if not weights_path.exists():
-                npz_fallback = model_dir_resolved / "weights.npz"
-                if npz_fallback.exists():
-                    weights_path = npz_fallback
-                else:
-                    raise FileNotFoundError(f"Missing model weights in {model_dir_resolved}")
-
         weights = mx.load(str(weights_path))
         loaded = load_df_weights(model, weights)
         print(f"Loaded DeepFilterNet weights: {loaded} tensors from {weights_path}")
@@ -179,7 +228,7 @@ class DeepFilterNetModel:
         return cls(
             model=model,
             config=config,
-            model_dir=model_dir_resolved,
+            model_dir=model_dir,
             model_version=model_version,
         )
 
@@ -388,9 +437,12 @@ class DeepFilterNetModel:
         return mx.array(out_r), mx.array(out_i)
 
     def _erb(self, spec_mag_sq: mx.array) -> mx.array:
-        """Compute ERB energies like libDF using contiguous band widths when available."""
-        if self.erb_widths is None:
+        """Compute ERB energies, preferring learned filterbank projection when present."""
+        if self._has_erb_fb:
             return spec_mag_sq @ self.erb_fb
+
+        if self.erb_widths is None:
+            raise ValueError("Missing both ERB filterbank and ERB band widths.")
 
         bands = []
         start = 0
