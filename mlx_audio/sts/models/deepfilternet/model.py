@@ -26,38 +26,13 @@ from .network import DfNet
 from .network_df1 import DfNetV1
 from .weight_loader import load_weights as load_df_weights
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-
 DEFAULT_REPO = "iky1e/DeepFilterNet3-MLX"
-
-DEFAULT_MODEL_DIR = str(_REPO_ROOT / "models" / "DeepFilterNet3")
 
 DEFAULT_CONFIGS = {
     "DeepFilterNet": DeepFilterNetConfig,
     "DeepFilterNet2": DeepFilterNet2Config,
     "DeepFilterNet3": DeepFilterNet3Config,
 }
-
-
-def resolve_model_dir(model_name_or_path: Optional[str] = None) -> Path:
-    if model_name_or_path:
-        p = Path(model_name_or_path).expanduser().resolve()
-        if not p.exists():
-            raise FileNotFoundError(f"Model directory not found: {p}")
-        if not p.is_dir():
-            raise ValueError(
-                f"Local model path must be a directory containing config.json and model.safetensors: {p}"
-            )
-        return p
-
-    default_dir = Path(DEFAULT_MODEL_DIR)
-    if default_dir.exists() and default_dir.is_dir():
-        return default_dir
-
-    raise FileNotFoundError(
-        "No local default DeepFilterNet model directory found. "
-        f"Tried: {DEFAULT_MODEL_DIR}"
-    )
 
 
 class DeepFilterNetModel:
@@ -94,77 +69,51 @@ class DeepFilterNetModel:
     @classmethod
     def from_pretrained(
         cls,
-        model_name_or_path: Optional[str] = None,
+        model_name_or_path: str = DEFAULT_REPO,
     ) -> "DeepFilterNetModel":
-        if model_name_or_path is not None:
-            local = Path(model_name_or_path).expanduser().resolve()
-            if local.exists():
-                model_dir_resolved = resolve_model_dir(model_name_or_path)
-                config_path = model_dir_resolved / "config.json"
-                weights_path = model_dir_resolved / "model.safetensors"
-                if not config_path.exists():
-                    raise FileNotFoundError(
-                        f"Missing config.json in model directory: {model_dir_resolved}"
-                    )
-                if not weights_path.exists():
-                    npz_fallback = model_dir_resolved / "weights.npz"
-                    if npz_fallback.exists():
-                        weights_path = npz_fallback
-                    else:
-                        raise FileNotFoundError(
-                            f"Missing model.safetensors/weights.npz in model directory: {model_dir_resolved}"
-                        )
-                return cls._load_from_files(
-                    config_path=config_path,
-                    weights_path=weights_path,
-                    model_dir=model_dir_resolved,
+        """Load a pretrained DeepFilterNet model.
+
+        Args:
+            model_name_or_path: HuggingFace repo id or local directory path.
+        """
+        local = Path(model_name_or_path).expanduser().resolve()
+        if local.exists():
+            if not local.is_dir():
+                raise ValueError(
+                    f"Local model path must be a directory containing "
+                    f"config.json and model.safetensors: {local}"
                 )
-            # Treat as HuggingFace repo ID.
-            config_path = hf_hub_download(
-                repo_id=model_name_or_path, filename="config.json"
-            )
-            weights_path = hf_hub_download(
-                repo_id=model_name_or_path, filename="model.safetensors"
-            )
-            return cls._load_from_files(
-                config_path=Path(config_path),
-                weights_path=Path(weights_path),
-                model_dir=Path(config_path).parent,
-            )
-
-        try:
-            model_dir_resolved = resolve_model_dir()
-        except FileNotFoundError:
-            print(f"No local model found, downloading from {DEFAULT_REPO}...")
-            config_path = hf_hub_download(repo_id=DEFAULT_REPO, filename="config.json")
-            weights_path = hf_hub_download(
-                repo_id=DEFAULT_REPO, filename="model.safetensors"
-            )
-            return cls._load_from_files(
-                config_path=Path(config_path),
-                weights_path=Path(weights_path),
-                model_dir=Path(config_path).parent,
-            )
-        config_path = model_dir_resolved / "config.json"
-        if not config_path.exists():
-            raise FileNotFoundError(
-                f"Missing config.json in model directory: {model_dir_resolved}"
-            )
-
-        weights_path = model_dir_resolved / "model.safetensors"
-        if not weights_path.exists():
-            npz_fallback = model_dir_resolved / "weights.npz"
-            if npz_fallback.exists():
-                weights_path = npz_fallback
-            else:
+            config_path = local / "config.json"
+            weights_path = local / "model.safetensors"
+            if not config_path.exists():
                 raise FileNotFoundError(
-                    f"Missing model weights in {model_dir_resolved}"
+                    f"Missing config.json in model directory: {local}"
                 )
+            if not weights_path.exists():
+                npz_fallback = local / "weights.npz"
+                if npz_fallback.exists():
+                    weights_path = npz_fallback
+                else:
+                    raise FileNotFoundError(
+                        f"Missing model.safetensors/weights.npz in: {local}"
+                    )
+            return cls._load_from_files(
+                config_path=config_path,
+                weights_path=weights_path,
+                model_dir=local,
+            )
 
+        # Treat as HuggingFace repo ID.
+        config_path = Path(
+            hf_hub_download(repo_id=model_name_or_path, filename="config.json")
+        )
+        weights_path = Path(
+            hf_hub_download(repo_id=model_name_or_path, filename="model.safetensors")
+        )
         return cls._load_from_files(
             config_path=config_path,
             weights_path=weights_path,
-            model_dir=model_dir_resolved,
+            model_dir=config_path.parent,
         )
 
     @classmethod

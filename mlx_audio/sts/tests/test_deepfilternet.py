@@ -87,29 +87,20 @@ class TestDeepFilterNetRuntimeHelpers(unittest.TestCase):
         self.assertGreaterEqual(float(mx.min(w)), 0.0)
         self.assertLessEqual(float(mx.max(w)), 1.0)
 
-    def test_resolve_model_dir_raises_for_missing(self):
-        from mlx_audio.sts.models.deepfilternet.model import resolve_model_dir
+    def test_from_pretrained_rejects_missing_dir(self):
+        from mlx_audio.sts.models.deepfilternet.model import DeepFilterNetModel
 
-        with self.assertRaises(FileNotFoundError):
-            resolve_model_dir("/definitely/not/a/model/dir")
+        with self.assertRaises(Exception):
+            DeepFilterNetModel.from_pretrained("/definitely/not/a/model/dir")
 
-    def test_resolve_model_dir_from_existing_dir(self):
-        from mlx_audio.sts.models.deepfilternet.model import resolve_model_dir
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            model_dir = root / "my_model"
-            model_dir.mkdir(parents=True, exist_ok=True)
-            self.assertEqual(resolve_model_dir(str(model_dir)), model_dir.resolve())
-
-    def test_resolve_model_dir_rejects_file(self):
-        from mlx_audio.sts.models.deepfilternet.model import resolve_model_dir
+    def test_from_pretrained_rejects_file_path(self):
+        from mlx_audio.sts.models.deepfilternet.model import DeepFilterNetModel
 
         with tempfile.TemporaryDirectory() as tmp:
             file_path = Path(tmp) / "model.safetensors"
             file_path.touch()
             with self.assertRaises(ValueError):
-                resolve_model_dir(str(file_path))
+                DeepFilterNetModel.from_pretrained(str(file_path))
 
     def test_streamer_rejects_df1_backend(self):
         from mlx_audio.sts.models.deepfilternet.config import DeepFilterNetConfig
