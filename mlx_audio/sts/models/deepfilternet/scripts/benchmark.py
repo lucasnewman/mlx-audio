@@ -31,7 +31,9 @@ import soundfile as sf
 # Resolve paths relative to this script's location.
 SCRIPT_DIR = Path(__file__).resolve().parent
 MODEL_DIR = SCRIPT_DIR.parent  # mlx_audio/sts/models/deepfilternet/
-REPO_ROOT = SCRIPT_DIR.parents[4]  # mlx_audio -> sts -> models -> deepfilternet -> scripts
+REPO_ROOT = SCRIPT_DIR.parents[
+    4
+]  # mlx_audio -> sts -> models -> deepfilternet -> scripts
 
 DEFAULT_INPUT = REPO_ROOT / "examples" / "denoise" / "noisey_audio_10s.wav"
 PYTORCH_SCRIPT = SCRIPT_DIR / "deep_filter_pytorch.py"
@@ -98,7 +100,11 @@ def main() -> None:
         print(f"Error: input file not found: {src}", file=sys.stderr)
         sys.exit(1)
 
-    out_dir = Path(args.output_dir) if args.output_dir else REPO_ROOT / "outputs" / "benchmarks"
+    out_dir = (
+        Path(args.output_dir)
+        if args.output_dir
+        else REPO_ROOT / "outputs" / "benchmarks"
+    )
     runs = args.runs
     python = sys.executable
 
@@ -111,10 +117,12 @@ def main() -> None:
     # PyTorch reference script
     if not args.skip_pytorch:
         if PYTORCH_SCRIPT.exists():
-            configs.append((
-                "PyTorch Script",
-                [python, str(PYTORCH_SCRIPT), str(prep), "-o", ""],
-            ))
+            configs.append(
+                (
+                    "PyTorch Script",
+                    [python, str(PYTORCH_SCRIPT), str(prep), "-o", ""],
+                )
+            )
         else:
             print(f"Warning: PyTorch script not found at {PYTORCH_SCRIPT}, skipping")
 
@@ -122,23 +130,33 @@ def main() -> None:
     if not args.skip_deepfilter:
         deepfilter_cli = shutil.which("deepFilter")
         if deepfilter_cli:
-            configs.append((
-                "Installed deepFilter CLI",
-                [
-                    deepfilter_cli, str(prep), "-o", "",
-                    "--no-suffix", "--log-level", "error",
-                    "--model-base-dir", "DeepFilterNet3",
-                ],
-            ))
+            configs.append(
+                (
+                    "Installed deepFilter CLI",
+                    [
+                        deepfilter_cli,
+                        str(prep),
+                        "-o",
+                        "",
+                        "--no-suffix",
+                        "--log-level",
+                        "error",
+                        "--model-base-dir",
+                        "DeepFilterNet3",
+                    ],
+                )
+            )
         else:
             print("Warning: deepFilter CLI not found in PATH, skipping")
 
     # MLX CLI
     if MLX_EXAMPLE.exists():
-        configs.append((
-            "MLX CLI",
-            [python, str(MLX_EXAMPLE), str(prep), "-o", ""],
-        ))
+        configs.append(
+            (
+                "MLX CLI",
+                [python, str(MLX_EXAMPLE), str(prep), "-o", ""],
+            )
+        )
     else:
         print(f"Warning: MLX example not found at {MLX_EXAMPLE}, skipping")
 
@@ -149,24 +167,31 @@ def main() -> None:
     rows: list[dict] = []
     for name, base in configs:
         for i in range(1, runs + 1):
-            out = out_dir / f"{name.lower().replace(' ', '_').replace('/', '_')}_run{i}.wav"
+            out = (
+                out_dir
+                / f"{name.lower().replace(' ', '_').replace('/', '_')}_run{i}.wav"
+            )
             cmd = base.copy()
             out_idx = cmd.index("-o") + 1
             cmd[out_idx] = str(out)
             elapsed = run_cmd(cmd, cwd=REPO_ROOT)
-            rows.append({
-                "method": name,
-                "run": i,
-                "elapsed_s": elapsed,
-                "rtf": elapsed / duration_s,
-                "output": str(out),
-            })
+            rows.append(
+                {
+                    "method": name,
+                    "run": i,
+                    "elapsed_s": elapsed,
+                    "rtf": elapsed / duration_s,
+                    "output": str(out),
+                }
+            )
             print(f"{name} run {i}: {elapsed:.3f}s (RTF {elapsed / duration_s:.4f})")
 
     # Save results
     csv_path = out_dir / "benchmark_results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["method", "run", "elapsed_s", "rtf", "output"])
+        w = csv.DictWriter(
+            f, fieldnames=["method", "run", "elapsed_s", "rtf", "output"]
+        )
         w.writeheader()
         w.writerows(rows)
 
@@ -180,11 +205,17 @@ def main() -> None:
     for m in methods:
         times = [r["elapsed_s"] for r in rows if r["method"] == m]
         rtfs = [r["rtf"] for r in rows if r["method"] == m]
-        print(f"{m:<30} {np.mean(times):>10.3f} {np.std(times):>10.3f} {np.mean(rtfs):>10.4f}")
+        print(
+            f"{m:<30} {np.mean(times):>10.3f} {np.std(times):>10.3f} {np.mean(rtfs):>10.4f}"
+        )
 
     # Chart
-    means_elapsed = [np.mean([r["elapsed_s"] for r in rows if r["method"] == m]) for m in methods]
-    std_elapsed = [np.std([r["elapsed_s"] for r in rows if r["method"] == m]) for m in methods]
+    means_elapsed = [
+        np.mean([r["elapsed_s"] for r in rows if r["method"] == m]) for m in methods
+    ]
+    std_elapsed = [
+        np.std([r["elapsed_s"] for r in rows if r["method"] == m]) for m in methods
+    ]
     means_rtf = [np.mean([r["rtf"] for r in rows if r["method"] == m]) for m in methods]
     std_rtf = [np.std([r["rtf"] for r in rows if r["method"] == m]) for m in methods]
 
