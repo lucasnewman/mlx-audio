@@ -8,7 +8,7 @@ import re
 from typing import Dict, List, Set
 
 import mlx.core as mx
-from mlx.utils import tree_flatten, tree_unflatten
+from mlx.utils import tree_flatten
 
 
 def _apply_gru_mapping(name: str) -> str:

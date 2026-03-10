@@ -39,8 +39,8 @@ Model architecture is selected from `config.json` (`model_version`).
 ## Example Script
 
 ```bash
-python examples/deepfilternet.py examples/denoise/test_audio_10s.wav
-python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --model ./models/DeepFilterNet3
-python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --model iky1e/DeepFilterNet3-MLX
-python examples/deepfilternet.py examples/denoise/test_audio_10s.wav --stream
+python examples/deepfilternet.py examples/denoise/noisey_audio_10s.wav
+python examples/deepfilternet.py examples/denoise/noisey_audio_10s.wav --model ./models/DeepFilterNet3
+python examples/deepfilternet.py examples/denoise/noisey_audio_10s.wav --model iky1e/DeepFilterNet3-MLX
+python examples/deepfilternet.py examples/denoise/noisey_audio_10s.wav --stream
 ```

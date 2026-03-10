@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import mlx.core as mx
 import numpy as np

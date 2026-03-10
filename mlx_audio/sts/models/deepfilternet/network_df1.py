@@ -265,6 +265,8 @@ class ConvKxF(nn.Module):
 
 
 class EncoderV1(nn.Module):
+    """V1 encoder with grouped convolutions and linear layers."""
+
     def __init__(self, config: DeepFilterNetConfig):
         super().__init__()
         p = config
@@ -374,6 +376,8 @@ class EncoderV1(nn.Module):
 
 
 class ErbDecoderV1(nn.Module):
+    """V1 ERB-band decoder with transposed convolutions and skip connections."""
+
     def __init__(self, config: DeepFilterNetConfig):
         super().__init__()
         p = config
@@ -469,6 +473,8 @@ class ErbDecoderV1(nn.Module):
 
 
 class DfDecoderV1(nn.Module):
+    """V1 deep-filtering decoder producing complex DF coefficients."""
+
     def __init__(self, config: DeepFilterNetConfig):
         super().__init__()
         p = config
