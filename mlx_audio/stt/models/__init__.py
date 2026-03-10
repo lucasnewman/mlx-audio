@@ -1,4 +1,5 @@
 from . import (
+    fireredasr2,
     glmasr,
     lasr_ctc,
     parakeet,
