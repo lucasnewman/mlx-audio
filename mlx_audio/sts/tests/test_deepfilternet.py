@@ -140,5 +140,146 @@ class TestDeepFilterNetRuntimeHelpers(unittest.TestCase):
         self.assertIsInstance(y2, np.ndarray)
 
 
+class TestDeepFilterNetIntegration(unittest.TestCase):
+    """End-to-end integration tests with real model weights.
+
+    These tests download the pretrained DeepFilterNet3 MLX weights from
+    HuggingFace and run inference on the included sample audio file.
+    They are skipped when the model cannot be loaded (e.g. no network).
+    """
+
+    REPO_ROOT = Path(__file__).resolve().parents[3]
+    SAMPLE_AUDIO = REPO_ROOT / "examples" / "denoise" / "noisey_audio_10s.wav"
+
+    @classmethod
+    def setUpClass(cls):
+        if not cls.SAMPLE_AUDIO.exists():
+            raise unittest.SkipTest(f"Sample audio not found: {cls.SAMPLE_AUDIO}")
+        try:
+            from mlx_audio.sts.models.deepfilternet import DeepFilterNetModel
+
+            cls.model = DeepFilterNetModel.from_pretrained()
+        except Exception as e:
+            raise unittest.SkipTest(f"Could not load pretrained model: {e}")
+
+        import soundfile as sf
+
+        audio, sr = sf.read(str(cls.SAMPLE_AUDIO))
+        if audio.ndim > 1:
+            audio = audio[:, 0]
+        cls.audio = audio.astype(np.float32)
+        cls.sr = sr
+        cls.input_rms = float(np.sqrt(np.mean(cls.audio**2)))
+
+    def test_offline_output_length_and_range(self):
+        """Offline enhancement produces output of correct length within [-1, 1]."""
+        enhanced = self.model.enhance_array(self.audio)
+        self.assertEqual(enhanced.shape[0], self.audio.shape[0])
+        self.assertLessEqual(float(np.max(np.abs(enhanced))), 1.0)
+
+    def test_offline_reduces_noise(self):
+        """Offline enhancement reduces RMS energy (denoising actually occurred)."""
+        enhanced = self.model.enhance_array(self.audio)
+        output_rms = float(np.sqrt(np.mean(enhanced**2)))
+        self.assertLess(
+            output_rms,
+            self.input_rms,
+            "Enhanced audio RMS should be lower than noisy input RMS",
+        )
+
+    def test_offline_output_is_not_silence(self):
+        """Offline enhancement produces non-trivial output (not all zeros)."""
+        enhanced = self.model.enhance_array(self.audio)
+        output_rms = float(np.sqrt(np.mean(enhanced**2)))
+        self.assertGreater(output_rms, 0.001, "Enhanced audio should not be silence")
+
+    def test_streaming_output_length_and_range(self):
+        """Streaming enhancement produces output of correct length within [-1, 1]."""
+        enhanced = self.model.enhance_array_streaming(self.audio)
+        self.assertEqual(enhanced.shape[0], self.audio.shape[0])
+        self.assertLessEqual(float(np.max(np.abs(enhanced))), 1.0)
+
+    def test_streaming_reduces_noise(self):
+        """Streaming enhancement reduces RMS energy."""
+        enhanced = self.model.enhance_array_streaming(self.audio)
+        output_rms = float(np.sqrt(np.mean(enhanced**2)))
+        self.assertLess(
+            output_rms,
+            self.input_rms,
+            "Streaming enhanced audio RMS should be lower than noisy input RMS",
+        )
+
+    def test_offline_streaming_correlation(self):
+        """Offline and streaming outputs are highly correlated."""
+        offline = self.model.enhance_array(self.audio)
+        streaming = self.model.enhance_array_streaming(self.audio)
+        min_len = min(len(offline), len(streaming))
+        corr = float(np.corrcoef(offline[:min_len], streaming[:min_len])[0, 1])
+        self.assertGreater(
+            corr,
+            0.85,
+            f"Offline/streaming correlation {corr:.4f} should be > 0.85",
+        )
+
+    def test_enhance_file_roundtrip(self):
+        """enhance_file writes a valid audio file with correct sample rate."""
+        import soundfile as sf
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "enhanced.wav"
+            self.model.enhance_file(str(self.SAMPLE_AUDIO), str(out_path))
+            self.assertTrue(out_path.exists())
+            data, sr = sf.read(str(out_path))
+            self.assertEqual(sr, self.sr)
+            self.assertEqual(len(data), len(self.audio))
+
+    def test_pytorch_parity(self):
+        """MLX output correlates highly with PyTorch DeepFilterNet output."""
+        try:
+            import torch
+            from df.enhance import df_features, init_df
+            from df.utils import as_complex
+        except ImportError:
+            self.skipTest("PyTorch DeepFilterNet (df) not installed")
+
+        # Run PyTorch inference
+        model_pt, df_state, _ = init_df(log_level="ERROR")
+        model_pt.eval()
+
+        audio_t = torch.from_numpy(self.audio).unsqueeze(0).float()
+        n_fft = df_state.fft_size()
+        hop = df_state.hop_size()
+        audio_padded = torch.nn.functional.pad(audio_t, (0, n_fft))
+
+        from df.model import ModelParams
+
+        p = ModelParams()
+        spec, erb_feat, spec_feat = df_features(
+            audio_padded, df_state, p.nb_df, device="cpu"
+        )
+
+        with torch.no_grad():
+            if hasattr(model_pt, "reset_h0"):
+                model_pt.reset_h0(batch_size=1, device="cpu")
+            enhanced_spec, _, _, _ = model_pt(spec, erb_feat, spec_feat)
+
+        enhanced_complex = as_complex(enhanced_spec.squeeze(1))
+        pt_audio = df_state.synthesis(enhanced_complex.numpy())
+        pt_audio = np.asarray(pt_audio, dtype=np.float32)
+        d = n_fft - hop
+        pt_audio = pt_audio[0, d : len(self.audio) + d]
+
+        # Run MLX inference
+        mlx_audio = self.model.enhance_array(self.audio)
+
+        min_len = min(len(pt_audio), len(mlx_audio))
+        corr = float(np.corrcoef(pt_audio[:min_len], mlx_audio[:min_len])[0, 1])
+        self.assertGreater(
+            corr,
+            0.90,
+            f"PyTorch/MLX correlation {corr:.4f} should be > 0.90",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
