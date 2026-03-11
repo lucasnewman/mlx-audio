@@ -2,9 +2,9 @@ import unittest
 
 import mlx.core as mx
 
-from mlx_audio.tts.models.fish_speech.config import ModelConfig
-from mlx_audio.tts.models.fish_speech.fish_speech import Model
-from mlx_audio.tts.models.fish_speech.prompt import (
+from mlx_audio.tts.models.fish_qwen3_omni.config import ModelConfig
+from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
+from mlx_audio.tts.models.fish_qwen3_omni.prompt import (
     Conversation,
     Message,
     TextPart,
