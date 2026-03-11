@@ -2,7 +2,6 @@ import unittest
 
 import mlx.core as mx
 
-from mlx_audio.tts.utils import get_model_and_args
 from mlx_audio.tts.models.fish_speech.config import ModelConfig
 from mlx_audio.tts.models.fish_speech.fish_speech import Model
 from mlx_audio.tts.models.fish_speech.prompt import (
@@ -11,6 +10,7 @@ from mlx_audio.tts.models.fish_speech.prompt import (
     TextPart,
     VQPart,
 )
+from mlx_audio.tts.utils import get_model_and_args
 
 
 class FakeTokenizer:

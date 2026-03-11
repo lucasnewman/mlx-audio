@@ -10,6 +10,7 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.base import create_attention_mask
 from mlx_lm.models.cache import KVCache
+
 from mlx_audio.tts.models.base import GenerationResult
 
 from .config import ModelConfig
@@ -50,10 +51,7 @@ class FishRotaryEmbedding(nn.Module):
         super().__init__()
         freqs = 1.0 / (
             rope_base
-            ** (
-                mx.arange(0, head_dim, 2, dtype=mx.float32)[: head_dim // 2]
-                / head_dim
-            )
+            ** (mx.arange(0, head_dim, 2, dtype=mx.float32)[: head_dim // 2] / head_dim)
         )
         positions = mx.arange(max_position_embeddings, dtype=mx.float32)
         angles = positions[:, None] * freqs[None, :]
@@ -140,12 +138,8 @@ class Attention(nn.Module):
         q, k, v = mx.split(qkv, [q_size, q_size + kv_size], axis=-1)
 
         q = q.reshape(bsz, seqlen, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
-        k = k.reshape(bsz, seqlen, self.n_kv_heads, self.head_dim).transpose(
-            0, 2, 1, 3
-        )
-        v = v.reshape(bsz, seqlen, self.n_kv_heads, self.head_dim).transpose(
-            0, 2, 1, 3
-        )
+        k = k.reshape(bsz, seqlen, self.n_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
+        v = v.reshape(bsz, seqlen, self.n_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
 
         q = self.q_norm(q)
         k = self.k_norm(k)
@@ -283,7 +277,8 @@ class DualARTransformer(nn.Module):
         for i in range(self.num_codebooks):
             vq_embeds.append(
                 self.codebook_embeddings(
-                    codebook_rows[:, i] + i * self.config.audio_decoder_config.vocab_size
+                    codebook_rows[:, i]
+                    + i * self.config.audio_decoder_config.vocab_size
                 )
             )
         vq_sum = mx.stack(vq_embeds, axis=0).sum(axis=0)
@@ -371,9 +366,7 @@ def _sample_logits(
         mx.arange(vocab_size, dtype=sorted_indices.dtype),
         axis=-1,
     )
-    tokens_to_remove = mx.take_along_axis(
-        tokens_to_remove, inverse_indices, axis=-1
-    )
+    tokens_to_remove = mx.take_along_axis(tokens_to_remove, inverse_indices, axis=-1)
     filtered_logits = mx.where(tokens_to_remove, -mx.inf, logits).astype(mx.float32)
     probs = mx.softmax(filtered_logits * (1.0 / max(temperature, 1e-5)), axis=-1)
     noise = -mx.log(mx.random.uniform(shape=probs.shape, low=1e-6, high=1.0))
@@ -741,7 +734,8 @@ class Model(nn.Module):
         semantic_bias = mx.full((1, vocab_size), -1e9, dtype=mx.float32)
         semantic_bias[
             :,
-            model.config.semantic_start_token_id : model.config.semantic_end_token_id + 1,
+            model.config.semantic_start_token_id : model.config.semantic_end_token_id
+            + 1,
         ] = 0.0
         semantic_bias[:, model.tokenizer.get_token_id(IM_END_TOKEN)] = 0.0
         model.semantic_logit_bias = semantic_bias

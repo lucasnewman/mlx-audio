@@ -71,7 +71,10 @@ class Conversation:
 
             if message.add_im_end:
                 segments.append(
-                    (mx.array(tokenizer.encode(IM_END_TOKEN + "\n"), dtype=mx.int32), None)
+                    (
+                        mx.array(tokenizer.encode(IM_END_TOKEN + "\n"), dtype=mx.int32),
+                        None,
+                    )
                 )
 
         if not segments:
