@@ -16,6 +16,8 @@ MODEL_REMAPPING = {
     "vibevoice": "vibevoice_asr",
     "qwen3_asr": "qwen3_asr",
     "canary": "canary",
+    "moonshine": "moonshine",
+    "mms": "mms",
 }
 
 
