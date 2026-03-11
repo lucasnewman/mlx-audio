@@ -13,16 +13,7 @@ import argparse
 import time
 from pathlib import Path
 
-from mlx_audio.sts.models.deepfilternet import DeepFilterNetModel
-from mlx_audio.sts.models.mossformer2_se import MossFormer2SEModel
-
-
-MODEL_CLASSES = {
-    "deepfilternet": DeepFilterNetModel,
-    "mossformer2": MossFormer2SEModel,
-}
-
-# Repo ID substrings to model class mapping
+# Repo ID substrings to model type mapping
 REPO_HINTS = {
     "deepfilter": "deepfilternet",
     "mossformer": "mossformer2",
@@ -116,6 +107,8 @@ def main():
     start = time.time()
 
     if model_type == "deepfilternet":
+        from mlx_audio.sts.models.deepfilternet import DeepFilterNetModel
+
         load_kwargs = {"model_name_or_path": args.model}
         if args.version is not None:
             load_kwargs["version"] = args.version
@@ -125,12 +118,7 @@ def main():
         model = DeepFilterNetModel.from_pretrained(**load_kwargs)
 
         if args.stream:
-            try:
-                model.enhance_file_streaming(str(in_path), str(out_path))
-            except NotImplementedError as exc:
-                raise NotImplementedError(
-                    f"Streaming unavailable for {model.model_version}: {exc}"
-                ) from exc
+            model.enhance_file_streaming(str(in_path), str(out_path))
             mode = "streaming"
         else:
             model.enhance_file(str(in_path), str(out_path))
@@ -138,6 +126,7 @@ def main():
 
     elif model_type == "mossformer2":
         from mlx_audio import audio_io
+        from mlx_audio.sts.models.mossformer2_se import MossFormer2SEModel
 
         model = MossFormer2SEModel.from_pretrained(args.model)
         enhanced = model.enhance(str(in_path))
