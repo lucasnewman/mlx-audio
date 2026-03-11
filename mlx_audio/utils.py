@@ -285,15 +285,15 @@ def get_model_class(
             if item.is_dir() and not item.name.startswith("__"):
                 available_models.append(item.name)
 
-    if model_type_mapped is not None:
-        model_type = model_type_mapped
-    elif model_name is not None:
+    if model_name is not None and model_type_mapped != model_type:
         for part in model_name:
             if part in available_models:
                 model_type = part
             if part in model_remapping:
                 model_type = model_remapping[part]
                 break
+    elif model_type_mapped is not None:
+        model_type = model_type_mapped
 
     try:
         module_path = f"mlx_audio.{category}.models.{model_type}"
