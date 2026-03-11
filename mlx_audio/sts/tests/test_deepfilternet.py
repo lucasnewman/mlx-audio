@@ -233,6 +233,8 @@ class TestDeepFilterNetIntegration(unittest.TestCase):
         except ImportError:
             self.skipTest("PyTorch DeepFilterNet (df) not installed")
 
+        from df.model import ModelParams
+
         # Run PyTorch inference
         model_pt, df_state, _ = init_df(log_level="ERROR")
         model_pt.eval()
@@ -241,8 +243,6 @@ class TestDeepFilterNetIntegration(unittest.TestCase):
         n_fft = df_state.fft_size()
         hop = df_state.hop_size()
         audio_padded = torch.nn.functional.pad(audio_t, (0, n_fft))
-
-        from df.model import ModelParams
 
         p = ModelParams()
         spec, erb_feat, spec_feat = df_features(

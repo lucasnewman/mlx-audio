@@ -2,28 +2,25 @@
 
 DeepFilterNet speech enhancement in pure MLX with support for model versions 1, 2, and 3.
 
+Pretrained weights: [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx)
+
 ## Quick Start
 
 ```python
 from mlx_audio.sts.models.deepfilternet import DeepFilterNetModel
 
+# Load v3 (default)
 model = DeepFilterNetModel.from_pretrained()
 model.enhance_file("noisy.wav", "clean.wav")
+
+# Load a specific version
+model = DeepFilterNetModel.from_pretrained(version=2)
+
+# Or specify the subfolder directly
+model = DeepFilterNetModel.from_pretrained(subfolder="v1")
 ```
 
-Or load from a local model directory (must contain `config.json` and weights):
-
-```python
-model = DeepFilterNetModel.from_pretrained("./models/MyDeepFilterNet")
-```
-
-Or load from a Hugging Face repo id:
-
-```python
-model = DeepFilterNetModel.from_pretrained("iky1e/DeepFilterNet3-MLX")
-```
-
-Streaming/chunked mode (true per-hop stateful processing for DF2/DF3):
+Streaming/chunked mode (true per-hop stateful processing for v2/v3):
 
 ```python
 streamer = model.create_streamer(pad_end_frames=3, compensate_delay=True)
@@ -34,13 +31,4 @@ out_tail = streamer.flush()
 
 ## Model Selection
 
-Model architecture is selected from `config.json` (`model_version`).
-
-## Example Script
-
-```bash
-python examples/deepfilternet.py examples/denoise/noisey_audio_10s.wav
-python examples/deepfilternet.py examples/denoise/noisey_audio_10s.wav --model ./models/DeepFilterNet3
-python examples/deepfilternet.py examples/denoise/noisey_audio_10s.wav --model iky1e/DeepFilterNet3-MLX
-python examples/deepfilternet.py examples/denoise/noisey_audio_10s.wav --stream
-```
+Model architecture is selected automatically from `config.json` (`model_version` field).

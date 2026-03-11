@@ -26,7 +26,14 @@ from .network import DfNet
 from .network_df1 import DfNetV1
 from .weight_loader import load_weights as load_df_weights
 
-DEFAULT_REPO = "iky1e/DeepFilterNet3-MLX"
+DEFAULT_REPO = "mlx-community/DeepFilterNet-mlx"
+DEFAULT_SUBFOLDER = "v3"
+
+VERSION_SUBFOLDER = {
+    1: "v1",
+    2: "v2",
+    3: "v3",
+}
 
 DEFAULT_CONFIGS = {
     "DeepFilterNet": DeepFilterNetConfig,
@@ -70,12 +77,24 @@ class DeepFilterNetModel:
     def from_pretrained(
         cls,
         model_name_or_path: str = DEFAULT_REPO,
+        subfolder: Optional[str] = DEFAULT_SUBFOLDER,
+        version: Optional[int] = None,
     ) -> "DeepFilterNetModel":
         """Load a pretrained DeepFilterNet model.
 
         Args:
             model_name_or_path: HuggingFace repo id or local directory path.
+            subfolder: Subfolder within the repo (e.g. "v1", "v2", "v3").
+            version: Convenience alias — 1, 2, or 3 maps to subfolder "v1"/"v2"/"v3".
+                     Overrides *subfolder* when provided.
         """
+        if version is not None:
+            subfolder = VERSION_SUBFOLDER.get(version)
+            if subfolder is None:
+                raise ValueError(
+                    f"Unsupported version={version}. Choose from 1, 2, or 3."
+                )
+
         local = Path(model_name_or_path).expanduser().resolve()
         if local.exists():
             if not local.is_dir():
@@ -83,32 +102,32 @@ class DeepFilterNetModel:
                     f"Local model path must be a directory containing "
                     f"config.json and model.safetensors: {local}"
                 )
-            config_path = local / "config.json"
-            weights_path = local / "model.safetensors"
+            model_dir = local / subfolder if subfolder else local
+            config_path = model_dir / "config.json"
+            weights_path = model_dir / "model.safetensors"
             if not config_path.exists():
                 raise FileNotFoundError(
-                    f"Missing config.json in model directory: {local}"
+                    f"Missing config.json in model directory: {model_dir}"
                 )
             if not weights_path.exists():
-                npz_fallback = local / "weights.npz"
-                if npz_fallback.exists():
-                    weights_path = npz_fallback
-                else:
-                    raise FileNotFoundError(
-                        f"Missing model.safetensors/weights.npz in: {local}"
-                    )
+                raise FileNotFoundError(
+                    f"Missing model.safetensors in: {model_dir}"
+                )
             return cls._load_from_files(
                 config_path=config_path,
                 weights_path=weights_path,
-                model_dir=local,
+                model_dir=model_dir,
             )
 
         # Treat as HuggingFace repo ID.
+        hf_kwargs = {"repo_id": model_name_or_path}
+        if subfolder:
+            hf_kwargs["subfolder"] = subfolder
         config_path = Path(
-            hf_hub_download(repo_id=model_name_or_path, filename="config.json")
+            hf_hub_download(filename="config.json", **hf_kwargs)
         )
         weights_path = Path(
-            hf_hub_download(repo_id=model_name_or_path, filename="model.safetensors")
+            hf_hub_download(filename="model.safetensors", **hf_kwargs)
         )
         return cls._load_from_files(
             config_path=config_path,
@@ -131,21 +150,6 @@ class DeepFilterNetModel:
             model_version = "DeepFilterNet3"
         config_class = DEFAULT_CONFIGS.get(model_version, DeepFilterNetConfig)
         config = config_class.from_dict(config_dict)
-
-        # libDF widths are needed when a checkpoint does not carry erb_fb (notably DF1).
-        if config.erb_widths is None:
-            try:
-                from libdf import DF
-
-                df_state = DF(
-                    sr=config.sample_rate,
-                    fft_size=config.fft_size,
-                    hop_size=config.hop_size,
-                    nb_bands=config.nb_erb,
-                )
-                config.erb_widths = [int(w) for w in df_state.erb_widths().tolist()]
-            except Exception:
-                pass
 
         if model_version == "DeepFilterNet":
             model = DfNetV1(config)
