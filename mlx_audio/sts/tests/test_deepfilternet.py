@@ -232,7 +232,9 @@ class TestDeepFilterNetIntegration(unittest.TestCase):
         """
         import soundfile as sf
 
-        target_path = self.REPO_ROOT / "examples" / "denoise" / "noisey_audio_10s_target.wav"
+        target_path = (
+            self.REPO_ROOT / "examples" / "denoise" / "noisey_audio_10s_target.wav"
+        )
         if not target_path.exists():
             self.skipTest(f"Target audio not found: {target_path}")
 
@@ -250,7 +252,8 @@ class TestDeepFilterNetIntegration(unittest.TestCase):
         # Correlation (actual ~0.9997, threshold 0.999)
         corr = float(np.corrcoef(target, mlx_out)[0, 1])
         self.assertGreater(
-            corr, 0.999,
+            corr,
+            0.999,
             f"Correlation {corr:.6f} should be > 0.999",
         )
 
@@ -259,14 +262,16 @@ class TestDeepFilterNetIntegration(unittest.TestCase):
         error_power = float(np.mean((target - mlx_out) ** 2))
         ser_db = 10 * np.log10(signal_power / (error_power + 1e-10))
         self.assertGreater(
-            ser_db, 25.0,
+            ser_db,
+            25.0,
             f"SER {ser_db:.1f} dB should be > 25 dB",
         )
 
         # Mean Absolute Error (actual ~0.001, threshold 0.002)
         mae = float(np.mean(np.abs(target - mlx_out)))
         self.assertLess(
-            mae, 2e-3,
+            mae,
+            2e-3,
             f"MAE {mae:.6f} should be < 0.002",
         )
 
@@ -275,7 +280,8 @@ class TestDeepFilterNetIntegration(unittest.TestCase):
         rms_mlx = float(np.sqrt(np.mean(mlx_out**2)))
         rms_diff_pct = abs(rms_target - rms_mlx) / (rms_target + 1e-10) * 100
         self.assertLess(
-            rms_diff_pct, 1.0,
+            rms_diff_pct,
+            1.0,
             f"RMS difference {rms_diff_pct:.3f}% should be < 1%",
         )
 

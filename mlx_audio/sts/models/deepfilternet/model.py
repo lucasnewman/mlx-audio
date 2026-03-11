@@ -110,9 +110,7 @@ class DeepFilterNetModel:
                     f"Missing config.json in model directory: {model_dir}"
                 )
             if not weights_path.exists():
-                raise FileNotFoundError(
-                    f"Missing model.safetensors in: {model_dir}"
-                )
+                raise FileNotFoundError(f"Missing model.safetensors in: {model_dir}")
             return cls._load_from_files(
                 config_path=config_path,
                 weights_path=weights_path,
@@ -123,12 +121,8 @@ class DeepFilterNetModel:
         hf_kwargs = {"repo_id": model_name_or_path}
         if subfolder:
             hf_kwargs["subfolder"] = subfolder
-        config_path = Path(
-            hf_hub_download(filename="config.json", **hf_kwargs)
-        )
-        weights_path = Path(
-            hf_hub_download(filename="model.safetensors", **hf_kwargs)
-        )
+        config_path = Path(hf_hub_download(filename="config.json", **hf_kwargs))
+        weights_path = Path(hf_hub_download(filename="model.safetensors", **hf_kwargs))
         return cls._load_from_files(
             config_path=config_path,
             weights_path=weights_path,
