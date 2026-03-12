@@ -10,28 +10,12 @@ MLX implementation of [SenseVoice Small](https://github.com/FunAudioLLM/SenseVoi
 - non-autoregressive inference (very fast, ~70ms for 10s audio)
 - ~234M parameters
 
-## Setup
-
-The upstream model uses PyTorch `.pt` weights. Convert them first:
-
-```bash
-# download from modelscope
-pip install modelscope
-python -c "
-from modelscope.hub.snapshot_download import snapshot_download
-snapshot_download('iic/SenseVoiceSmall', local_dir='SenseVoiceSmall')
-"
-
-# convert to safetensors
-python -m mlx_audio.stt.models.sensevoice.convert SenseVoiceSmall SenseVoiceSmall-mlx
-```
-
 ## Usage
 
 ```python
 from mlx_audio.stt import load
 
-model = load("SenseVoiceSmall-mlx")
+model = load("mlx-community/SenseVoiceSmall")
 
 result = model.generate("audio.wav", language="auto")
 print(result.text)
@@ -52,3 +36,9 @@ print(seg["event"])    # e.g. "Speech"
 ```python
 result = model.generate("audio.wav", language="auto", use_itn=True)
 ```
+
+### Available Models
+
+| Model |
+|-------|
+| [mlx-community/SenseVoiceSmall](https://huggingface.co/mlx-community/SenseVoiceSmall) |
