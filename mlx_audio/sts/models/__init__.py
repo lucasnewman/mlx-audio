@@ -25,6 +25,7 @@ from .sam_audio import (
     SeparationResult,
     save_audio,
 )
+from .moshi import MoshiConfig, MoshiSTSModel
 
 __all__ = [
     "SAMAudio",
@@ -51,4 +52,7 @@ __all__ = [
     "LFMModality",
     "ChatState",
     "GenerationConfig",
+    # Moshi
+    "MoshiConfig",
+    "MoshiSTSModel",
 ]
