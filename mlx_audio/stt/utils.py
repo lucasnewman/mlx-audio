@@ -12,6 +12,7 @@ SAMPLE_RATE = 16000
 MODEL_REMAPPING = {
     "fireredasr2": "fireredasr2",
     "glm": "glmasr",
+    "sensevoice": "sensevoice",
     "voxtral": "voxtral",
     "voxtral_realtime": "voxtral_realtime",
     "vibevoice": "vibevoice_asr",
