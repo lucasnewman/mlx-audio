@@ -8,23 +8,14 @@ MLX implementation of Xiaohongshu's FireRedASR2-AED, a conformer encoder + trans
 |-------|------------|-------------|
 | FireRedASR2-AED | ~1.18B | Conformer-AED, Mandarin + English + Chinese dialects |
 
-The original weights are available on [ModelScope](https://www.modelscope.cn/models/AntGroup/FireRedASR2-AED) and need to be converted using the included conversion script.
-
-## Conversion
-
-```bash
-pip install kaldiio sentencepiece
-python -m mlx_audio.stt.models.fireredasr2.convert /path/to/FireRedASR2-AED /path/to/output
-```
-
-This converts the PyTorch checkpoint to safetensors and extracts the CMVN stats and tokenizer files.
+Converted weights are available on Hugging Face at [`mlx-community/FireRedASR2-AED-mlx`](https://huggingface.co/mlx-community/FireRedASR2-AED-mlx).
 
 ## Python Usage
 
 ```python
 from mlx_audio.stt import load
 
-model = load("/path/to/converted-model")
+model = load("mlx-community/FireRedASR2-AED-mlx")
 
 result = model.generate("audio.wav")
 print(result.text)
