@@ -16,6 +16,7 @@ from .lfm_audio import (
     LFM2AudioProcessor,
     LFMModality,
 )
+from .moshi import MoshiConfig, MoshiSTSModel
 from .mossformer2_se import MossFormer2SE, MossFormer2SEConfig, MossFormer2SEModel
 from .sam_audio import (
     Batch,
@@ -25,7 +26,6 @@ from .sam_audio import (
     SeparationResult,
     save_audio,
 )
-from .moshi import MoshiConfig, MoshiSTSModel
 
 __all__ = [
     "SAMAudio",

@@ -5,21 +5,21 @@
 This uses Delayed Streams Modeling for TTS, as implemented in `moshi/models/tts.py`."""
 
 import argparse
-from dataclasses import dataclass
 import json
-from pathlib import Path
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
-import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 import sentencepiece
 import sphn
 
-from .client_utils import make_log
 from . import models
+from .client_utils import make_log
+from .models.tts import DEFAULT_DSM_TTS_REPO, DEFAULT_DSM_TTS_VOICE_REPO, TTSModel
 from .utils.loaders import hf_get
-from .models.tts import TTSModel, DEFAULT_DSM_TTS_REPO, DEFAULT_DSM_TTS_VOICE_REPO
 
 
 def log(level: str, msg: str):
@@ -233,9 +233,9 @@ def main():
                 tts_model.make_condition_attributes(voices, cfg_coef_conditioning)
             )
             if prefixes is not None:
-                assert len(request.voices) == 1, (
-                    "For this model, only exactly one voice is supported."
-                )
+                assert (
+                    len(request.voices) == 1
+                ), "For this model, only exactly one voice is supported."
                 prefix_path = hf_get(
                     request.voices[0], args.voice_repo, check_local_file_exists=True
                 )

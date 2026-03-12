@@ -177,9 +177,9 @@ class ScaledEmbedding(nn.Embedding):
             self.low_rank = nn.Linear(low_rank, embedding_dim, bias=False)
 
         self.demux_second_stream = demux_second_stream
-        assert self.zero_idx == -1, (
-            "When demuxing a second stream, zero_idx must be -1."
-        )
+        assert (
+            self.zero_idx == -1
+        ), "When demuxing a second stream, zero_idx must be -1."
         if self.demux_second_stream:
             self.out1 = nn.Linear(low_rank or embedding_dim, embedding_dim, bias=False)
             self.out2 = nn.Linear(low_rank or embedding_dim, embedding_dim, bias=False)

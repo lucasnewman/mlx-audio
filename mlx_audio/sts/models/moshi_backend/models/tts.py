@@ -71,7 +71,8 @@ class Entry:
         padding: if > 0, we will prevent the model from sampling a new word for that
             many steps after the current word. Note that even for `padding=0`, the model
             will be forbidden to sample a new word until all the tokens for the current word are consumed.
-        audio_tokens: is used when some audio should be used as a prefix in the model."""
+        audio_tokens: is used when some audio should be used as a prefix in the model.
+    """
 
     tokens: list[int]
     text: str
@@ -554,9 +555,9 @@ class TTSModel:
         text_prefixes = None
         audio_prefixes = None
         if prefixes is not None:
-            assert len(all_entries) == len(prefixes), (
-                f"Not enough prefixes, expected {len(all_entries)}."
-            )
+            assert len(all_entries) == len(
+                prefixes
+            ), f"Not enough prefixes, expected {len(all_entries)}."
             if cfg_is_no_prefix:
                 cfg_is_masked_until = []
             text_prefixes = []
