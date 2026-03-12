@@ -85,7 +85,7 @@ class TestFishSpeechPrompt(unittest.TestCase):
 class TestFishSpeechModel(unittest.TestCase):
     def test_model_type_remapping_uses_config_value(self):
         module, model_type = get_model_and_args("fish_qwen3_omni", ["s2", "pro"])
-        self.assertEqual(model_type, "fish_speech")
+        self.assertEqual(model_type, "fish_qwen3_omni")
         self.assertTrue(hasattr(module, "Model"))
 
     def test_sanitize_remaps_upstream_keys(self):
