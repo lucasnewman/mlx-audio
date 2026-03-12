@@ -91,8 +91,8 @@ class MoshiSTSModel:
         gen = moshi_models.LmGen(
             model=self.model,
             max_steps=steps + 5,
-            text_sampler=moshi_utils.Sampler(),
-            audio_sampler=moshi_utils.Sampler(),
+            text_sampler=moshi_utils.Sampler(temp=0.8),
+            audio_sampler=moshi_utils.Sampler(temp=0.8),
         )
         
         other_cb = self.model.cfg.other_codebooks
