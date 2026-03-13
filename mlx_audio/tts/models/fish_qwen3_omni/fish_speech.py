@@ -4,7 +4,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -127,7 +127,7 @@ class Attention(nn.Module):
     def __call__(
         self,
         x: mx.array,
-        mask: Optional[mx.array] = None,
+        mask: Union[None, str, mx.array] = None,
         cache: Optional[KVCache] = None,
     ) -> mx.array:
         bsz, seqlen, _ = x.shape
@@ -148,11 +148,9 @@ class Attention(nn.Module):
             q = self.rope(q, offset=cache.offset)
             k = self.rope(k, offset=cache.offset)
             k, v = cache.update_and_fetch(k, v)
-            mask = "causal"
         else:
             q = self.rope(q)
             k = self.rope(k)
-            mask = None if mask is None else "causal"
 
         output = mx.fast.scaled_dot_product_attention(
             q,
