@@ -1,6 +1,7 @@
 """Tests for mlx_audio.audio_io module."""
 
 import io
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -8,6 +9,9 @@ import numpy as np
 import pytest
 
 from mlx_audio.audio_io import read, write
+
+# Check if ffmpeg is available for optional tests
+FFMPEG_AVAILABLE = shutil.which("ffmpeg") is not None
 
 
 class TestAudioIOFormats:
@@ -59,6 +63,7 @@ class TestAudioIOFormats:
         assert read_samplerate == samplerate
         assert read_data.shape == data.shape
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_read_mp3(self, sample_audio_mono, tmp_path):
         """Test writing and reading MP3 file."""
         data, samplerate = sample_audio_mono
@@ -74,6 +79,7 @@ class TestAudioIOFormats:
         tolerance = max(data.shape[0] * 0.2, samplerate * 0.5)
         assert abs(read_data.shape[0] - data.shape[0]) < tolerance
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_read_flac(self, sample_audio_stereo, tmp_path):
         """Test writing and reading FLAC file."""
         data, samplerate = sample_audio_stereo
@@ -86,6 +92,7 @@ class TestAudioIOFormats:
         assert read_samplerate == samplerate
         assert read_data.shape == data.shape
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_read_ogg(self, sample_audio_mono, tmp_path):
         """Test writing and reading OGG Vorbis file."""
         data, samplerate = sample_audio_mono
@@ -102,6 +109,7 @@ class TestAudioIOFormats:
         tolerance = max(data.shape[0] * 0.2, samplerate * 0.5)
         assert abs(read_data.shape[0] - data.shape[0]) < tolerance
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_read_opus(self, sample_audio_stereo, tmp_path):
         """Test writing and reading Opus file."""
         data, samplerate = sample_audio_stereo
@@ -117,6 +125,7 @@ class TestAudioIOFormats:
         # Opus always decodes to 48kHz, but ffmpeg may resample back to original
         assert read_data.shape[0] > 0  # Just verify we got data
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_read_vorbis(self, sample_audio_mono, tmp_path):
         """Test writing and reading Vorbis (OGG) file."""
         data, samplerate = sample_audio_mono
@@ -132,6 +141,7 @@ class TestAudioIOFormats:
         tolerance = max(data.shape[0] * 0.2, samplerate * 0.5)
         assert abs(read_data.shape[0] - data.shape[0]) < tolerance
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_bytesio_ogg(self, sample_audio_mono):
         """Test writing OGG to BytesIO."""
         data, samplerate = sample_audio_mono
@@ -145,6 +155,7 @@ class TestAudioIOFormats:
         read_data, read_samplerate = read(buffer)
         assert read_samplerate == samplerate
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_bytesio_opus(self, sample_audio_stereo):
         """Test writing Opus to BytesIO."""
         data, samplerate = sample_audio_stereo
@@ -158,6 +169,7 @@ class TestAudioIOFormats:
         read_data, read_samplerate = read(buffer)
         assert read_data.shape[0] > 0  # Just verify we got data
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_format_inference_from_extension(self, sample_audio_mono, tmp_path):
         """Test format inference from file extension."""
         data, samplerate = sample_audio_mono
@@ -171,6 +183,7 @@ class TestAudioIOFormats:
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_int16_input(self, sample_audio_mono, tmp_path):
         """Test writing with int16 input data."""
         data, samplerate = sample_audio_mono
@@ -184,6 +197,7 @@ class TestAudioIOFormats:
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_float64_input(self, sample_audio_stereo, tmp_path):
         """Test writing with float64 input data."""
         data, samplerate = sample_audio_stereo
@@ -201,6 +215,7 @@ class TestAudioIOFormats:
 class TestAudioIOEdgeCases:
     """Test edge cases and error handling."""
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_clipping(self, tmp_path):
         """Test that values outside [-1, 1] are clipped."""
         samplerate = 16000
@@ -211,6 +226,7 @@ class TestAudioIOEdgeCases:
         write(output_file, data, samplerate, format="ogg")
         assert output_file.exists()
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_empty_audio(self, tmp_path):
         """Test handling of very short audio."""
         samplerate = 16000
@@ -221,6 +237,7 @@ class TestAudioIOEdgeCases:
         write(output_file, data, samplerate, format="opus")
         assert output_file.exists()
 
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_different_sample_rates(self, tmp_path):
         """Test various sample rates."""
         data = np.sin(2 * np.pi * 440 * np.linspace(0, 1, 16000)).astype(np.float32)
