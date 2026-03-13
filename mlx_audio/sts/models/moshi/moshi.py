@@ -5,11 +5,12 @@ from typing import Any, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 from .mimi_streamer import StreamTokenizer
-from ...codec.models.mimi.mimi import Mimi, mimi_202407
+from mlx_audio.codec.models.mimi.mimi import Mimi, mimi_202407
 import sentencepiece
 from huggingface_hub import snapshot_download
 
 from . import generate as moshi_models
+from . import lm as moshi_lm
 from .utils import sampling as moshi_utils
 
 
@@ -26,8 +27,8 @@ class MoshiConfig:
 class MoshiSTSModel:
     def __init__(self, config: MoshiConfig):
         self.config = config
-        self.lm_config = moshi_models.config_v0_1()
-        self.model = moshi_models.Lm(self.lm_config)
+        self.lm_config = moshi_lm.config_v0_1()
+        self.model = moshi_lm.Lm(self.lm_config)
         self.model.set_dtype(mx.bfloat16)
 
         if config.quantized is not None:
@@ -70,9 +71,9 @@ class MoshiSTSModel:
             str(path / "tokenizer_spm_32k_3.model")
         )
         # Load the Mimi MLX model
-        mimi_config = mimi_202407(8) # Moshi uses 8 codebooks
+        mimi_config = mimi_202407(32) # Moshi uses 8 codebooks
         mimi_model = Mimi(mimi_config)
-        mimi_model.load_pytorch_weights(str(path / "tokenizer-e351c8d8-checkpoint125.safetensors"), strict=True)
+        mimi_model.load_pytorch_weights(str(path / "tokenizer-e351c8d8-checkpoint125.safetensors"), strict=False)
         self.audio_tokenizer = StreamTokenizer(mimi_model)
 
     def warmup_tokenizer(self):

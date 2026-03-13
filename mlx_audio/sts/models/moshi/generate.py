@@ -6,7 +6,7 @@ from typing import Optional
 
 import mlx.core as mx
 
-from . import Lm
+from .lm import Lm
 from .modules.conditioner import ConditionTensor
 from .utils import sampling
 
