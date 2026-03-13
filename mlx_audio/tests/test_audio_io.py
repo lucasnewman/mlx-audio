@@ -39,10 +39,10 @@ class TestAudioIOFormats:
         """Test writing and reading mono WAV file."""
         data, samplerate = sample_audio_mono
         output_file = tmp_path / "test_mono.wav"
-        
+
         write(output_file, data, samplerate, format="wav")
         assert output_file.exists()
-        
+
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
         assert read_data.shape[0] == data.shape[0]
@@ -51,10 +51,10 @@ class TestAudioIOFormats:
         """Test writing and reading stereo WAV file."""
         data, samplerate = sample_audio_stereo
         output_file = tmp_path / "test_stereo.wav"
-        
+
         write(output_file, data, samplerate, format="wav")
         assert output_file.exists()
-        
+
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
         assert read_data.shape == data.shape
@@ -63,10 +63,10 @@ class TestAudioIOFormats:
         """Test writing and reading MP3 file."""
         data, samplerate = sample_audio_mono
         output_file = tmp_path / "test.mp3"
-        
+
         write(output_file, data, samplerate, format="mp3")
         assert output_file.exists()
-        
+
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
         # MP3 is lossy and may have padding, so we check shape is reasonable
@@ -78,10 +78,10 @@ class TestAudioIOFormats:
         """Test writing and reading FLAC file."""
         data, samplerate = sample_audio_stereo
         output_file = tmp_path / "test.flac"
-        
+
         write(output_file, data, samplerate, format="flac")
         assert output_file.exists()
-        
+
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
         assert read_data.shape == data.shape
@@ -90,11 +90,11 @@ class TestAudioIOFormats:
         """Test writing and reading OGG Vorbis file."""
         data, samplerate = sample_audio_mono
         output_file = tmp_path / "test.ogg"
-        
+
         write(output_file, data, samplerate, format="ogg")
         assert output_file.exists()
         assert output_file.stat().st_size > 0
-        
+
         # Verify we can read it back via ffmpeg
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
@@ -106,11 +106,11 @@ class TestAudioIOFormats:
         """Test writing and reading Opus file."""
         data, samplerate = sample_audio_stereo
         output_file = tmp_path / "test.opus"
-        
+
         write(output_file, data, samplerate, format="opus")
         assert output_file.exists()
         assert output_file.stat().st_size > 0
-        
+
         # Verify we can read it back via ffmpeg
         # Note: Opus internally uses 48kHz, so reading may return different sample rate
         read_data, read_samplerate = read(output_file)
@@ -121,11 +121,11 @@ class TestAudioIOFormats:
         """Test writing and reading Vorbis (OGG) file."""
         data, samplerate = sample_audio_mono
         output_file = tmp_path / "test_vorbis.ogg"
-        
+
         write(output_file, data, samplerate, format="vorbis")
         assert output_file.exists()
         assert output_file.stat().st_size > 0
-        
+
         # Verify we can read it back
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
@@ -136,10 +136,10 @@ class TestAudioIOFormats:
         """Test writing OGG to BytesIO."""
         data, samplerate = sample_audio_mono
         buffer = io.BytesIO()
-        
+
         write(buffer, data, samplerate, format="ogg")
         assert buffer.getvalue()  # Should have content
-        
+
         # Verify we can read it back
         buffer.seek(0)
         read_data, read_samplerate = read(buffer)
@@ -149,10 +149,10 @@ class TestAudioIOFormats:
         """Test writing Opus to BytesIO."""
         data, samplerate = sample_audio_stereo
         buffer = io.BytesIO()
-        
+
         write(buffer, data, samplerate, format="opus")
         assert buffer.getvalue()  # Should have content
-        
+
         # Verify we can read it back
         buffer.seek(0)
         read_data, read_samplerate = read(buffer)
@@ -161,12 +161,12 @@ class TestAudioIOFormats:
     def test_format_inference_from_extension(self, sample_audio_mono, tmp_path):
         """Test format inference from file extension."""
         data, samplerate = sample_audio_mono
-        
+
         # Test OGG extension (opus format needs explicit format parameter)
         output_file = tmp_path / "test.ogg"
         write(output_file, data, samplerate)  # No format specified
         assert output_file.exists(), "Failed to create OGG file"
-        
+
         # Verify file can be read back
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
@@ -176,11 +176,11 @@ class TestAudioIOFormats:
         data, samplerate = sample_audio_mono
         # Convert to int16
         data_int16 = (data * 32767).astype(np.int16)
-        
+
         output_file = tmp_path / "test_int16.ogg"
         write(output_file, data_int16, samplerate, format="ogg")
         assert output_file.exists()
-        
+
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
 
@@ -189,11 +189,11 @@ class TestAudioIOFormats:
         data, samplerate = sample_audio_stereo
         # Convert to float64
         data_float64 = data.astype(np.float64)
-        
+
         output_file = tmp_path / "test_float64.ogg"
         write(output_file, data_float64, samplerate, format="ogg")
         assert output_file.exists()
-        
+
         read_data, read_samplerate = read(output_file)
         assert read_samplerate == samplerate
 
@@ -206,7 +206,7 @@ class TestAudioIOEdgeCases:
         samplerate = 16000
         # Create data with values outside [-1, 1]
         data = np.array([1.5, -1.5, 0.5, -0.5], dtype=np.float32)
-        
+
         output_file = tmp_path / "test_clipped.ogg"
         write(output_file, data, samplerate, format="ogg")
         assert output_file.exists()
@@ -216,7 +216,7 @@ class TestAudioIOEdgeCases:
         samplerate = 16000
         # Create very short audio (just a few samples)
         data = np.array([0.0, 0.1, -0.1], dtype=np.float32)
-        
+
         output_file = tmp_path / "test_short.opus"
         write(output_file, data, samplerate, format="opus")
         assert output_file.exists()
@@ -224,7 +224,7 @@ class TestAudioIOEdgeCases:
     def test_different_sample_rates(self, tmp_path):
         """Test various sample rates."""
         data = np.sin(2 * np.pi * 440 * np.linspace(0, 1, 16000)).astype(np.float32)
-        
+
         for samplerate in [8000, 16000, 22050, 44100, 48000]:
             output_file = tmp_path / f"test_{samplerate}.ogg"
             write(output_file, data, samplerate, format="ogg")
