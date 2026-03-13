@@ -339,6 +339,7 @@ class DualARTransformer(nn.Module):
         return self.fast_output(x[:, -1])
 
 
+@mx.compile
 def _sample_logits(
     logits: mx.array, temperature: float, top_p: float, top_k: int
 ) -> mx.array:
