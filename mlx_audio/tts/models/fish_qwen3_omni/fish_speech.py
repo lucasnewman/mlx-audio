@@ -152,8 +152,7 @@ class Attention(nn.Module):
         else:
             q = self.rope(q)
             k = self.rope(k)
-            if isinstance(mask, str):
-                mask = "causal"
+            mask = None if mask is None else "causal"
 
         output = mx.fast.scaled_dot_product_attention(
             q,
@@ -434,7 +433,7 @@ class Model(nn.Module):
             remapped[f"model.{new_key}"] = value
         return remapped
 
-    def _build_base_conversation(
+    def _build_conversation(
         self, prompt_texts: list[str], prompt_tokens: list[mx.array]
     ) -> Conversation:
         conversation = Conversation()
@@ -650,7 +649,7 @@ class Model(nn.Module):
             prompt_tokens.append(indices[0, :, :prompt_length])
             prompt_texts.append(ref_text or "")
 
-        base_conversation = self._build_base_conversation(prompt_texts, prompt_tokens)
+        base_conversation = self._build_conversation(prompt_texts, prompt_tokens)
         turns = split_text_by_speaker(text)
         batches = (
             group_turns_into_batches(turns, max_speakers=5, max_bytes=chunk_length)

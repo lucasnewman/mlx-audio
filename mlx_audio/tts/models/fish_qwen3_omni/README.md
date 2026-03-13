@@ -21,6 +21,12 @@ results = list(
 audio = results[0].audio  # mx.array
 ```
 
+## Fine-Grained Inline Control
+
+S2 Pro enables localized control over speech generation by embedding natural-language instructions directly within the text using `[tag]` syntax. S2 Pro accepts free-form textual descriptions for open-ended expression control at the word level. Examples include:
+
+`[pause]` `[emphasis]` `[laughing]` `[inhale]` `[chuckle]` `[tsk]` `[singing]` `[excited]` `[laughing tone]` `[interrupting]` `[chuckling]` `[excited tone]` `[volume up]` `[echo]` `[angry]` `[low volume]` `[sigh]` `[low voice]` `[whisper]` `[screaming]` `[shouting]` `[loud]` `[surprised]` `[short pause]` `[exhale]` `[delight]` `[panting]` `[audience laughter]` `[with strong accent]` `[volume down]` `[clearing throat]` `[sad]` `[moaning]` `[shocked]`
+
 ## Multi-Speaker Tags
 
 Fish Speech supports inline speaker tags such as `<|speaker:0|>` and `<|speaker:1|>`:
