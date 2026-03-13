@@ -4,13 +4,14 @@ from typing import Any, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from .mimi_streamer import StreamTokenizer
-from mlx_audio.codec.models.mimi.mimi import Mimi, mimi_202407
 import sentencepiece
 from huggingface_hub import snapshot_download
 
+from mlx_audio.codec.models.mimi.mimi import Mimi, mimi_202407
+
 from . import generate as moshi_models
 from . import lm as moshi_lm
+from .mimi_streamer import StreamTokenizer
 from .utils import sampling as moshi_utils
 
 
@@ -71,9 +72,11 @@ class MoshiSTSModel:
             str(path / "tokenizer_spm_32k_3.model")
         )
         # Load the Mimi MLX model
-        mimi_config = mimi_202407(32) # Moshi uses 8 codebooks
+        mimi_config = mimi_202407(32)  # Moshi uses 8 codebooks
         mimi_model = Mimi(mimi_config)
-        mimi_model.load_pytorch_weights(str(path / "tokenizer-e351c8d8-checkpoint125.safetensors"), strict=False)
+        mimi_model.load_pytorch_weights(
+            str(path / "tokenizer-e351c8d8-checkpoint125.safetensors"), strict=False
+        )
         self.audio_tokenizer = StreamTokenizer(mimi_model)
 
     def warmup_tokenizer(self):
