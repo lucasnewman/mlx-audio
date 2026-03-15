@@ -3,7 +3,7 @@ import unittest
 import mlx.core as mx
 
 from mlx_audio.sts.models.moshi.moshi import MoshiConfig, MoshiSTSModel
-from mlx_audio.sts.models.moshi_backend import models
+from mlx_audio.sts.models.moshi import lm as moshi_models
 
 
 class TestMoshi(unittest.TestCase):
@@ -17,7 +17,7 @@ class TestMoshi(unittest.TestCase):
         model = MoshiSTSModel(config)
 
         # Verify it created the backend LM with correct types
-        self.assertIsInstance(model.model, models.Lm)
+        self.assertIsInstance(model.model, moshi_models.Lm)
         self.assertEqual(model.model.cfg.text_out_vocab_size, 32000)
         self.assertEqual(model.model.cfg.audio_codebooks, 16)
 
