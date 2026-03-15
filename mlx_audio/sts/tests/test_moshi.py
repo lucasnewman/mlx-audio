@@ -2,8 +2,8 @@ import unittest
 
 import mlx.core as mx
 
-from mlx_audio.sts.models.moshi.moshi import MoshiConfig, MoshiSTSModel
 from mlx_audio.sts.models.moshi import lm as moshi_models
+from mlx_audio.sts.models.moshi.moshi import MoshiConfig, MoshiSTSModel
 
 
 class TestMoshi(unittest.TestCase):
