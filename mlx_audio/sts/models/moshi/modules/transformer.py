@@ -288,5 +288,3 @@ class Transformer(nn.Module):
             )
             for _ in self.layers
         ]
-
-
