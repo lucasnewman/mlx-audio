@@ -16,5 +16,5 @@ from .conv import (
 )
 from .kv_cache import KVCache, RotatingKVCache
 from .quantization import EuclideanCodebook, SplitResidualVectorQuantizer
-from .seanet import SeanetConfig, SeanetDecoder, SeanetEncoder
-from .transformer import ProjectedTransformer, Transformer, TransformerConfig
+
+from .transformer import Transformer, TransformerConfig

@@ -7,14 +7,7 @@ MLX implementation of [Moshi](https://github.com/kyutai-labs/moshi) from Kyutai 
 - Full-duplex: Handles concurrent input and output audio streams
 - Multi-modal: Simultaneously generates text ("inner monologue") and audio tokens
 - Ultra-low latency: ~200ms theoretical latency
-- Streaming generation via `rustymimi` codec
-
-## Requirements
-
-Install the dependencies for the Mimi codec:
-```bash
-pip install rustymimi sphn
-```
+- Streaming generation natively via MLX
 
 ## Usage
 
