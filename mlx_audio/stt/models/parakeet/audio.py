@@ -59,7 +59,13 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     if window.shape[0] < args.n_fft:
         left = (args.n_fft - window.shape[0]) // 2
         right = args.n_fft - window.shape[0] - left
-        window = mx.concatenate([mx.zeros([left]), window, mx.zeros([right])])
+        window = mx.concatenate(
+            [
+                mx.zeros((left,), dtype=window.dtype),
+                window,
+                mx.zeros((right,), dtype=window.dtype),
+            ]
+        )
 
     x = stft(x, args.n_fft, args.hop_length, args.n_fft, window, pad_mode="constant")
     x = mx.square(mx.abs(x)).astype(original_dtype)
@@ -68,7 +74,7 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     )
     x = filters.astype(x.dtype) @ x.T
 
-    log_guard = getattr(args, "log_zero_guard_value", 2**-24)
+    log_guard = mx.array(args.log_zero_guard_value, dtype=x.dtype)
     x = mx.log(x + log_guard)
 
     if args.normalize == "per_feature":
