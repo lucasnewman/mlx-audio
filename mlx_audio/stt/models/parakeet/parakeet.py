@@ -37,28 +37,6 @@ from mlx_audio.utils import from_dict
 
 
 @dataclass
-class PreprocessArgs:
-    sample_rate: int
-    normalize: str
-    window_size: float
-    window_stride: float
-    window: str
-    features: int
-    n_fft: int
-    dither: float
-    pad_to: int = 0
-    pad_value: float = 0
-
-    @property
-    def win_length(self) -> int:
-        return int(self.window_size * self.sample_rate)
-
-    @property
-    def hop_length(self) -> int:
-        return int(self.window_stride * self.sample_rate)
-
-
-@dataclass
 class TDTDecodingArgs:
     model_type: str
     durations: list[int]
