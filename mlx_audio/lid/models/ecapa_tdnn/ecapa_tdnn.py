@@ -36,7 +36,7 @@ class DNNBlock(nn.Module):
         self.norm = nn.BatchNorm(out_dim)
 
     def __call__(self, x: mx.array) -> mx.array:
-        return nn.relu(self.norm(self.linear(x)))
+        return self.norm(nn.leaky_relu(self.linear(x), negative_slope=0.01))
 
 
 class DNN(nn.Module):
@@ -66,6 +66,7 @@ class EcapaClassifier(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         out = mx.squeeze(x, axis=1)
+        out = nn.leaky_relu(out, negative_slope=0.01)
         out = self.norm(out)
         out = self.DNN(out)
         out = self.out(out)
@@ -121,9 +122,15 @@ class ECAPA_TDNN(nn.Module):
         Returns:
             Log-probabilities ``[batch, num_classes]``.
         """
-        embeddings = self.embedding_model(mel_features)
+        normalized_mel_features = self.sentence_mean_normalize(mel_features)
+        embeddings = self.embedding_model(normalized_mel_features)
         embeddings = mx.expand_dims(embeddings, axis=1)
         return self.classifier(embeddings)
+
+    @staticmethod
+    def sentence_mean_normalize(mel_features: mx.array) -> mx.array:
+        """Mirror SpeechBrain's sentence-level mean-only InputNormalization."""
+        return mel_features - mx.mean(mel_features, axis=1, keepdims=True)
 
     def predict(
         self,
