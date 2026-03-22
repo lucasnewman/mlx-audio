@@ -113,9 +113,7 @@ class LowRankAdaLN(nn.Module):
         self.scale_up = nn.Linear(rank, model_dim, bias=True)
         self.gate_up = nn.Linear(rank, model_dim, bias=True)
 
-    def __call__(
-        self, x: mx.array, cond_embed: mx.array
-    ) -> Tuple[mx.array, mx.array]:
+    def __call__(self, x: mx.array, cond_embed: mx.array) -> Tuple[mx.array, mx.array]:
         shift, scale, gate = mx.split(cond_embed, 3, axis=-1)
         shift = self.shift_up(self.shift_down(nn.silu(shift))) + shift
         scale = self.scale_up(self.scale_down(nn.silu(scale))) + scale
@@ -324,7 +322,9 @@ class TextBlock(nn.Module):
     def __call__(
         self, x: mx.array, mask: Optional[mx.array], freqs_cis: RotaryCache
     ) -> mx.array:
-        x = x + self.attention(self.attention_norm(x), key_mask=mask, freqs_cis=freqs_cis)
+        x = x + self.attention(
+            self.attention_norm(x), key_mask=mask, freqs_cis=freqs_cis
+        )
         x = x + self.mlp(self.mlp_norm(x))
         return x
 
@@ -394,9 +394,7 @@ class ReferenceLatentEncoder(nn.Module):
             TextBlock(dim, heads, mlp_hidden, norm_eps) for _ in range(num_layers)
         ]
 
-    def __call__(
-        self, latent: mx.array, mask: Optional[mx.array] = None
-    ) -> mx.array:
+    def __call__(self, latent: mx.array, mask: Optional[mx.array] = None) -> mx.array:
         x = self.in_proj(latent) / 6.0
         freqs_cis = precompute_freqs_cis(self.head_dim, x.shape[1])
         if mask is not None:
@@ -453,8 +451,13 @@ class DiffusionBlock(nn.Module):
     ) -> mx.array:
         x_norm, attn_gate = self.attention_adaln(x, cond_embed)
         x = x + attn_gate * self.attention(
-            x_norm, text_mask, speaker_mask, freqs_cis,
-            kv_cache_text, kv_cache_speaker, start_pos,
+            x_norm,
+            text_mask,
+            speaker_mask,
+            freqs_cis,
+            kv_cache_text,
+            kv_cache_speaker,
+            start_pos,
         )
         x_norm, mlp_gate = self.mlp_adaln(x, cond_embed)
         x = x + mlp_gate * self.mlp(x_norm)
@@ -554,7 +557,9 @@ class IrodoriDiT(nn.Module):
         speaker_state: mx.array,
     ) -> Tuple[List[KVCache], List[KVCache]]:
         """Pre-compute per-layer text/speaker KV projections for fast sampling."""
-        kv_text = [block.attention.get_kv_cache_text(text_state) for block in self.blocks]
+        kv_text = [
+            block.attention.get_kv_cache_text(text_state) for block in self.blocks
+        ]
         kv_speaker = [
             block.attention.get_kv_cache_speaker(speaker_state) for block in self.blocks
         ]
@@ -576,7 +581,9 @@ class IrodoriDiT(nn.Module):
         kv_speaker: Optional[List[KVCache]] = None,
         start_pos: int = 0,
     ) -> mx.array:
-        t_embed = get_timestep_embedding(t, self.cfg.timestep_embed_dim).astype(x_t.dtype)
+        t_embed = get_timestep_embedding(t, self.cfg.timestep_embed_dim).astype(
+            x_t.dtype
+        )
         cond_embed = self.cond_module(t_embed)[:, None, :]  # (B, 1, 3*model_dim)
 
         x = self.in_proj(x_t)
@@ -594,8 +601,14 @@ class IrodoriDiT(nn.Module):
                 else block.attention.get_kv_cache_speaker(speaker_state)
             )
             x = block(
-                x, cond_embed, text_mask, speaker_mask,
-                freqs_cis, kv_t, kv_s, start_pos,
+                x,
+                cond_embed,
+                text_mask,
+                speaker_mask,
+                freqs_cis,
+                kv_t,
+                kv_s,
+                start_pos,
             )
 
         x = self.out_norm(x)

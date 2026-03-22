@@ -14,8 +14,8 @@ import numpy as np
 _REPLACE_MAP: dict[str, str] = {
     r"\t": "",
     r"\[n\]": "",
-    r" ": "",       # narrow no-break space (U+202F) / ideographic space handled below
-    r"　": "",       # ideographic space
+    r" ": "",  # narrow no-break space (U+202F) / ideographic space handled below
+    r"　": "",  # ideographic space
     r"[;▼♀♂《》≪≫①②③④⑤⑥]": "",
     r"[\u02d7\u2010-\u2015\u2043\u2212\u23af\u23e4\u2500\u2501\u2e3a\u2e3b]": "",
     r"[\uff5e\u301C]": "ー",
@@ -38,7 +38,10 @@ _FULLWIDTH_ALPHA_TO_HALFWIDTH = str.maketrans(
 
 # Fullwidth 0-9 → halfwidth
 _FULLWIDTH_DIGITS_TO_HALFWIDTH = str.maketrans(
-    {chr(full): chr(half) for full, half in zip(range(0xFF10, 0xFF1A), range(0x30, 0x3A))}
+    {
+        chr(full): chr(half)
+        for full, half in zip(range(0xFF10, 0xFF1A), range(0x30, 0x3A))
+    }
 )
 
 # Halfwidth katakana → fullwidth katakana
@@ -67,7 +70,11 @@ def normalize_text(text: str) -> str:
 
     # Strip surrounding bracket pairs
     for open_br, close_br in [
-        ("「", "」"), ("『", "』"), ("（", "）"), ("【", "】"), ("(", ")")
+        ("「", "」"),
+        ("『", "』"),
+        ("（", "）"),
+        ("【", "】"),
+        ("(", ")"),
     ]:
         if text.startswith(open_br) and text.endswith(close_br):
             text = text[1:-1]
