@@ -99,12 +99,14 @@ class Model(nn.Module):
                 dac = DACVAE(cfg)
                 dac.load_weights(str(local_dacvae / "model.safetensors"))
                 import mlx.core as _mx
+
                 _mx.eval(dac.parameters())
                 model.dacvae = dac
             else:
                 model.dacvae = DACVAE.from_pretrained(model.config.dacvae_repo)
         except Exception as e:
             import warnings
+
             warnings.warn(
                 f"Could not load DACVAE: {e}\n"
                 "Set model.dacvae manually before calling generate()."
@@ -119,6 +121,7 @@ class Model(nn.Module):
     def _get_tokenizer(self):
         if self._tokenizer is None:
             from transformers import AutoTokenizer
+
             self._tokenizer = AutoTokenizer.from_pretrained(
                 self.config.dit.text_tokenizer_repo
             )
@@ -147,9 +150,7 @@ class Model(nn.Module):
     # Reference audio encoding
     # ------------------------------------------------------------------
 
-    def _encode_ref_audio(
-        self, audio: mx.array
-    ) -> tuple[mx.array, mx.array]:
+    def _encode_ref_audio(self, audio: mx.array) -> tuple[mx.array, mx.array]:
         """
         Encode reference waveform with DACVAE.
         audio: (1, samples) at config.sample_rate
@@ -157,13 +158,15 @@ class Model(nn.Module):
         """
         assert self.dacvae is not None, "DACVAE not loaded"
 
-        max_samples = self.config.max_speaker_latent_length * self.config.audio_downsample_factor
+        max_samples = (
+            self.config.max_speaker_latent_length * self.config.audio_downsample_factor
+        )
         audio = audio[:, :max_samples]
 
         # DACVAE encode expects (B, L, 1)
-        audio_in = audio[:, :, None]                   # (1, L, 1)
-        latent = self.dacvae.encode(audio_in)          # (1, 128, T) channels-first
-        latent = mx.transpose(latent, (0, 2, 1))       # (1, T, 128) sequence-first
+        audio_in = audio[:, :, None]  # (1, L, 1)
+        latent = self.dacvae.encode(audio_in)  # (1, 128, T) channels-first
+        latent = mx.transpose(latent, (0, 2, 1))  # (1, T, 128) sequence-first
 
         actual_t = int(audio.shape[1]) // self.config.audio_downsample_factor
         actual_t = min(actual_t, latent.shape[1])
@@ -266,8 +269,8 @@ class Model(nn.Module):
         # Decode latent → waveform
         # latent_out: (1, T, 128)
         latent_for_decode = mx.transpose(latent_out, (0, 2, 1))  # (1, 128, T)
-        audio_out = self.dacvae.decode(latent_for_decode)        # (1, L, 1)
-        audio_out = audio_out[:, :, 0]                           # (1, L)
+        audio_out = self.dacvae.decode(latent_for_decode)  # (1, L, 1)
+        audio_out = audio_out[:, :, 0]  # (1, L)
 
         # Trim trailing silence
         silence_t = _find_silence_point(latent_out[0])
@@ -277,7 +280,9 @@ class Model(nn.Module):
         audio = audio_out[0]  # (L,)
         samples = int(audio.shape[0])
         elapsed = max(time.perf_counter() - start_time, 1e-6)
-        audio_duration_seconds = samples / self.sample_rate if self.sample_rate > 0 else 0.0
+        audio_duration_seconds = (
+            samples / self.sample_rate if self.sample_rate > 0 else 0.0
+        )
 
         h = int(audio_duration_seconds // 3600)
         m = int((audio_duration_seconds % 3600) // 60)

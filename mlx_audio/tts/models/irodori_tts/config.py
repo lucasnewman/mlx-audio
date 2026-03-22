@@ -49,11 +49,19 @@ class IrodoriDiTConfig(BaseModelArgs):
 
     @property
     def text_mlp_ratio_resolved(self) -> float:
-        return self.mlp_ratio if self.text_mlp_ratio is None else float(self.text_mlp_ratio)
+        return (
+            self.mlp_ratio
+            if self.text_mlp_ratio is None
+            else float(self.text_mlp_ratio)
+        )
 
     @property
     def speaker_mlp_ratio_resolved(self) -> float:
-        return self.mlp_ratio if self.speaker_mlp_ratio is None else float(self.speaker_mlp_ratio)
+        return (
+            self.mlp_ratio
+            if self.speaker_mlp_ratio is None
+            else float(self.speaker_mlp_ratio)
+        )
 
 
 @dataclass

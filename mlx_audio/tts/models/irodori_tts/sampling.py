@@ -58,8 +58,8 @@ def _temporal_score_rescale(
     if t >= 1.0:
         return v_pred
     one_minus_t = 1.0 - t
-    snr = (one_minus_t ** 2) / (t ** 2)
-    sigma_sq = rescale_sigma ** 2
+    snr = (one_minus_t**2) / (t**2)
+    sigma_sq = rescale_sigma**2
     ratio = (snr * sigma_sq + 1.0) / (snr * sigma_sq / rescale_k + 1.0)
     return (ratio * (one_minus_t * v_pred + x_t) - x_t) / one_minus_t
 
@@ -237,13 +237,19 @@ def sample_euler_cfg(
                         axis=0,
                     )
                     v_out = model.forward_with_conditions(
-                        x_t=x_cfg, t=t_cfg,
+                        x_t=x_cfg,
+                        t=t_cfg,
                         text_state=mx.concatenate(
-                            [text_state_cond, text_state_uncond, text_state_cond], axis=0
+                            [text_state_cond, text_state_uncond, text_state_cond],
+                            axis=0,
                         ),
                         text_mask=text_mask_cfg,
                         speaker_state=mx.concatenate(
-                            [speaker_state_cond, speaker_state_cond, speaker_state_uncond],
+                            [
+                                speaker_state_cond,
+                                speaker_state_cond,
+                                speaker_state_uncond,
+                            ],
                             axis=0,
                         ),
                         speaker_mask=speaker_mask_cfg,
@@ -261,7 +267,8 @@ def sample_euler_cfg(
                     x_cfg = mx.concatenate([x_t, x_t], axis=0)
                     t_cfg = mx.full((batch_size * 2,), t, dtype=mx.float32)
                     v_out = model.forward_with_conditions(
-                        x_t=x_cfg, t=t_cfg,
+                        x_t=x_cfg,
+                        t=t_cfg,
                         text_state=mx.concatenate(
                             [text_state_cond, text_state_uncond], axis=0
                         ),
@@ -284,7 +291,8 @@ def sample_euler_cfg(
                     x_cfg = mx.concatenate([x_t, x_t], axis=0)
                     t_cfg = mx.full((batch_size * 2,), t, dtype=mx.float32)
                     v_out = model.forward_with_conditions(
-                        x_t=x_cfg, t=t_cfg,
+                        x_t=x_cfg,
+                        t=t_cfg,
                         text_state=mx.concatenate(
                             [text_state_cond, text_state_cond], axis=0
                         ),
@@ -315,53 +323,77 @@ def sample_euler_cfg(
                     joint_scale = cfg_scale_text if has_text_cfg else cfg_scale_speaker
 
                 v_cond = model.forward_with_conditions(
-                    x_t=x_t, t=t_arr,
-                    text_state=text_state_cond, text_mask=text_mask_cond,
-                    speaker_state=speaker_state_cond, speaker_mask=speaker_mask_cond,
-                    kv_text=kv_text_cond, kv_speaker=kv_speaker_cond,
+                    x_t=x_t,
+                    t=t_arr,
+                    text_state=text_state_cond,
+                    text_mask=text_mask_cond,
+                    speaker_state=speaker_state_cond,
+                    speaker_mask=speaker_mask_cond,
+                    kv_text=kv_text_cond,
+                    kv_speaker=kv_speaker_cond,
                 )
                 v_uncond = model.forward_with_conditions(
-                    x_t=x_t, t=t_arr,
-                    text_state=text_state_uncond, text_mask=text_mask_uncond,
-                    speaker_state=speaker_state_uncond, speaker_mask=speaker_mask_uncond,
-                    kv_text=kv_text_uncond_joint, kv_speaker=kv_speaker_uncond_joint,
+                    x_t=x_t,
+                    t=t_arr,
+                    text_state=text_state_uncond,
+                    text_mask=text_mask_uncond,
+                    speaker_state=speaker_state_uncond,
+                    speaker_mask=speaker_mask_uncond,
+                    kv_text=kv_text_uncond_joint,
+                    kv_speaker=kv_speaker_uncond_joint,
                 )
                 v_pred = v_cond + joint_scale * (v_cond - v_uncond)
 
             else:  # alternating
                 v_cond = model.forward_with_conditions(
-                    x_t=x_t, t=t_arr,
-                    text_state=text_state_cond, text_mask=text_mask_cond,
-                    speaker_state=speaker_state_cond, speaker_mask=speaker_mask_cond,
-                    kv_text=kv_text_cond, kv_speaker=kv_speaker_cond,
+                    x_t=x_t,
+                    t=t_arr,
+                    text_state=text_state_cond,
+                    text_mask=text_mask_cond,
+                    speaker_state=speaker_state_cond,
+                    speaker_mask=speaker_mask_cond,
+                    kv_text=kv_text_cond,
+                    kv_speaker=kv_speaker_cond,
                 )
                 use_text_uncond = (has_text_cfg and has_speaker_cfg and i % 2 == 0) or (
                     has_text_cfg and not has_speaker_cfg
                 )
                 if use_text_uncond:
                     v_uncond = model.forward_with_conditions(
-                        x_t=x_t, t=t_arr,
-                        text_state=text_state_uncond, text_mask=text_mask_uncond,
-                        speaker_state=speaker_state_cond, speaker_mask=speaker_mask_cond,
-                        kv_text=kv_text_uncond_alt, kv_speaker=kv_speaker_cond,
+                        x_t=x_t,
+                        t=t_arr,
+                        text_state=text_state_uncond,
+                        text_mask=text_mask_uncond,
+                        speaker_state=speaker_state_cond,
+                        speaker_mask=speaker_mask_cond,
+                        kv_text=kv_text_uncond_alt,
+                        kv_speaker=kv_speaker_cond,
                     )
                     v_pred = v_cond + cfg_scale_text * (v_cond - v_uncond)
                 else:
                     v_uncond = model.forward_with_conditions(
-                        x_t=x_t, t=t_arr,
-                        text_state=text_state_cond, text_mask=text_mask_cond,
-                        speaker_state=speaker_state_uncond, speaker_mask=speaker_mask_uncond,
-                        kv_text=kv_text_cond, kv_speaker=kv_speaker_uncond_alt,
+                        x_t=x_t,
+                        t=t_arr,
+                        text_state=text_state_cond,
+                        text_mask=text_mask_cond,
+                        speaker_state=speaker_state_uncond,
+                        speaker_mask=speaker_mask_uncond,
+                        kv_text=kv_text_cond,
+                        kv_speaker=kv_speaker_uncond_alt,
                     )
                     v_pred = v_cond + cfg_scale_speaker * (v_cond - v_uncond)
 
         else:
             # no CFG this step
             v_pred = model.forward_with_conditions(
-                x_t=x_t, t=t_arr,
-                text_state=text_state_cond, text_mask=text_mask_cond,
-                speaker_state=speaker_state_cond, speaker_mask=speaker_mask_cond,
-                kv_text=kv_text_cond, kv_speaker=kv_speaker_cond,
+                x_t=x_t,
+                t=t_arr,
+                text_state=text_state_cond,
+                text_mask=text_mask_cond,
+                speaker_state=speaker_state_cond,
+                speaker_mask=speaker_mask_cond,
+                kv_text=kv_text_cond,
+                kv_speaker=kv_speaker_cond,
             )
 
         # optional temporal score rescaling
