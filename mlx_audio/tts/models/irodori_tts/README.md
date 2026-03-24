@@ -59,29 +59,12 @@ Approximate memory usage with `cfg_guidance_mode="alternating"`:
 
 With `cfg_guidance_mode="independent"` (default), multiply memory by ~3.
 
-## Conversion
-
-Convert original PyTorch weights to MLX format (requires `torch`):
-
-```bash
-# 500M model
-python -m mlx_audio.tts.models.irodori_tts.convert --model-size 500m
-
-# 2.5B model
-python -m mlx_audio.tts.models.irodori_tts.convert --model-size 2.5b
-
-# Upload to Hugging Face
-python -m mlx_audio.tts.models.irodori_tts.convert \
-  --model-size 500m \
-  --upload-repo mlx-community/Irodori-TTS-500M-fp16
-```
-
 ## Notes
 
 - Input language: Japanese. Latin characters may not be pronounced correctly;
   convert them to katakana beforehand (e.g. "MLX" → "エムエルエックス").
 - The DACVAE codec weights (`facebook/dacvae-watermarked`) are automatically
-  downloaded and converted during the conversion step.
+  downloaded on first use.
 
 ## License
 
