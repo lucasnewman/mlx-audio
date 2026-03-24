@@ -331,9 +331,7 @@ def test_realtime_ws_mx_array_pass(client, mock_model_provider):
     first_arg = tracked.call_args_list[0][0][
         0
     ]  # first call, positional args, first arg
-    assert isinstance(
-        first_arg, mx.array
-    ), f"Expected mx.array, got {type(first_arg)}"
+    assert isinstance(first_arg, mx.array), f"Expected mx.array, got {type(first_arg)}"
 
 
 def test_realtime_ws_mx_array_supports_bfloat16_cast(client, mock_model_provider):
