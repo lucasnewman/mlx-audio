@@ -1318,6 +1318,31 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertNotIn("model.prediction_head.t_embedder.mlp.0.weight", sanitized)
         self.assertNotIn("model.prediction_head.adaLN_modulation.1.weight", sanitized)
 
+    def test_sanitize_preserves_quantization_metadata(self):
+        """Test that sanitize preserves .scales and .biases for quantized models."""
+        from mlx.utils import tree_flatten
+
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        # Start with the model's own weights
+        weights = dict(tree_flatten(model.parameters()))
+
+        # Add mock quantization metadata for the key from the bug report:
+        # "Expected shape (151936, 896) but received shape (151936, 224)
+        #  for parameter language_model.embed_tokens.weight"
+        quant_key = "language_model.embed_tokens.weight"
+        weights[f"{quant_key}.scales"] = mx.ones((1,))
+        weights[f"{quant_key}.biases"] = mx.ones((1,))
+
+        sanitized = model.sanitize(weights)
+
+        # Quantization metadata must survive sanitization
+        self.assertIn(f"{quant_key}.scales", sanitized)
+        self.assertIn(f"{quant_key}.biases", sanitized)
+
     def test_config_defaults(self):
         """Test VibeVoiceModel uses correct config defaults."""
         from mlx_audio.tts.models.vibevoice.config import ModelConfig
