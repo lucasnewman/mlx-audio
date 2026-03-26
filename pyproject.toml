@@ -38,6 +38,7 @@ dependencies = [
 stt = [
     "tiktoken>=0.9.0",
     "mistral-common[audio]",
+    "sentencepiece>=0.2.0",
 ]
 
 # TTS dependencies
