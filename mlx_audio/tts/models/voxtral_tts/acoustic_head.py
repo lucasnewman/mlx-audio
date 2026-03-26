@@ -39,7 +39,14 @@ class AcousticTransformerArgs:
 class BidirectionalAttention(nn.Module):
     """Multi-head attention without positional encoding."""
 
-    def __init__(self, dim: int, n_heads: int, n_kv_heads: int, head_dim: int, use_biases: bool = False):
+    def __init__(
+        self,
+        dim: int,
+        n_heads: int,
+        n_kv_heads: int,
+        head_dim: int,
+        use_biases: bool = False,
+    ):
         super().__init__()
         self.n_heads = n_heads
         self.n_kv_heads = n_kv_heads
@@ -55,8 +62,16 @@ class BidirectionalAttention(nn.Module):
         B, T, _ = x.shape
 
         q = self.wq(x).reshape(B, T, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
-        k = self.wk(x).reshape(B, T, self.n_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
-        v = self.wv(x).reshape(B, T, self.n_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
+        k = (
+            self.wk(x)
+            .reshape(B, T, self.n_kv_heads, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+        v = (
+            self.wv(x)
+            .reshape(B, T, self.n_kv_heads, self.head_dim)
+            .transpose(0, 2, 1, 3)
+        )
 
         if self.n_kv_heads < self.n_heads:
             repeat = self.n_heads // self.n_kv_heads
@@ -121,7 +136,9 @@ class FlowMatchingAudioTransformer(nn.Module):
         super().__init__()
         self.args = args
 
-        self.input_projection = nn.Linear(args.n_acoustic_codebook, args.dim, bias=False)
+        self.input_projection = nn.Linear(
+            args.n_acoustic_codebook, args.dim, bias=False
+        )
         self.llm_projection = nn.Linear(args.input_dim, args.dim, bias=False)
         self.time_projection = nn.Linear(args.dim, args.dim, bias=False)
 
@@ -131,7 +148,9 @@ class FlowMatchingAudioTransformer(nn.Module):
         # Semantic output uses padding: (8192//128 + 1)*128 = 8320
         semantic_padded = (args.semantic_codebook_size // 128 + 1) * 128
         self.semantic_codebook_output = nn.Linear(args.dim, semantic_padded, bias=False)
-        self.acoustic_codebook_output = nn.Linear(args.dim, args.n_acoustic_codebook, bias=False)
+        self.acoustic_codebook_output = nn.Linear(
+            args.dim, args.n_acoustic_codebook, bias=False
+        )
 
         self.norm = nn.RMSNorm(args.dim, eps=args.norm_eps)
 
@@ -162,9 +181,11 @@ class FlowMatchingAudioTransformer(nn.Module):
         Unlike acoustic codes (which use flow matching), semantic codes are
         predicted via direct argmax on the LLM hidden state — no transformer pass.
         """
-        logits = self.semantic_codebook_output(llm_output).astype(mx.float32)  # (B, padded)
+        logits = self.semantic_codebook_output(llm_output).astype(
+            mx.float32
+        )  # (B, padded)
         # Mask padding positions
-        logits = logits.at[:, self.args.semantic_codebook_size + 2:].add(-1e9)
+        logits = logits.at[:, self.args.semantic_codebook_size + 2 :].add(-1e9)
         # Mask empty_audio token (index 0)
         logits = logits.at[:, 0].add(-1e9)
         return mx.argmax(logits, axis=-1)
@@ -199,11 +220,14 @@ class FlowMatchingAudioTransformer(nn.Module):
 
         # Quantize to FSQ indices [0, codebook_size-1], then add special token offset
         x_t = mx.clip(x_t, -1.0, 1.0)
-        acoustic_codes = mx.clip(
-            mx.round((x_t + 1.0) * (args.acoustic_codebook_size - 1) / 2.0),
-            0,
-            args.acoustic_codebook_size - 1,
-        ).astype(mx.int32) + N_SPECIAL  # offset past special tokens
+        acoustic_codes = (
+            mx.clip(
+                mx.round((x_t + 1.0) * (args.acoustic_codebook_size - 1) / 2.0),
+                0,
+                args.acoustic_codebook_size - 1,
+            ).astype(mx.int32)
+            + N_SPECIAL
+        )  # offset past special tokens
 
         # Semantic codes already have offset from argmax over padded logits
         # (indices 0,1 are masked, so min value is 2)

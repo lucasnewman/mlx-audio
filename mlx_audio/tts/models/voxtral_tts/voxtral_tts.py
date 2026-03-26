@@ -13,9 +13,8 @@ from tqdm import tqdm
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 
 from .acoustic_head import AcousticTransformerArgs, FlowMatchingAudioTransformer
-from .common import pad_to_multiple
 from .audio_tokenizer import AudioTokenizerArgs, VoxtralTTSAudioTokenizer
-
+from .common import pad_to_multiple
 
 # Voice name -> index mapping
 VOICE_MAP = {
@@ -152,7 +151,9 @@ class ModelConfig(BaseModelArgs):
             tokenizer_n_kv_heads=tokenizer_args.get("n_kv_heads", 8),
             tokenizer_head_dim=tokenizer_args.get("head_dim", 128),
             tokenizer_patch_size=tokenizer_args.get("pretransform_patch_size", 240),
-            tokenizer_patch_proj_kernel_size=tokenizer_args.get("patch_proj_kernel_size", 7),
+            tokenizer_patch_proj_kernel_size=tokenizer_args.get(
+                "patch_proj_kernel_size", 7
+            ),
             tokenizer_semantic_dim=tokenizer_args.get("semantic_dim", 256),
             tokenizer_acoustic_dim=tokenizer_args.get("acoustic_dim", 36),
             tokenizer_norm_eps=tokenizer_args.get("norm_eps", 0.01),
@@ -220,7 +221,8 @@ class MistralBackbone(nn.Module):
 
     def __init__(self, config: ModelConfig):
         super().__init__()
-        from mlx_lm.models.llama import Model as LlamaFullModel, ModelArgs
+        from mlx_lm.models.llama import Model as LlamaFullModel
+        from mlx_lm.models.llama import ModelArgs
 
         lm_args = ModelArgs(
             model_type="llama",
@@ -240,7 +242,9 @@ class MistralBackbone(nn.Module):
         )
         self.model = LlamaFullModel(lm_args)
 
-    def __call__(self, input_ids: mx.array, cache=None, input_embeddings=None) -> mx.array:
+    def __call__(
+        self, input_ids: mx.array, cache=None, input_embeddings=None
+    ) -> mx.array:
         return self.model(input_ids, cache=cache, input_embeddings=input_embeddings)
 
     @property
@@ -274,7 +278,9 @@ class Model(nn.Module):
         }
 
         # Acoustic transformer (flow matching)
-        self.acoustic_transformer = FlowMatchingAudioTransformer(config.get_acoustic_args())
+        self.acoustic_transformer = FlowMatchingAudioTransformer(
+            config.get_acoustic_args()
+        )
 
         # Audio tokenizer (decoder only - we only need decode, not encode)
         self.audio_tokenizer = VoxtralTTSAudioTokenizer(config.get_tokenizer_args())
@@ -363,17 +369,17 @@ class Model(nn.Module):
 
             # --- Acoustic transformer weights ---
             if key.startswith("acoustic_transformer."):
-                suffix = key[len("acoustic_transformer."):]
+                suffix = key[len("acoustic_transformer.") :]
                 new_key = f"acoustic_transformer.{suffix}"
 
             # --- Audio tokenizer weights ---
             elif key.startswith("audio_tokenizer."):
-                suffix = key[len("audio_tokenizer."):]
+                suffix = key[len("audio_tokenizer.") :]
                 new_key = f"audio_tokenizer.{suffix}"
 
             # --- Audio embeddings ---
             elif key.startswith("mm_audio_embeddings.audio_codebook_embeddings."):
-                suffix = key[len("mm_audio_embeddings.audio_codebook_embeddings."):]
+                suffix = key[len("mm_audio_embeddings.audio_codebook_embeddings.") :]
                 new_key = f"audio_codebook_embeddings.{suffix}"
 
             elif key == "mm_audio_embeddings.tok_embeddings.weight":
@@ -404,8 +410,10 @@ class Model(nn.Module):
 
             # --- Already-sanitized weights (from MLX-converted models) ---
             # Handle old format: language_model.model.X -> language_model.model.model.X
-            elif key.startswith("language_model.model.") and not key.startswith("language_model.model.model."):
-                suffix = key[len("language_model.model."):]
+            elif key.startswith("language_model.model.") and not key.startswith(
+                "language_model.model.model."
+            ):
+                suffix = key[len("language_model.model.") :]
                 new_key = f"language_model.model.model.{suffix}"
 
             else:
@@ -475,20 +483,26 @@ class Model(nn.Module):
         from mlx_lm.models.cache import make_prompt_cache
 
         if self.tokenizer is None:
-            raise RuntimeError("Tokenizer not loaded. Ensure post_load_hook was called.")
+            raise RuntimeError(
+                "Tokenizer not loaded. Ensure post_load_hook was called."
+            )
 
         time_start = time.time()
 
         input_ids = self._encode_text(text, voice)
         input_ids_mx = mx.array(input_ids)[None, :]  # (1, seq_len)
-        input_embeddings = self._build_input_embeddings(input_ids_mx, voice)  # (1, T, dim)
+        input_embeddings = self._build_input_embeddings(
+            input_ids_mx, voice
+        )  # (1, T, dim)
 
         # LM backbone returns hidden states; full model returns logits
         lm_backbone = self.language_model.model.model
 
         # Prefill: run prompt through LM with KV cache
         cache = make_prompt_cache(self.language_model.model)
-        hidden = lm_backbone(input_ids_mx, cache=cache, input_embeddings=input_embeddings)
+        hidden = lm_backbone(
+            input_ids_mx, cache=cache, input_embeddings=input_embeddings
+        )
 
         # First decode step uses AUDIO token (24) embedding as input
         # This matches the C reference: the first LLM decode produces the hidden state
@@ -526,7 +540,9 @@ class Model(nn.Module):
 
             # Feed back through LM for next step using KV cache
             dummy_input = mx.array([[self.config.audio_token_id]])
-            hidden = lm_backbone(dummy_input, cache=cache, input_embeddings=next_embedding)
+            hidden = lm_backbone(
+                dummy_input, cache=cache, input_embeddings=next_embedding
+            )
 
             if i % 50 == 0:
                 mx.clear_cache()
@@ -651,7 +667,7 @@ class Model(nn.Module):
         if voice_emb is None:
             return embeddings
 
-        audio_mask = (input_ids[0] == self.config.audio_token_id)  # (T,)
+        audio_mask = input_ids[0] == self.config.audio_token_id  # (T,)
 
         # Map each audio position to a voice embedding index
         indices = mx.cumsum(audio_mask.astype(mx.int32)) - 1
@@ -665,4 +681,3 @@ class Model(nn.Module):
         )
 
         return embeddings
-

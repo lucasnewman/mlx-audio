@@ -94,7 +94,9 @@ class WeightNormConv(nn.Module):
         v_norm = mx.sqrt((v * v).sum(axis=(1, 2), keepdims=True) + 1e-12)
         return g * v / v_norm
 
-    def __call__(self, x: mx.array, stride: int = 1, transpose: bool = False) -> mx.array:
+    def __call__(
+        self, x: mx.array, stride: int = 1, transpose: bool = False
+    ) -> mx.array:
         """Apply causal convolution.
 
         Args:
@@ -118,7 +120,9 @@ class WeightNormConv(nn.Module):
         w = weight.transpose(0, 2, 1)
         return mx.conv1d(x, w, stride=stride)
 
-    def _conv_transpose_1d(self, x: mx.array, weight: mx.array, stride: int) -> mx.array:
+    def _conv_transpose_1d(
+        self, x: mx.array, weight: mx.array, stride: int
+    ) -> mx.array:
         """Causal transposed 1D convolution using native mx.conv_transpose1d."""
         out_ch, in_ch, K = weight.shape
         B, T, C = x.shape
@@ -133,7 +137,7 @@ class WeightNormConv(nn.Module):
         # out shape: (B, (T-1)*stride + K, C_out)
 
         # Trim for causality: keep first T*stride elements
-        out = out[:, :T * stride, :]
+        out = out[:, : T * stride, :]
 
         return out
 
@@ -187,12 +191,16 @@ class Attention(nn.Module):
         if args.qk_norm:
             # Checkpoint stores norm over full projected dim, not per-head
             self.q_norm = nn.RMSNorm(args.n_heads * args.head_dim, eps=args.qk_norm_eps)
-            self.k_norm = nn.RMSNorm(args.n_kv_heads * args.head_dim, eps=args.qk_norm_eps)
+            self.k_norm = nn.RMSNorm(
+                args.n_kv_heads * args.head_dim, eps=args.qk_norm_eps
+            )
         else:
             self.q_norm = None
             self.k_norm = None
 
-    def __call__(self, x: mx.array, alibi_slopes: mx.array, window_size: int = 0) -> mx.array:
+    def __call__(
+        self, x: mx.array, alibi_slopes: mx.array, window_size: int = 0
+    ) -> mx.array:
         B, T, _ = x.shape
 
         q = self.wq(x)
@@ -259,8 +267,12 @@ class TransformerLayer(nn.Module):
             self.ffn_scale = mx.full((args.dim,), args.layer_scale_init)
         self.use_layer_scale = args.layer_scale
 
-    def __call__(self, x: mx.array, alibi_slopes: mx.array, window_size: int = 0) -> mx.array:
-        h = self.attention(self.attention_norm(x), alibi_slopes, window_size=window_size)
+    def __call__(
+        self, x: mx.array, alibi_slopes: mx.array, window_size: int = 0
+    ) -> mx.array:
+        h = self.attention(
+            self.attention_norm(x), alibi_slopes, window_size=window_size
+        )
         if self.use_layer_scale:
             h = h * self.attention_scale
         x = x + h
@@ -282,7 +294,9 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.layers = [TransformerLayer(args) for _ in range(n_layers)]
 
-    def __call__(self, x: mx.array, alibi_slopes: mx.array, window_size: int = 0) -> mx.array:
+    def __call__(
+        self, x: mx.array, alibi_slopes: mx.array, window_size: int = 0
+    ) -> mx.array:
         for layer in self.layers:
             x = layer(x, alibi_slopes, window_size=window_size)
         return x
@@ -313,9 +327,8 @@ class SemanticCodebook(nn.Module):
     @property
     def codebook(self) -> mx.array:
         """Compute actual codebook vectors from EMA statistics (in float32 for precision)."""
-        return (
-            self.embedding_sum.astype(mx.float32)
-            / mx.maximum(self.cluster_usage.astype(mx.float32)[:, None], 1e-8)
+        return self.embedding_sum.astype(mx.float32) / mx.maximum(
+            self.cluster_usage.astype(mx.float32)[:, None], 1e-8
         )
 
     def decode(self, indices: mx.array) -> mx.array:
@@ -345,8 +358,12 @@ class MistralAudioCodebook(nn.Module):
 
     def __init__(self, args: AudioTokenizerArgs):
         super().__init__()
-        self.semantic_codebook = SemanticCodebook(args.semantic_codebook_size, args.semantic_dim)
-        self.acoustic_codebook = AcousticCodebook(args.acoustic_codebook_size, args.acoustic_dim)
+        self.semantic_codebook = SemanticCodebook(
+            args.semantic_codebook_size, args.semantic_dim
+        )
+        self.acoustic_codebook = AcousticCodebook(
+            args.acoustic_codebook_size, args.acoustic_dim
+        )
 
     def decode(self, codes: mx.array) -> mx.array:
         """Decode combined codes to continuous representations.
