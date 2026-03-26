@@ -192,14 +192,13 @@ class Attention(nn.Module):
             self.q_norm = None
             self.k_norm = None
 
-    def __call__(self, x: mx.array, alibi_slopes: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, alibi_slopes: mx.array, window_size: int = 0) -> mx.array:
         B, T, _ = x.shape
 
-        q = self.wq(x)  # (B, T, n_heads * head_dim)
-        k = self.wk(x)  # (B, T, n_kv_heads * head_dim)
+        q = self.wq(x)
+        k = self.wk(x)
         v = self.wv(x)
 
-        # Apply QK norm before reshaping to heads
         if self.q_norm is not None:
             q = self.q_norm(q)
             k = self.k_norm(k)
@@ -217,10 +216,16 @@ class Attention(nn.Module):
 
         # ALiBi bias
         positions = mx.arange(T)
-        dist = positions[None, :] - positions[:, None]
+        dist = positions[:, None] - positions[None, :]
         alibi = alibi_slopes[:, None, None] * dist[None, :, :].astype(mx.float32)
-        # Causal mask
+
+        # Causal mask + sliding window
         causal_mask = mx.triu(mx.full((T, T), -1e9), k=1)
+        if window_size > 0:
+            # Mask positions too far in the past (i - j > window_size)
+            window_mask = mx.where(dist > window_size, -1e9, 0.0)
+            causal_mask = causal_mask + window_mask
+
         scores = scores + alibi + causal_mask[None, None, :, :]
 
         weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(x.dtype)
@@ -254,8 +259,8 @@ class TransformerLayer(nn.Module):
             self.ffn_scale = mx.full((args.dim,), args.layer_scale_init)
         self.use_layer_scale = args.layer_scale
 
-    def __call__(self, x: mx.array, alibi_slopes: mx.array) -> mx.array:
-        h = self.attention(self.attention_norm(x), alibi_slopes)
+    def __call__(self, x: mx.array, alibi_slopes: mx.array, window_size: int = 0) -> mx.array:
+        h = self.attention(self.attention_norm(x), alibi_slopes, window_size=window_size)
         if self.use_layer_scale:
             h = h * self.attention_scale
         x = x + h
@@ -277,9 +282,9 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.layers = [TransformerLayer(args) for _ in range(n_layers)]
 
-    def __call__(self, x: mx.array, alibi_slopes: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, alibi_slopes: mx.array, window_size: int = 0) -> mx.array:
         for layer in self.layers:
-            x = layer(x, alibi_slopes)
+            x = layer(x, alibi_slopes, window_size=window_size)
         return x
 
 
@@ -307,8 +312,11 @@ class SemanticCodebook(nn.Module):
 
     @property
     def codebook(self) -> mx.array:
-        """Compute actual codebook vectors from EMA statistics."""
-        return self.embedding_sum / mx.maximum(self.cluster_usage[:, None], 1e-8)
+        """Compute actual codebook vectors from EMA statistics (in float32 for precision)."""
+        return (
+            self.embedding_sum.astype(mx.float32)
+            / mx.maximum(self.cluster_usage.astype(mx.float32)[:, None], 1e-8)
+        )
 
     def decode(self, indices: mx.array) -> mx.array:
         """Look up codebook entries by index."""
@@ -418,22 +426,24 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         Returns:
             (batch, num_samples) - 24kHz waveform
         """
-        # Decode codebook indices to continuous embeddings
         x = self.quantizer.decode(codes)  # (B, T, 292)
 
-        # Process through decoder blocks
+        # Sliding window sizes per decoder stage: [2, 4, 8, 16]
+        # The encoder uses [16, 8, 4, 2] with half_attn_window_upon_downsampling
+        # The decoder reverses this
+        window_sizes = [2, 4, 8, 16]
+
         for i in range(0, len(self.decoder_blocks), 2):
             conv_block = self.decoder_blocks[i]
             xformer_block = self.decoder_blocks[i + 1]
             stage_idx = i // 2
             stride = self._strides[stage_idx]
 
-            # Conv (with possible upsampling)
             is_transpose = stride > 1
             x = conv_block.conv(x, stride=stride, transpose=is_transpose)
 
-            # Transformer
-            x = xformer_block(x, self._alibi_slopes)
+            window = window_sizes[stage_idx] if stage_idx < len(window_sizes) else 16
+            x = xformer_block(x, self._alibi_slopes, window_size=window)
 
         # Output projection
         x = self.output_proj.conv(x, stride=1, transpose=False)  # (B, T_up, 240)

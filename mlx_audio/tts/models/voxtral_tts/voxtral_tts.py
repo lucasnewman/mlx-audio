@@ -490,13 +490,23 @@ class Model(nn.Module):
         cache = make_prompt_cache(self.language_model.model)
         hidden = lm_backbone(input_ids_mx, cache=cache, input_embeddings=input_embeddings)
 
+        # First decode step uses AUDIO token (24) embedding as input
+        # This matches the C reference: the first LLM decode produces the hidden state
+        # for the first audio frame
+        audio_tok_emb = self.language_model.embed_tokens(
+            mx.array([[self.config.audio_token_id]])
+        )  # (1, 1, dim)
+        hidden = lm_backbone(
+            mx.array([[self.config.audio_token_id]]),
+            cache=cache,
+            input_embeddings=audio_tok_emb,
+        )
+
         all_codes = []
 
         for i in tqdm(range(max_tokens), disable=not verbose):
-            # Get hidden state for current position (last in sequence)
             h = hidden[:, -1, :]  # (1, dim)
 
-            # Run acoustic transformer to get audio codes for this frame
             codes = self.acoustic_transformer.decode_one_frame(h)  # (1, 37)
 
             # End-of-audio: semantic code == END_AUDIO special token (index 1)
@@ -647,8 +657,7 @@ class Model(nn.Module):
         indices = mx.cumsum(audio_mask.astype(mx.int32)) - 1
         indices = mx.clip(indices, 0, voice_emb.shape[0] - 1)
 
-        # Replace audio token embeddings with pre-computed voice embeddings
-        # Voice .pt files are pre-encoded audio representations in LLM hidden space
+        # Replace audio token embeddings with voice embeddings
         voice_expanded = voice_emb[indices]  # (T, dim)
         mask_3d = audio_mask[:, None].astype(embeddings.dtype)  # (T, 1)
         embeddings = embeddings.at[0].add(
