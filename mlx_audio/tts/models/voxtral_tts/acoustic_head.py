@@ -4,6 +4,7 @@ Generates acoustic codes from LLM hidden states using 8-step Euler flow matching
 with classifier-free guidance (alpha=1.2).
 """
 
+import math
 from dataclasses import dataclass
 
 import mlx.core as mx
@@ -94,18 +95,23 @@ class AcousticTransformerBlock(nn.Module):
 
 
 class TimeEmbedding(nn.Module):
-    """Sinusoidal time embedding for flow matching timesteps."""
+    """Sinusoidal time embedding matching vllm-omni convention: (cos, sin) order."""
 
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, theta: float = 10000.0):
         super().__init__()
-        self.dim = dim
+        half = dim // 2
+        # Store inv_freq as buffer (matches vllm-omni/ExecuTorch)
+        self.inv_freq = mx.exp(
+            -math.log(theta) * mx.arange(half).astype(mx.float32) / half
+        )
 
     def __call__(self, t: mx.array) -> mx.array:
-        half_dim = self.dim // 2
-        inv_freq = 1.0 / (10000 ** (mx.arange(0, half_dim).astype(mx.float32) / half_dim))
-        t = t[:, None].astype(mx.float32)
-        freqs = t * inv_freq[None, :]
-        return mx.concatenate([mx.sin(freqs), mx.cos(freqs)], axis=-1)
+        # t: (B,) or (B, 1)
+        if t.ndim == 1:
+            t = t[:, None]
+        t = t.astype(mx.float32)
+        emb = t * self.inv_freq  # (B, half)
+        return mx.concatenate([mx.cos(emb), mx.sin(emb)], axis=-1)
 
 
 class FlowMatchingAudioTransformer(nn.Module):
