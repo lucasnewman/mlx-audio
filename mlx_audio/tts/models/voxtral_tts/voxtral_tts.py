@@ -657,10 +657,9 @@ class Model(nn.Module):
         return codes + offsets
 
     def _build_input_embeddings(self, input_ids: mx.array, voice: str) -> mx.array:
-        """Build input embeddings with voice conditioning added at AUDIO token positions.
+        """Build input embeddings with voice conditioning at AUDIO token positions.
 
-        The model uses 'sum' concat: voice embeddings are ADDED to the audio token
-        embeddings (not replaced), as specified by input_embedding_concat_type in params.json.
+        Voice embeddings replace the audio token embeddings (memcpy in the C reference).
         """
         embeddings = self.language_model.embed_tokens(input_ids)  # (1, T, dim)
 
