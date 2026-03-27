@@ -235,6 +235,7 @@ class MistralBackbone(nn.Module):
             vocab_size=config.vocab_size,
             head_dim=config.head_dim,
             rope_theta=config.rope_theta,
+            rope_traditional=True,  # Voxtral uses interleaved RoPE (not NeoX)
             tie_word_embeddings=config.tied_embeddings,
             attention_bias=config.use_biases,
             mlp_bias=config.use_biases,
