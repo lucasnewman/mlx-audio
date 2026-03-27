@@ -331,10 +331,9 @@ class Model(nn.Module):
             except Exception as e:
                 print(f"Warning: Could not load tokenizer: {e}")
 
-        # Load voice embeddings
+        # Load voice embeddings (.safetensors)
         voice_dir = model_path / "voice_embedding"
         if voice_dir.exists():
-            # Prefer .safetensors (no torch dependency)
             for voice_file in voice_dir.glob("*.safetensors"):
                 voice_name = voice_file.stem
                 try:
@@ -344,28 +343,6 @@ class Model(nn.Module):
                     print(f"  Loaded voice embedding: {voice_name}")
                 except Exception as e:
                     print(f"  Warning: Could not load voice {voice_name}: {e}")
-
-            # Fallback to .pt if no .safetensors found
-            if not model._voice_embeddings:
-                try:
-                    import torch
-
-                    for voice_file in voice_dir.glob("*.pt"):
-                        voice_name = voice_file.stem
-                        data = torch.load(
-                            str(voice_file),
-                            map_location="cpu",
-                            weights_only=False,
-                        )
-                        if isinstance(data, torch.Tensor):
-                            arr = data.float().numpy()
-                            model._voice_embeddings[voice_name] = mx.array(arr)
-                            print(f"  Loaded voice embedding: {voice_name}")
-                except ImportError:
-                    print(
-                        "  Warning: No .safetensors voice files found and torch "
-                        "not available for .pt fallback."
-                    )
 
             print(f"Loaded {len(model._voice_embeddings)} voice embeddings")
 
