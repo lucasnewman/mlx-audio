@@ -1,5 +1,4 @@
-"""Minimal Tekken tokenizer for Voxtral TTS.
-"""
+"""Minimal Tekken tokenizer for Voxtral TTS."""
 
 from __future__ import annotations
 
