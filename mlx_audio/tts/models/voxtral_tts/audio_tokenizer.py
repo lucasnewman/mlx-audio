@@ -222,16 +222,17 @@ class Attention(nn.Module):
 
         scores = (q @ k.transpose(0, 1, 3, 2)) * self.scale
 
-        # ALiBi bias: dist[i,j] = i - j (positive for looking back)
+        # ALiBi bias: score[h,i,j] += slope[h] * (j - i), matching C reference
+        # Negative for past positions (j < i), penalizing distant lookback
         positions = mx.arange(T)
-        dist = positions[:, None] - positions[None, :]
+        dist = positions[None, :] - positions[:, None]  # dist[i,j] = j - i
         alibi = alibi_slopes[:, None, None] * dist[None, :, :].astype(mx.float32)
 
         # Causal mask + sliding window
         causal_mask = mx.triu(mx.full((T, T), -1e9), k=1)
         if window_size > 0:
-            # Mask positions too far in the past (i - j > window_size)
-            window_mask = mx.where(dist > window_size, -1e9, 0.0)
+            # Mask positions outside window (j - i < -window_size)
+            window_mask = mx.where(dist < -window_size, -1e9, 0.0)
             causal_mask = causal_mask + window_mask
 
         scores = scores + alibi + causal_mask[None, None, :, :]
