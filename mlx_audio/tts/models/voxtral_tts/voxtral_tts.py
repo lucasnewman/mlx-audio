@@ -289,9 +289,10 @@ class Model(nn.Module):
         # Audio tokenizer (decoder only - we only need decode, not encode)
         self.audio_tokenizer = VoxtralTTSAudioTokenizer(config.get_tokenizer_args())
 
-        # Tokenizer and voice embeddings (loaded in post_load_hook)
+        # Tokenizer and voice embeddings
         self.tokenizer = None
         self._voice_embeddings = {}
+        self._voice_embedding_files = {}
         self._voice_num_audio_tokens = {}
         self._text_to_audio_token_id = None
         self._audio_to_text_token_id = None
@@ -345,22 +346,32 @@ class Model(nn.Module):
 
         model._sync_prompt_token_ids_from_tokenizer()
 
-        # Load voice embeddings (.safetensors)
+        # Register voice embeddings for lazy loading.
         voice_dir = model_path / "voice_embedding"
         if voice_dir.exists():
             for voice_file in voice_dir.glob("*.safetensors"):
-                voice_name = voice_file.stem
-                try:
-                    data = mx.load(str(voice_file))
-                    emb = data.get("embedding", next(iter(data.values())))
-                    model._voice_embeddings[voice_name] = emb
-                    print(f"  Loaded voice embedding: {voice_name}")
-                except Exception as e:
-                    print(f"  Warning: Could not load voice {voice_name}: {e}")
-
-            print(f"Loaded {len(model._voice_embeddings)} voice embeddings")
+                model._voice_embedding_files[voice_file.stem] = voice_file
 
         return model
+
+    def _get_voice_embedding(self, voice: str) -> mx.array | None:
+        """Load and cache a single voice embedding on first use."""
+        voice_emb = self._voice_embeddings.get(voice)
+        if voice_emb is not None:
+            return voice_emb
+
+        voice_file = self._voice_embedding_files.get(voice)
+        if voice_file is None:
+            return None
+
+        try:
+            data = mx.load(str(voice_file))
+            voice_emb = data.get("embedding", next(iter(data.values())))
+            self._voice_embeddings[voice] = voice_emb
+            return voice_emb
+        except Exception as e:
+            print(f"  Warning: Could not load voice {voice}: {e}")
+            return None
 
     def _load_tekken_metadata(self, tekken_data: dict) -> None:
         """Load prompt-related metadata from tekken.json when mistral_common is absent."""
@@ -710,7 +721,7 @@ class Model(nn.Module):
         text_tokens = self._encode_text_tokens(text)
         n_voice_frames = self._voice_num_audio_tokens.get(voice)
         if n_voice_frames is None:
-            voice_emb = self._voice_embeddings.get(voice)
+            voice_emb = self._get_voice_embedding(voice)
             n_voice_frames = voice_emb.shape[0] if voice_emb is not None else 0
 
         return (
@@ -751,7 +762,7 @@ class Model(nn.Module):
         embeddings = self.language_model.embed_tokens(input_ids)  # (1, T, dim)
 
         audio_mask = input_ids[0] == self.config.audio_token_id  # (T,)
-        voice_emb = self._voice_embeddings.get(voice)
+        voice_emb = self._get_voice_embedding(voice)
         if voice_emb is None:
             return embeddings
 
