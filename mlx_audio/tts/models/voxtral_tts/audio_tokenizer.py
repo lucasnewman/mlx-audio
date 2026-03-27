@@ -75,7 +75,13 @@ class WeightNormConv(nn.Module):
     Effective weight = g * v / ||v|| applied per output channel.
     """
 
-    def __init__(self, out_channels: int, in_channels: int, kernel_size: int):
+    def __init__(
+        self,
+        out_channels: int,
+        in_channels: int,
+        kernel_size: int,
+        pad_mode: str = "constant",
+    ):
         super().__init__()
         self.parametrizations = {
             "weight": {
@@ -83,6 +89,7 @@ class WeightNormConv(nn.Module):
                 "original1": mx.zeros((out_channels, in_channels, kernel_size)),
             }
         }
+        self.pad_mode = pad_mode
 
     def _get_weight(self) -> mx.array:
         """Reconstruct weight from weight norm parametrization."""
@@ -110,12 +117,54 @@ class WeightNormConv(nn.Module):
             return self._conv_transpose_1d(x, weight, stride)
         return self._conv_1d(x, weight, stride)
 
+    def _pad_1d(
+        self,
+        x: mx.array,
+        padding_left: int,
+        padding_right: int,
+    ) -> mx.array:
+        if padding_left == 0 and padding_right == 0:
+            return x
+
+        if self.pad_mode == "constant":
+            return mx.pad(x, [(0, 0), (padding_left, padding_right), (0, 0)])
+
+        if self.pad_mode == "replicate":
+            return mx.pad(
+                x, [(0, 0), (padding_left, padding_right), (0, 0)], mode="edge"
+            )
+
+        if self.pad_mode != "reflect":
+            raise ValueError(f"Unsupported pad_mode={self.pad_mode!r}")
+
+        length = x.shape[1]
+        max_pad = max(padding_left, padding_right)
+        extra_pad = 0
+        if length <= max_pad:
+            extra_pad = max_pad - length + 1
+            x = mx.pad(x, [(0, 0), (0, extra_pad), (0, 0)])
+
+        parts = []
+        if padding_left > 0:
+            parts.append(x[:, 1 : padding_left + 1, :][:, ::-1, :])
+        parts.append(x)
+        if padding_right > 0:
+            parts.append(x[:, -padding_right - 1 : -1, :][:, ::-1, :])
+
+        padded = mx.concatenate(parts, axis=1)
+        if extra_pad > 0:
+            padded = padded[:, : padded.shape[1] - extra_pad, :]
+        return padded
+
     def _conv_1d(self, x: mx.array, weight: mx.array, stride: int) -> mx.array:
-        """Causal 1D convolution with left padding."""
-        K = weight.shape[2]
-        if K > 1:
-            B, T, C = x.shape
-            x = mx.concatenate([mx.zeros((B, K - 1, C)), x], axis=1)
+        kernel_size = weight.shape[2]
+        padding_total = kernel_size - stride
+        n_frames = (x.shape[1] - kernel_size + padding_total) / stride + 1
+        target_length = (math.ceil(n_frames) - 1) * stride + (
+            kernel_size - padding_total
+        )
+        extra_padding = target_length - x.shape[1]
+        x = self._pad_1d(x, padding_total, extra_padding)
         # mx.conv1d weight: (out_ch, K, in_ch)
         w = weight.transpose(0, 2, 1)
         return mx.conv1d(x, w, stride=stride)
@@ -145,9 +194,20 @@ class WeightNormConv(nn.Module):
 class ConvBlock(nn.Module):
     """A conv block matching decoder_blocks.{even_index}.conv"""
 
-    def __init__(self, out_channels: int, in_channels: int, kernel_size: int):
+    def __init__(
+        self,
+        out_channels: int,
+        in_channels: int,
+        kernel_size: int,
+        pad_mode: str = "constant",
+    ):
         super().__init__()
-        self.conv = WeightNormConv(out_channels, in_channels, kernel_size)
+        self.conv = WeightNormConv(
+            out_channels,
+            in_channels,
+            kernel_size,
+            pad_mode=pad_mode,
+        )
 
 
 # ============================================================================
@@ -386,11 +446,6 @@ class MistralAudioCodebook(nn.Module):
         return mx.concatenate([semantic_emb, acoustic_emb], axis=-1)  # (B, T, 292)
 
 
-# ============================================================================
-# Full Audio Tokenizer
-# ============================================================================
-
-
 class VoxtralTTSAudioTokenizer(nn.Module):
     """Complete audio tokenizer decoder.
 
@@ -424,13 +479,18 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         ):
             # Conv block (even index)
             in_ch = args.codebook_dim if i == 0 else args.dim
-            self.decoder_blocks.append(ConvBlock(args.dim, in_ch, kernel))
+            self.decoder_blocks.append(
+                ConvBlock(args.dim, in_ch, kernel, pad_mode="replicate")
+            )
             # Transformer block (odd index)
             self.decoder_blocks.append(TransformerBlock(n_layers, args))
 
         # Output projection: dim -> patch_size
         self.output_proj = ConvBlock(
-            args.pretransform_patch_size, args.dim, args.patch_proj_kernel_size
+            args.pretransform_patch_size,
+            args.dim,
+            args.patch_proj_kernel_size,
+            pad_mode="reflect",
         )
 
         # Store strides for the decode pass
