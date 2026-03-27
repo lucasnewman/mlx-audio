@@ -331,31 +331,45 @@ class Model(nn.Module):
             except Exception as e:
                 print(f"Warning: Could not load tokenizer: {e}")
 
-        # Load voice embeddings
+        # Load voice embeddings (.safetensors or .pt)
         voice_dir = model_path / "voice_embedding"
         if voice_dir.exists():
-            import torch
-
-            for voice_file in voice_dir.glob("*.pt"):
-                voice_name = voice_file.stem
+            # Prefer .safetensors (no torch dependency)
+            safetensor_files = list(voice_dir.glob("*.safetensors"))
+            if safetensor_files:
+                for voice_file in safetensor_files:
+                    voice_name = voice_file.stem
+                    try:
+                        data = mx.load(str(voice_file))
+                        emb = data.get("embedding", next(iter(data.values())))
+                        model._voice_embeddings[voice_name] = emb
+                        print(f"  Loaded voice embedding: {voice_name}")
+                    except Exception as e:
+                        print(f"  Warning: Could not load voice {voice_name}: {e}")
+            else:
+                # Fallback to .pt files (requires torch)
                 try:
-                    # bfloat16 .pt files need weights_only=False or float conversion
-                    data = torch.load(
-                        str(voice_file), map_location="cpu", weights_only=False
-                    )
-                    if isinstance(data, torch.Tensor):
-                        # Convert bfloat16 -> float32 for numpy compatibility
-                        arr = data.float().numpy()
-                        model._voice_embeddings[voice_name] = mx.array(arr)
-                    elif isinstance(data, dict):
-                        for k, v in data.items():
-                            if isinstance(v, torch.Tensor):
-                                arr = v.float().numpy()
+                    import torch
+
+                    for voice_file in voice_dir.glob("*.pt"):
+                        voice_name = voice_file.stem
+                        try:
+                            data = torch.load(
+                                str(voice_file),
+                                map_location="cpu",
+                                weights_only=False,
+                            )
+                            if isinstance(data, torch.Tensor):
+                                arr = data.float().numpy()
                                 model._voice_embeddings[voice_name] = mx.array(arr)
-                                break
-                    print(f"  Loaded voice embedding: {voice_name}")
-                except Exception as e:
-                    print(f"  Warning: Could not load voice {voice_name}: {e}")
+                            print(f"  Loaded voice embedding: {voice_name}")
+                        except Exception as e:
+                            print(f"  Warning: Could not load voice {voice_name}: {e}")
+                except ImportError:
+                    print(
+                        "  Warning: .pt voice files require torch. "
+                        "Convert to .safetensors for torch-free loading."
+                    )
 
             print(f"Loaded {len(model._voice_embeddings)} voice embeddings")
 
