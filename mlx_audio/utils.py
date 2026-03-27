@@ -87,9 +87,6 @@ DEFAULT_ALLOW_PATTERNS = [
     "*.txt",
     "*.jsonl",
     "*.yaml",
-    "*.wav",
-    "*.pth",
-    "*.pt",
     "*.npz",
 ]
 
@@ -171,15 +168,6 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
     if config_file.exists():
         with open(config_file, encoding="utf-8") as f:
             return json.load(f)
-
-    # Fallback: some models (e.g. Voxtral TTS) use params.json instead of config.json
-    params_file = model_path / "params.json"
-    if params_file.exists():
-        with open(params_file, encoding="utf-8") as f:
-            params = json.load(f)
-        if "model_type" not in params:
-            params["model_type"] = "unknown"
-        return params
 
     raise FileNotFoundError(f"Config not found at {model_path}")
 
