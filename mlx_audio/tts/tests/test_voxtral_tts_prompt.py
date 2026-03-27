@@ -102,16 +102,21 @@ class TestVoxtralTTSPrompt(unittest.TestCase):
             (voice_dir / "casual_male.safetensors").touch()
             (voice_dir / "fr_female.safetensors").touch()
 
-            with patch(
-                "transformers.AutoTokenizer.from_pretrained",
-                return_value=FakeTokenizer(),
-            ), patch(
-                "mlx_audio.tts.models.voxtral_tts.voxtral_tts.mx.load",
-                side_effect=AssertionError("voice embeddings should load lazily"),
+            with (
+                patch(
+                    "transformers.AutoTokenizer.from_pretrained",
+                    return_value=FakeTokenizer(),
+                ),
+                patch(
+                    "mlx_audio.tts.models.voxtral_tts.voxtral_tts.mx.load",
+                    side_effect=AssertionError("voice embeddings should load lazily"),
+                ),
             ):
                 Model.post_load_hook(model, model_path)
 
-        self.assertEqual(set(model._voice_embedding_files), {"casual_male", "fr_female"})
+        self.assertEqual(
+            set(model._voice_embedding_files), {"casual_male", "fr_female"}
+        )
         self.assertEqual(model._voice_embeddings, {})
 
 
