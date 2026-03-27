@@ -222,7 +222,7 @@ class Attention(nn.Module):
 
         scores = (q @ k.transpose(0, 1, 3, 2)) * self.scale
 
-        # ALiBi bias
+        # ALiBi bias: dist[i,j] = i - j (positive for looking back)
         positions = mx.arange(T)
         dist = positions[:, None] - positions[None, :]
         alibi = alibi_slopes[:, None, None] * dist[None, :, :].astype(mx.float32)
