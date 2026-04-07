@@ -1,5 +1,6 @@
 import importlib.resources
 import importlib.util
+import tomllib
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -26,6 +27,16 @@ class FakeTokenizer:
         token = self._next
         self._next += 1
         return [token]
+
+
+class _DummyVoxtralConfig:
+    bos_token_id = 1
+    begin_audio_token_id = 25
+    audio_token_id = 24
+
+
+class _DummyVoxtralTokenizer:
+    pass
 
 
 def tiny_config():
@@ -200,6 +211,28 @@ class TestKokoroModel(unittest.TestCase):
         # Check that the output was created correctly
         self.assertIs(output.audio, audio)
         self.assertIs(output.pred_dur, pred_dur)
+
+
+class TestVoxtralDependencyContract(unittest.TestCase):
+    def test_tts_extra_includes_mistral_common_audio(self):
+        pyproject_path = Path(__file__).resolve().parents[3] / "pyproject.toml"
+        pyproject = tomllib.loads(pyproject_path.read_text())
+
+        tts_extra = pyproject["project"]["optional-dependencies"]["tts"]
+        self.assertIn("mistral-common[audio]", tts_extra)
+
+    def test_encode_text_requires_speech_tokenizer_support(self):
+        from mlx_audio.tts.models.voxtral_tts.voxtral_tts import Model
+
+        model = Model.__new__(Model)
+        model.config = _DummyVoxtralConfig()
+        model.tokenizer = _DummyVoxtralTokenizer()
+        model._voice_embeddings = {}
+        model._text_to_audio_token_id = 100
+        model._audio_to_text_token_id = 101
+
+        with self.assertRaisesRegex(RuntimeError, "mistral-common\\[audio\\]"):
+            model._encode_text("hello world", "casual_male")
 
 
 @patch("importlib.resources.open_text", patched_open_text)
