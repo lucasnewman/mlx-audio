@@ -194,12 +194,15 @@ class Model(nn.Module):
         tokens = self.tokenizer.tokenize(text)
         return self.tokenizer.convert_tokens_to_ids(tokens)
 
-    def _encode_wav(self, audio_input, padding_mode: str = "right") -> mx.array:
-        """Load, VAD-trim, pad and VAE-encode audio.
+    def _encode_wav(
+        self, audio_input, padding_mode: str = "right", trim_silence_vad: bool = False
+    ) -> mx.array:
+        """Load, pad and VAE-encode audio.
 
         Args:
             audio_input: file path (str), mx.array, or numpy array.
             padding_mode: "right" or "left".
+            trim_silence_vad: whether to apply VAD-based silence trimming.
 
         Returns:
             audio_feat: (T, P, D) array of latent patches.
@@ -235,12 +238,13 @@ class Model(nn.Module):
                 )
                 audio = scipy.signal.resample(audio, num_samples)
 
-        # VAD trim
-        audio_2d = audio[np.newaxis, :]
-        audio_2d = _trim_audio_silence_vad(
-            audio_2d, self._encode_sample_rate, max_silence_ms=200.0
-        )
-        audio = audio_2d.flatten()
+        # VAD trim (optional, off by default)
+        if trim_silence_vad:
+            audio_2d = audio[np.newaxis, :]
+            audio_2d = _trim_audio_silence_vad(
+                audio_2d, self._encode_sample_rate, max_silence_ms=200.0
+            )
+            audio = audio_2d.flatten()
 
         # Pad to patch alignment
         patch_len = self.patch_size * self.audio_vae.chunk_size
@@ -421,6 +425,8 @@ class Model(nn.Module):
         """
         if self.tokenizer is None:
             raise ValueError("Tokenizer not loaded")
+        if not isinstance(text, str):
+            raise TypeError(f"Expected string for text, got {type(text)}")
 
         # Map CLI aliases — but enforce minimum cfg_value for VoxCPM2
         if cfg_scale is not None:
@@ -667,13 +673,8 @@ class Model(nn.Module):
 
         # Trim continuation prefix if applicable
         if has_continuation:
-            patch_len = self.patch_size * self.audio_vae.chunk_size
-            trim_samples = patch_len * (streaming_prefix_len - 1)
-            # Account for decoder expansion ratio
-            decoder_expansion = np.prod(self.args.audio_vae_config.decoder_rates)
-            encoder_hop = self.audio_vae.hop_length
-            expansion_ratio = decoder_expansion / encoder_hop
-            trim_audio_samples = int(trim_samples * expansion_ratio)
+            decode_patch_len = self.patch_size * self.audio_vae.decode_chunk_size
+            trim_audio_samples = decode_patch_len * (streaming_prefix_len - 1)
             if trim_audio_samples < len(audio):
                 audio = audio[trim_audio_samples:]
 

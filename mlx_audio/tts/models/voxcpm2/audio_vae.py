@@ -398,6 +398,7 @@ class AudioVAE(nn.Module):
         self.sample_rate = config.sample_rate
         self.out_sample_rate = config.out_sample_rate
         self.chunk_size = math.prod(config.encoder_rates)
+        self.decode_chunk_size = math.prod(config.decoder_rates)
 
         self.encoder = CausalEncoder(
             config.encoder_dim,
