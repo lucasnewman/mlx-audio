@@ -6392,7 +6392,8 @@ class TestVoxCPM2Model(unittest.TestCase):
         args = _tiny_voxcpm2_args()
         model = Model(args)
         model.tokenizer = MagicMock()
-        model.tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+        model.tokenizer.tokenize = MagicMock(return_value=["hello"])
+        model.tokenizer.convert_tokens_to_ids = MagicMock(return_value=[1, 2, 3])
 
         # Call generate with instruct — it should prepend (instruct)text
         gen = model.generate(
@@ -6405,8 +6406,8 @@ class TestVoxCPM2Model(unittest.TestCase):
             next(gen)
         except Exception:
             pass
-        # Check tokenizer was called with prefixed text
-        call_args = model.tokenizer.encode.call_args[0][0]
+        # Check tokenizer.tokenize was called with prefixed text
+        call_args = model.tokenizer.tokenize.call_args[0][0]
         self.assertTrue(call_args.startswith("(A warm voice)"))
 
 
