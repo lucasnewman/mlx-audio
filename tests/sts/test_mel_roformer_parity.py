@@ -15,11 +15,19 @@ Run requirements:
     - A reference audio file for the SDR diff test
 
 Environment variables:
-    MEL_ROFORMER_TORCH_CKPT   — Path to the original PyTorch .ckpt
-    MEL_ROFORMER_MLX_WEIGHTS  — Path to the converted MLX .safetensors
-    MEL_ROFORMER_REF_AUDIO    — Path to a reference stereo 44.1kHz WAV
-    MEL_ROFORMER_PRESET       — Preset name (kim_vocal_2, viperx_vocals, zfturbo_bs_roformer)
-    MEL_ROFORMER_SDR_TARGET   — Minimum SDR in dB (default 40.0 — bit-exact up to fp precision)
+    MEL_ROFORMER_TORCH_CKPT    — Path to the original PyTorch .ckpt
+    MEL_ROFORMER_MLX_WEIGHTS   — Path to the converted MLX .safetensors
+    MEL_ROFORMER_REF_AUDIO     — Path to a reference stereo 44.1kHz WAV
+    MEL_ROFORMER_PRESET        — Preset name (kim_vocal_2, viperx_vocals,
+                                  zfturbo_bs_roformer, zfturbo_vocals_v1)
+    MEL_ROFORMER_TORCH_INFER   — Path to the user-supplied torch_infer.py
+                                  reference (see PARITY_TESTING.md)
+    MEL_ROFORMER_TORCH_CONFIG  — Path to the ZFTurbo YAML config for the
+                                  PyTorch model the ckpt was trained with
+    MEL_ROFORMER_SDR_TARGET    — Minimum SDR in dB (default 40.0 — bit-exact
+                                  up to fp precision)
+    MEL_ROFORMER_CHUNK_SAMPLES — Samples per single-chunk inference
+                                  (default 352800 = 8s at 44.1kHz)
 
 To run:
     pytest tests/sts/test_mel_roformer_parity.py -v -m requires_torch
@@ -77,6 +85,45 @@ def preset_name():
 @pytest.fixture
 def sdr_target():
     return float(os.environ.get("MEL_ROFORMER_SDR_TARGET", "40.0"))
+
+
+@pytest.fixture
+def torch_infer_path():
+    path = os.environ.get("MEL_ROFORMER_TORCH_INFER")
+    if not path:
+        pytest.skip(
+            "Set MEL_ROFORMER_TORCH_INFER to a torch_infer.py that exposes "
+            "`run(ckpt, config_yaml, audio, out_path, chunk_samples=...) -> np.ndarray` "
+            "and `load_audio_chunk(audio, chunk_samples) -> (np.ndarray, sr)`"
+        )
+    if not Path(path).exists():
+        pytest.skip(f"torch_infer.py not found: {path}")
+    return Path(path)
+
+
+@pytest.fixture
+def torch_config_yaml():
+    path = os.environ.get("MEL_ROFORMER_TORCH_CONFIG")
+    if not path:
+        pytest.skip("Set MEL_ROFORMER_TORCH_CONFIG to the ZFTurbo model YAML")
+    if not Path(path).exists():
+        pytest.skip(f"Config YAML not found: {path}")
+    return Path(path)
+
+
+@pytest.fixture
+def chunk_samples():
+    return int(os.environ.get("MEL_ROFORMER_CHUNK_SAMPLES", "352800"))
+
+
+def _load_torch_infer_module(path: Path):
+    """Dynamically import the user's torch_infer.py as a module."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("mel_roformer_torch_infer", str(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _load_audio_stereo_44k(path: Path):
@@ -150,41 +197,56 @@ class TestMelRoFormerParity:
         reference_audio_path,
         preset_name,
         sdr_target,
+        torch_infer_path,
+        torch_config_yaml,
+        chunk_samples,
     ):
-        """Run both implementations on the same audio, compute SDR between outputs."""
-        pytest.skip(
-            "Parity test requires: PyTorch Mel-Band-RoFormer inference script "
-            "(e.g., ZFTurbo/Music-Source-Separation-Training inference.py). "
-            "Implement per the test docstring protocol."
-        )
+        """Run both implementations on the same audio chunk, compare via SDR.
 
-        # Scaffold for when the reference inference is wired up:
-        #
-        # 1. Load audio
-        # audio = _load_audio_stereo_44k(reference_audio_path)
-        # audio_torch = torch.from_numpy(audio[None, :, :])  # [1, 2, samples]
-        # audio_mlx = mx.array(audio[None, :, :])
-        #
-        # 2. PyTorch reference (user must provide this import / inference fn)
-        # torch_model = _load_torch_model(torch_checkpoint_path, preset_name)
-        # with torch.no_grad():
-        #     torch_vocals = torch_model(audio_torch).squeeze(0).cpu().numpy()
-        #
-        # 3. MLX port
-        # from mlx_audio.sts.models.mel_roformer import MelRoFormer, MelRoFormerConfig
-        # config = getattr(MelRoFormerConfig, preset_name)()
-        # mlx_model = MelRoFormer(config)
-        # weights = dict(mx.load(str(mlx_weights_path)))
-        # mlx_model.load_weights(list(mlx_model.sanitize(weights).items()), strict=False)
-        # mlx_vocals = np.asarray(mlx_model(audio_mlx).squeeze(0))
-        #
-        # 4. SDR diff
-        # sdr = _compute_sdr(torch_vocals, mlx_vocals)
-        # print(f"SDR between PyTorch and MLX outputs: {sdr:.2f} dB")
-        # assert sdr > sdr_target, (
-        #     f"SDR {sdr:.2f} dB below target {sdr_target} dB — "
-        #     f"likely a weight loading or architecture bug"
-        # )
+        Single-chunk, no overlap-add. Parity is a property of the forward pass;
+        the chunked inference wrapper is tested separately.
+        """
+        import mlx.core as mx
+        import numpy as np
+
+        from mlx_audio.sts.models.mel_roformer import MelRoFormer, MelRoFormerConfig
+
+        torch_infer = _load_torch_infer_module(torch_infer_path)
+
+        torch_vocals = torch_infer.run(
+            str(torch_checkpoint_path),
+            str(torch_config_yaml),
+            str(reference_audio_path),
+            out_path="",
+            chunk_samples=chunk_samples,
+        )
+        # torch_vocals: np.ndarray [2, T_out]
+
+        audio_chunk, sr = torch_infer.load_audio_chunk(
+            str(reference_audio_path), chunk_samples
+        )
+        assert sr == 44100, f"Reference audio must be 44.1kHz, got {sr}"
+
+        config = getattr(MelRoFormerConfig, preset_name)()
+        mlx_model = MelRoFormer(config)
+        weights = dict(mx.load(str(mlx_weights_path)))
+        sanitized = mlx_model.sanitize(weights)
+        mlx_model.load_weights(list(sanitized.items()), strict=True)
+
+        mlx_out = mlx_model(mx.array(audio_chunk[None]))
+        mx.eval(mlx_out)
+        mlx_vocals = np.asarray(mlx_out).squeeze(0)  # [2, T_out]
+
+        sdr = _compute_sdr(torch_vocals, mlx_vocals)
+        print(
+            f"\nSDR between PyTorch and MLX outputs: {sdr:.2f} dB "
+            f"(target > {sdr_target})"
+        )
+        assert sdr > sdr_target, (
+            f"SDR {sdr:.2f} dB below target {sdr_target} dB — "
+            f"likely a weight loading or architecture bug. "
+            f"See debugging tips in PARITY_TESTING.md."
+        )
 
     def test_qkv_split_preserves_weights(self, mlx_weights_path):
         """Verify that the QKV split in sanitize() preserves the original weights.

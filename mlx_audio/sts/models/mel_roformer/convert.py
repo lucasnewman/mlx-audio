@@ -14,7 +14,7 @@ Usage:
     python -m mlx_audio.sts.models.mel_roformer.convert \\
         --input path/to/model.ckpt \\
         --output path/to/output_dir/ \\
-        [--preset kim_vocal_2|viperx_vocals|zfturbo_bs_roformer|custom] \\
+        [--preset kim_vocal_2|viperx_vocals|zfturbo_bs_roformer|zfturbo_vocals_v1|custom] \\
         [--force]
 
 The converted weights will be saved as:
@@ -158,6 +158,7 @@ def _resolve_preset(name: str) -> MelRoFormerConfig:
         "kim_vocal_2": MelRoFormerConfig.kim_vocal_2,
         "viperx_vocals": MelRoFormerConfig.viperx_vocals,
         "zfturbo_bs_roformer": MelRoFormerConfig.zfturbo_bs_roformer,
+        "zfturbo_vocals_v1": MelRoFormerConfig.zfturbo_vocals_v1,
     }
     if name not in presets:
         raise ValueError(
@@ -309,7 +310,8 @@ def main():
     parser.add_argument("--output", type=str, required=True,
                        help="Output directory for converted weights")
     parser.add_argument("--preset", type=str, default=None,
-                       choices=["kim_vocal_2", "viperx_vocals", "zfturbo_bs_roformer"],
+                       choices=["kim_vocal_2", "viperx_vocals",
+                                "zfturbo_bs_roformer", "zfturbo_vocals_v1"],
                        help="Architecture preset. If omitted, no companion config.json is written.")
     parser.add_argument("--depth", type=int, default=None,
                        help="Override: transformer depth (for custom checkpoints)")

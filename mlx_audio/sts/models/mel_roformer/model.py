@@ -23,6 +23,25 @@ import numpy as np
 from .config import MelRoFormerConfig
 
 
+class RMSNorm(nn.Module):
+    """RMSNorm that matches ZFTurbo's ``F.normalize(x, dim=-1) * sqrt(dim) * gamma``.
+
+    ``mlx.nn.RMSNorm`` uses additive ``eps=1e-5`` which diverges from PyTorch
+    ``F.normalize`` (``eps=1e-12``, applied as ``max(||x||, eps)``) when input
+    magnitudes are small — which happens at high-frequency STFT bins, so the
+    band-split's per-band RMSNorm is where the port silently diverged.
+    """
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.scale = dim ** 0.5
+        self.weight = mx.ones((dim,))
+
+    def __call__(self, x: mx.array) -> mx.array:
+        norm = mx.sqrt(mx.sum(x * x, axis=-1, keepdims=True))
+        return (x / mx.maximum(norm, 1e-12)) * self.scale * self.weight
+
+
 @dataclass
 class SeparationResult:
     """Result of audio source separation."""
@@ -49,36 +68,24 @@ class MelFilterbank:
         self.freq_indices, self.band_dims, self.num_bands_per_freq = self._compute_band_info(fb)
 
     def _build_mel_filterbank(self) -> np.ndarray:
-        """Build binarized mel filterbank matrix [num_bands, freq_bins]."""
+        """Build the ZFTurbo-style binarized mel filterbank.
+
+        Matches ZFTurbo/MSS-Training exactly: uses ``librosa.filters.mel`` to
+        build the Slaney-style triangular filterbank, force-assigns the DC bin
+        to band 0 and the Nyquist bin to the last band (librosa otherwise
+        leaves them zero, which breaks the "every freq covered" invariant),
+        then binarizes.
+        """
+        import librosa
+
         sr = self.config.sample_rate
         n_fft = self.config.n_fft
         n_mels = self.config.num_bands
-        freq_bins = self.config.freq_bins
 
-        # Slaney mel scale (matches librosa)
-        fmin, fmax = 0.0, sr / 2.0
-        min_mel = self._hz_to_mel(fmin)
-        max_mel = self._hz_to_mel(fmax)
-        mels = np.linspace(min_mel, max_mel, n_mels + 2)
-        freqs = self._mel_to_hz(mels)
-
-        # FFT bin frequencies
-        fft_freqs = np.linspace(0, sr / 2, freq_bins)
-
-        # Triangular filters
-        fb = np.zeros((n_mels, freq_bins))
-        for i in range(n_mels):
-            lower, center, upper = freqs[i], freqs[i + 1], freqs[i + 2]
-            for j in range(freq_bins):
-                if lower <= fft_freqs[j] <= center and center > lower:
-                    fb[i, j] = (fft_freqs[j] - lower) / (center - lower)
-                elif center < fft_freqs[j] <= upper and upper > center:
-                    fb[i, j] = (upper - fft_freqs[j]) / (upper - center)
-
-        # Binarize: non-zero → 1.0
-        fb = (fb > 0).astype(np.float32)
-
-        return fb
+        fb = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels).astype(np.float32)
+        fb[0, 0] = 1.0
+        fb[-1, -1] = 1.0
+        return (fb > 0).astype(np.float32)
 
     def _compute_band_info(self, fb: np.ndarray):
         """Compute per-band gather indices for stereo CaC interleaving.
@@ -116,6 +123,9 @@ class MelFilterbank:
         band_dims = [len(idx) * 2 for idx in freq_indices]  # ×2 for real/imag
         num_bands_per_freq = np.maximum(num_bands_per_freq, 1.0)
 
+        # MLX does not support indexing with raw numpy arrays — convert once.
+        freq_indices = [mx.array(idx) for idx in freq_indices]
+
         return freq_indices, band_dims, num_bands_per_freq
 
     @staticmethod
@@ -132,35 +142,46 @@ class MelFilterbank:
 
 
 class RotaryEmbedding:
-    """Precomputed rotary position embedding frequencies."""
+    """Interleaved-pair RoPE — matches ``rotary_embedding_torch`` (the package
+    ZFTurbo imports), which pairs adjacent dimensions ``(x[2i], x[2i+1])``.
+
+    The earlier "halved" convention (``(x[:half], x[half:])``) produces a
+    mathematically valid RoPE but does not match how the checkpoint was
+    trained, so queries/keys rotate about different planes and attention
+    outputs become uncorrelated with the reference.
+    """
 
     def __init__(self, dim_head: int, base: float = 10000.0):
         half = dim_head // 2
-        self.freqs = 1.0 / (base ** (np.arange(0, half, dtype=np.float32) / half))
-        self.freqs_mx = mx.array(self.freqs)
+        freqs = 1.0 / (base ** (np.arange(0, half, dtype=np.float32) / half))
+        self.freqs_mx = mx.array(freqs)
 
     def get_cos_sin(self, seq_len: int):
-        """Returns (cos, sin) each of shape [seq_len, dim_head]."""
+        """Returns (cos, sin) each of shape ``[seq_len, dim_head]``.
+
+        Layout along the last axis is ``[f0, f0, f1, f1, …, f_{k-1}, f_{k-1}]``
+        — each base frequency duplicated — matching
+        ``rotary_embedding_torch``'s ``repeat(..., '... n -> ... (n r)', r=2)``.
+        """
         t = mx.arange(seq_len).astype(mx.float32)
         freqs = mx.outer(t, self.freqs_mx)  # [seq_len, half]
-        cos_val = mx.cos(freqs)
-        sin_val = mx.sin(freqs)
-        # Duplicate for full dim: [seq_len, dim_head]
-        cos_val = mx.concatenate([cos_val, cos_val], axis=-1)
-        sin_val = mx.concatenate([sin_val, sin_val], axis=-1)
-        return cos_val, sin_val
+        freqs = mx.repeat(freqs, 2, axis=-1)  # [seq_len, dim_head]
+        return mx.cos(freqs), mx.sin(freqs)
 
 
 def _apply_rope(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
-    """Apply rotary position embeddings.
+    """Apply interleaved-pair RoPE.
 
-    x: [B, heads, T, dim_head]
-    cos, sin: [T, dim_head]
+    For each pair ``(x[..., 2i], x[..., 2i+1])``, rotate by angle ``f_i``::
+
+        x'[2i]   = x[2i]   * cos(f_i) - x[2i+1] * sin(f_i)
+        x'[2i+1] = x[2i+1] * cos(f_i) + x[2i]   * sin(f_i)
     """
-    half = x.shape[-1] // 2
-    x1 = x[..., :half]
-    x2 = x[..., half:]
-    rotated = mx.concatenate([-x2, x1], axis=-1)
+    shape = x.shape
+    pairs = x.reshape(*shape[:-1], shape[-1] // 2, 2)
+    x_even = pairs[..., 0]
+    x_odd = pairs[..., 1]
+    rotated = mx.stack([-x_odd, x_even], axis=-1).reshape(shape)
     return x * cos + rotated * sin
 
 
@@ -176,11 +197,11 @@ class RoFormerAttention(nn.Module):
         self.dim_head = dim_head
         inner_dim = heads * dim_head
 
-        self.norm = nn.RMSNorm(dim)
+        self.norm = RMSNorm(dim)
         self.to_q = nn.Linear(dim, inner_dim, bias=False)
         self.to_k = nn.Linear(dim, inner_dim, bias=False)
         self.to_v = nn.Linear(dim, inner_dim, bias=False)
-        self.to_gates = nn.Linear(dim, heads, bias=False)
+        self.to_gates = nn.Linear(dim, heads, bias=True)
         self.to_out = nn.Linear(inner_dim, dim, bias=False)
         self.rotary_embed = RotaryEmbedding(dim_head)
 
@@ -225,7 +246,7 @@ class RoFormerFFN(nn.Module):
         super().__init__()
         ff_dim = dim * ff_mult
         self.net = [
-            nn.RMSNorm(dim),     # index 0
+            RMSNorm(dim),     # index 0
             nn.Linear(dim, ff_dim),  # index 1
             None,                    # index 2 (GELU activation, no params)
             None,                    # index 3 (placeholder)
@@ -252,7 +273,7 @@ class Transformer(nn.Module):
             [RoFormerAttention(dim, heads, dim_head), RoFormerFFN(dim, ff_mult)]
             for _ in range(depth)
         ]
-        self.norm = nn.RMSNorm(dim)
+        self.norm = RMSNorm(dim)
 
     def __call__(self, x: mx.array) -> mx.array:
         for attn, ff in self.layers:
@@ -272,7 +293,7 @@ class BandSplit(nn.Module):
         self.filterbank = MelFilterbank(config)
         # Per-band projection: RMSNorm → Linear
         self.to_features = [
-            [nn.RMSNorm(bd), nn.Linear(bd, config.dim)]
+            [RMSNorm(bd), nn.Linear(bd, config.dim)]
             for bd in self.filterbank.band_dims
         ]
 
@@ -341,23 +362,27 @@ class BandSplit(nn.Module):
 class MaskEstimator(nn.Module):
     """Estimate complex masks per frequency band via MLP + GLU.
 
-    Per-band MLP: Linear→Tanh→Linear→Tanh→Linear(→2× for GLU)
-    Weight keys use indices 0, 2, 4 (Tanh at 1, 3 has no params).
+    Per-band MLP follows the ZFTurbo MLP helper:
+        Linear(dim → hidden) → Tanh
+        [Linear(hidden → hidden) → Tanh] × (mask_estimator_depth − 1)
+        Linear(hidden → band_dim × 2)
+        GLU
+
+    So with ``mask_estimator_depth=d``, each band has (d + 1) linears.
     """
 
     def __init__(self, config: MelRoFormerConfig, band_dims: list):
         super().__init__()
         dim = config.dim
         mlp_hidden = config.mlp_hidden
+        depth = config.mask_estimator_depth
 
-        # Per-band: 3 linear layers + GLU
         self.to_freqs = []
         for bd in band_dims:
-            layers = [
-                [nn.Linear(dim, mlp_hidden)],       # index 0: Linear + Tanh
-                [nn.Linear(mlp_hidden, mlp_hidden)], # index 2: Linear + Tanh
-                [nn.Linear(mlp_hidden, bd * 2)],     # index 4: Linear (doubled for GLU)
-            ]
+            layers = [[nn.Linear(dim, mlp_hidden)]]
+            for _ in range(depth - 1):
+                layers.append([nn.Linear(mlp_hidden, mlp_hidden)])
+            layers.append([nn.Linear(mlp_hidden, bd * 2)])
             self.to_freqs.append(layers)
 
     def __call__(self, x: mx.array) -> list:
@@ -373,12 +398,11 @@ class MaskEstimator(nn.Module):
         num_bands = x.shape[2]
 
         for i in range(num_bands):
-            band_input = x[:, :, i, :]  # [B, T, dim]
+            h = x[:, :, i, :]  # [B, T, dim]
             layers = self.to_freqs[i]
-
-            h = mx.tanh(layers[0][0](band_input))   # Linear → Tanh
-            h = mx.tanh(layers[1][0](h))             # Linear → Tanh
-            h = layers[2][0](h)                       # Linear (doubled)
+            for layer in layers[:-1]:
+                h = mx.tanh(layer[0](h))
+            h = layers[-1][0](h)  # doubled for GLU
 
             # GLU: split in half, apply sigmoid gate
             half = h.shape[-1] // 2
@@ -406,8 +430,11 @@ def stft(audio: mx.array, n_fft: int, hop_length: int, window: mx.array) -> tupl
     """
     B, C, N = audio.shape
     pad = n_fft // 2
-    # Center-pad
-    audio_padded = mx.pad(audio, [(0, 0), (0, 0), (pad, pad)])
+    # Reflect-pad to match torch.stft(center=True) default pad_mode="reflect".
+    # MLX pad only supports constant/edge, so build the reflection explicitly.
+    left = audio[..., pad:0:-1]
+    right = audio[..., -2:-pad - 2:-1]
+    audio_padded = mx.concatenate([left, audio, right], axis=-1)
 
     # Extract frames
     N_padded = audio_padded.shape[2]
@@ -432,8 +459,8 @@ def stft(audio: mx.array, n_fft: int, hop_length: int, window: mx.array) -> tupl
     spectrum = mx.fft.rfft(frames)  # [B*C, num_frames, freq_bins] complex
 
     # Extract real and imaginary
-    real = spectrum.real().reshape(B, C, num_frames, -1).transpose(0, 1, 3, 2)
-    imag = spectrum.imag().reshape(B, C, num_frames, -1).transpose(0, 1, 3, 2)
+    real = spectrum.real.reshape(B, C, num_frames, -1).transpose(0, 1, 3, 2)
+    imag = spectrum.imag.reshape(B, C, num_frames, -1).transpose(0, 1, 3, 2)
 
     return real, imag
 
@@ -588,22 +615,52 @@ class MelRoFormer(nn.Module):
     def sanitize(self, weights: dict) -> dict:
         """Sanitize PyTorch weights for MLX.
 
-        Handles key remapping from PyTorch BS-RoFormer format to MLX module paths.
-        The main transformation is splitting packed to_qkv into separate to_q/to_k/to_v.
+        Transformations applied (in order, per key):
+          1. Split packed ``to_qkv`` projections into separate ``to_q``/``to_k``/``to_v``.
+          2. Drop ``rotary_embed.freqs`` — MLX computes RoPE frequencies on-the-fly.
+          3. Remap PyTorch ``nn.Sequential`` indices inside the mask estimator's
+             per-band MLPs to MLX list indices (linears at PyTorch positions
+             0, 2, 4 → MLX positions 0, 1, 2).
+          4. Unwrap ``to_out.0.weight`` → ``to_out.weight`` (PyTorch wraps the
+             output projection in a ``Sequential(Linear, Dropout)``; MLX uses
+             a bare Linear).
+          5. Rename any trailing ``.gamma`` → ``.weight`` — the PyTorch RMSNorm
+             stores its scale as ``gamma``; MLX's ``nn.RMSNorm`` stores it as
+             ``weight``.
         """
+        import re
+
+        mask_mlp_re = re.compile(
+            r"^(mask_estimators\.\d+\.to_freqs\.\d+)\.0\.(\d+)\.(weight|bias)$"
+        )
+
         new_weights = {}
 
         for key, value in weights.items():
-            # Split packed QKV into separate projections
             if "to_qkv.weight" in key:
                 prefix = key.replace("to_qkv.weight", "")
-                # value shape: [3*inner_dim, dim] → split into 3
                 third = value.shape[0] // 3
                 new_weights[f"{prefix}to_q.weight"] = value[:third]
-                new_weights[f"{prefix}to_k.weight"] = value[third:2*third]
-                new_weights[f"{prefix}to_v.weight"] = value[2*third:]
-            else:
-                new_weights[key] = value
+                new_weights[f"{prefix}to_k.weight"] = value[third:2 * third]
+                new_weights[f"{prefix}to_v.weight"] = value[2 * third:]
+                continue
+
+            if key.endswith("rotary_embed.freqs"):
+                continue
+
+            m = mask_mlp_re.match(key)
+            if m:
+                prefix, seq_idx, kind = m.groups()
+                mlx_idx = int(seq_idx) // 2
+                key = f"{prefix}.{mlx_idx}.0.{kind}"
+
+            if key.endswith("to_out.0.weight"):
+                key = key[: -len(".0.weight")] + ".weight"
+
+            if key.endswith(".gamma"):
+                key = key[: -len(".gamma")] + ".weight"
+
+            new_weights[key] = value
 
         return new_weights
 

@@ -119,6 +119,30 @@ class MelRoFormerConfig:
         return cls(depth=12, checkpoint_family="zfturbo_bs_roformer")
 
     @classmethod
+    def zfturbo_vocals_v1(cls) -> "MelRoFormerConfig":
+        """Matches ZFTurbo v1.0.0 release asset ``model_vocals_mel_band_roformer_sdr_8.42.ckpt``.
+
+        Architecture config derived from:
+            configs/config_vocals_mel_band_roformer.yaml
+            in ZFTurbo/Music-Source-Separation-Training (MIT-licensed configs).
+
+        The shipped checkpoint was trained with ``mask_estimator_depth=1``
+        (the yaml-default 2 does not match — confirmed by state-dict shapes).
+
+        Weight license: MIT (inherited from the ZFTurbo MSS-Training release).
+
+        Smaller than the viperx/zfturbo_bs_roformer presets — ~135 MB on disk —
+        and uses ``hop_length=512`` rather than ``441``.
+        """
+        return cls(
+            dim=192,
+            depth=8,
+            hop_length=512,
+            mask_estimator_depth=1,
+            checkpoint_family="zfturbo_vocals_v1",
+        )
+
+    @classmethod
     def custom(
         cls,
         *,
