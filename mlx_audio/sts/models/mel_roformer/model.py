@@ -43,8 +43,13 @@ class RMSNorm(nn.Module):
 
 
 @dataclass
-class SeparationResult:
-    """Result of audio source separation."""
+class MelRoFormerResult:
+    """Result of Mel-Band-RoFormer vocal separation.
+
+    Named distinctly from ``sam_audio.SeparationResult`` because the two shapes
+    differ — SAM-Audio returns streaming target/residual chunks, while
+    Mel-Band-RoFormer is a single-pass pipeline returning one stem.
+    """
 
     vocals: mx.array
     sample_rate: int
