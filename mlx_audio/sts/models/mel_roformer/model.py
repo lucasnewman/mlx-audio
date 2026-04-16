@@ -34,7 +34,7 @@ class RMSNorm(nn.Module):
 
     def __init__(self, dim: int):
         super().__init__()
-        self.scale = dim ** 0.5
+        self.scale = dim**0.5
         self.weight = mx.ones((dim,))
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -70,7 +70,9 @@ class MelFilterbank:
     def __init__(self, config: MelRoFormerConfig):
         self.config = config
         fb = self._build_mel_filterbank()
-        self.freq_indices, self.band_dims, self.num_bands_per_freq = self._compute_band_info(fb)
+        self.freq_indices, self.band_dims, self.num_bands_per_freq = (
+            self._compute_band_info(fb)
+        )
 
     def _build_mel_filterbank(self) -> np.ndarray:
         """Build the ZFTurbo-style binarized mel filterbank.
@@ -251,18 +253,18 @@ class RoFormerFFN(nn.Module):
         super().__init__()
         ff_dim = dim * ff_mult
         self.net = [
-            RMSNorm(dim),     # index 0
+            RMSNorm(dim),  # index 0
             nn.Linear(dim, ff_dim),  # index 1
-            None,                    # index 2 (GELU activation, no params)
-            None,                    # index 3 (placeholder)
+            None,  # index 2 (GELU activation, no params)
+            None,  # index 3 (placeholder)
             nn.Linear(ff_dim, dim),  # index 4
         ]
 
     def __call__(self, x: mx.array) -> mx.array:
-        h = self.net[0](x)      # RMSNorm
-        h = self.net[1](h)      # Linear expand
-        h = nn.gelu(h)          # GELU
-        h = self.net[4](h)      # Linear compress
+        h = self.net[0](x)  # RMSNorm
+        h = self.net[1](h)  # Linear expand
+        h = nn.gelu(h)  # GELU
+        h = self.net[4](h)  # Linear compress
         return h
 
 
@@ -298,8 +300,7 @@ class BandSplit(nn.Module):
         self.filterbank = MelFilterbank(config)
         # Per-band projection: RMSNorm → Linear
         self.to_features = [
-            [RMSNorm(bd), nn.Linear(bd, config.dim)]
-            for bd in self.filterbank.band_dims
+            [RMSNorm(bd), nn.Linear(bd, config.dim)] for bd in self.filterbank.band_dims
         ]
 
     def split(self, x: mx.array) -> mx.array:
@@ -314,9 +315,9 @@ class BandSplit(nn.Module):
         B, F2, T, _ = x.shape
         bands = []
 
-        for i, (indices, proj) in enumerate(zip(
-            self.filterbank.freq_indices, self.to_features
-        )):
+        for i, (indices, proj) in enumerate(
+            zip(self.filterbank.freq_indices, self.to_features)
+        ):
             # Gather frequencies for this band: [B, num_band_freqs, T, 2]
             gathered = x[:, indices, :, :]
             # Flatten last dims: [B, T, num_band_freqs * 2]
@@ -324,7 +325,7 @@ class BandSplit(nn.Module):
             band_input = gathered.transpose(0, 2, 1, 3).reshape(B, T, n_freqs * 2)
             # Project: RMSNorm → Linear → [B, T, dim]
             h = proj[0](band_input)  # RMSNorm
-            h = proj[1](h)            # Linear
+            h = proj[1](h)  # Linear
             bands.append(h)
 
         # Stack bands: [B, T, num_bands, dim]
@@ -346,7 +347,9 @@ class BandSplit(nn.Module):
         # Initialize output
         output = mx.zeros((B, freq_bins_times_two, T, 2))
 
-        for i, (indices, mask) in enumerate(zip(self.filterbank.freq_indices, band_masks)):
+        for i, (indices, mask) in enumerate(
+            zip(self.filterbank.freq_indices, band_masks)
+        ):
             n_freqs = len(indices)
             # Reshape mask: [B, T, n_freqs*2] → [B, T, n_freqs, 2] → [B, n_freqs, T, 2]
             mask_reshaped = mask.reshape(B, T, n_freqs, 2).transpose(0, 2, 1, 3)
@@ -438,7 +441,7 @@ def stft(audio: mx.array, n_fft: int, hop_length: int, window: mx.array) -> tupl
     # Reflect-pad to match torch.stft(center=True) default pad_mode="reflect".
     # MLX pad only supports constant/edge, so build the reflection explicitly.
     left = audio[..., pad:0:-1]
-    right = audio[..., -2:-pad - 2:-1]
+    right = audio[..., -2 : -pad - 2 : -1]
     audio_padded = mx.concatenate([left, audio, right], axis=-1)
 
     # Extract frames
@@ -451,7 +454,7 @@ def stft(audio: mx.array, n_fft: int, hop_length: int, window: mx.array) -> tupl
     frames = []
     for t in range(num_frames):
         start = t * hop_length
-        frame = flat[:, start:start + n_fft]
+        frame = flat[:, start : start + n_fft]
         frames.append(frame)
 
     # Stack: [B*C, num_frames, n_fft]
@@ -470,8 +473,14 @@ def stft(audio: mx.array, n_fft: int, hop_length: int, window: mx.array) -> tupl
     return real, imag
 
 
-def istft(real: mx.array, imag: mx.array, n_fft: int, hop_length: int,
-          window: mx.array, length: int) -> mx.array:
+def istft(
+    real: mx.array,
+    imag: mx.array,
+    n_fft: int,
+    hop_length: int,
+    window: mx.array,
+    length: int,
+) -> mx.array:
     """Inverse Short-time Fourier Transform via overlap-add.
 
     Args:
@@ -505,15 +514,15 @@ def istft(real: mx.array, imag: mx.array, n_fft: int, hop_length: int,
     w2 = window * window
     for t_idx in range(T):
         start = t_idx * hop_length
-        output = output.at[:, start:start + n_fft].add(frames[:, t_idx, :])
-        window_sum = window_sum.at[:, start:start + n_fft].add(w2)
+        output = output.at[:, start : start + n_fft].add(frames[:, t_idx, :])
+        window_sum = window_sum.at[:, start : start + n_fft].add(w2)
 
     # Normalize by window sum
     window_sum = mx.maximum(window_sum, 1e-8)
     output = output / window_sum
 
     # Remove center padding and trim
-    output = output[:, pad:pad + length]
+    output = output[:, pad : pad + length]
     output = output.reshape(B, C, -1)
 
     return output
@@ -537,8 +546,12 @@ class MelRoFormer(nn.Module):
         # 6× dual-axis: [time_transformer, freq_transformer] per depth
         self.layers = [
             [
-                Transformer(config.dim, 1, config.heads, config.dim_head, config.ff_mult),
-                Transformer(config.dim, 1, config.heads, config.dim_head, config.ff_mult),
+                Transformer(
+                    config.dim, 1, config.heads, config.dim_head, config.ff_mult
+                ),
+                Transformer(
+                    config.dim, 1, config.heads, config.dim_head, config.ff_mult
+                ),
             ]
             for _ in range(config.depth)
         ]
@@ -612,8 +625,14 @@ class MelRoFormer(nn.Module):
         imag_deint = out_imag.reshape(B, freq_bins, 2, T).transpose(0, 2, 1, 3)
 
         # Step 9: iSTFT → [B, 2, samples]
-        separated = istft(real_deint, imag_deint,
-                         config.n_fft, config.hop_length, window, original_length)
+        separated = istft(
+            real_deint,
+            imag_deint,
+            config.n_fft,
+            config.hop_length,
+            window,
+            original_length,
+        )
 
         return separated
 
@@ -646,8 +665,8 @@ class MelRoFormer(nn.Module):
                 prefix = key.replace("to_qkv.weight", "")
                 third = value.shape[0] // 3
                 new_weights[f"{prefix}to_q.weight"] = value[:third]
-                new_weights[f"{prefix}to_k.weight"] = value[third:2 * third]
-                new_weights[f"{prefix}to_v.weight"] = value[2 * third:]
+                new_weights[f"{prefix}to_k.weight"] = value[third : 2 * third]
+                new_weights[f"{prefix}to_v.weight"] = value[2 * third :]
                 continue
 
             if key.endswith("rotary_embed.freqs"):
@@ -705,8 +724,11 @@ class MelRoFormer(nn.Module):
         safetensors_files = sorted(path.glob("*.safetensors"))
         if safetensors_files:
             # Prefer specific known names if multiple exist
-            priority = ["mel_roformer_vocals.safetensors", "weights.safetensors",
-                       "model.safetensors"]
+            priority = [
+                "mel_roformer_vocals.safetensors",
+                "weights.safetensors",
+                "model.safetensors",
+            ]
             for preferred in priority:
                 candidate = path / preferred
                 if candidate.exists():
@@ -716,9 +738,7 @@ class MelRoFormer(nn.Module):
                 weight_file = safetensors_files[0]
 
         if weight_file is None or not weight_file.exists():
-            raise FileNotFoundError(
-                f"No .safetensors file found in {path}"
-            )
+            raise FileNotFoundError(f"No .safetensors file found in {path}")
 
         # Resolve config
         if config is None:
@@ -728,6 +748,7 @@ class MelRoFormer(nn.Module):
                 data = json.loads(companion.read_text())
                 # Filter to fields the dataclass accepts
                 from dataclasses import fields as _fields
+
                 valid_keys = {f.name for f in _fields(MelRoFormerConfig)}
                 filtered = {k: v for k, v in data.items() if k in valid_keys}
                 config = MelRoFormerConfig(**filtered)
@@ -737,6 +758,7 @@ class MelRoFormer(nn.Module):
                 if plain.exists():
                     data = json.loads(plain.read_text())
                     from dataclasses import fields as _fields
+
                     valid_keys = {f.name for f in _fields(MelRoFormerConfig)}
                     filtered = {k: v for k, v in data.items() if k in valid_keys}
                     config = MelRoFormerConfig(**filtered)

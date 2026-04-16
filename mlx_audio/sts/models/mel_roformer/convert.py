@@ -34,7 +34,6 @@ from typing import Dict, Optional
 
 from .config import MelRoFormerConfig
 
-
 # ---------- License detection ----------
 #
 # Substring match on input path / URL. Not authoritative — catches the common
@@ -42,24 +41,47 @@ from .config import MelRoFormerConfig
 
 _LICENSE_HINTS = [
     # (substring, preset_name, license_tag, human_note)
-    ("KimberleyJSN", "kim_vocal_2", "GPL-3.0",
-     "Running inference locally is unrestricted. Redistribution or "
-     "distribution in a product triggers GPL-3.0 obligations."),
-    ("kimvocal", "kim_vocal_2", "GPL-3.0",
-     "Likely Kim Vocal 2 variant — GPL-3.0."),
-    ("TRvlvr", "viperx_vocals", "undeclared",
-     "No LICENSE file in TRvlvr/model_repo. Default copyright applies; "
-     "no explicit redistribution right."),
-    ("viperx", "viperx_vocals", "undeclared",
-     "viperx checkpoints are typically hosted in TRvlvr/model_repo with "
-     "no declared license. Default copyright applies."),
-    ("anvuew", None, "GPL-3.0",
-     "anvuew checkpoints tagged GPL-3.0 in response to Intel OpenVINO conversion."),
-    ("ZFTurbo", "zfturbo_bs_roformer", "MIT (inherited)",
-     "MSS-Training release-asset checkpoints inherit the repo's MIT license. "
-     "Free to use and redistribute."),
-    ("Music-Source-Separation-Training", "zfturbo_bs_roformer", "MIT (inherited)",
-     "MSS-Training release assets inherit MIT. Free to redistribute."),
+    (
+        "KimberleyJSN",
+        "kim_vocal_2",
+        "GPL-3.0",
+        "Running inference locally is unrestricted. Redistribution or "
+        "distribution in a product triggers GPL-3.0 obligations.",
+    ),
+    ("kimvocal", "kim_vocal_2", "GPL-3.0", "Likely Kim Vocal 2 variant — GPL-3.0."),
+    (
+        "TRvlvr",
+        "viperx_vocals",
+        "undeclared",
+        "No LICENSE file in TRvlvr/model_repo. Default copyright applies; "
+        "no explicit redistribution right.",
+    ),
+    (
+        "viperx",
+        "viperx_vocals",
+        "undeclared",
+        "viperx checkpoints are typically hosted in TRvlvr/model_repo with "
+        "no declared license. Default copyright applies.",
+    ),
+    (
+        "anvuew",
+        None,
+        "GPL-3.0",
+        "anvuew checkpoints tagged GPL-3.0 in response to Intel OpenVINO conversion.",
+    ),
+    (
+        "ZFTurbo",
+        "zfturbo_bs_roformer",
+        "MIT (inherited)",
+        "MSS-Training release-asset checkpoints inherit the repo's MIT license. "
+        "Free to use and redistribute.",
+    ),
+    (
+        "Music-Source-Separation-Training",
+        "zfturbo_bs_roformer",
+        "MIT (inherited)",
+        "MSS-Training release assets inherit MIT. Free to redistribute.",
+    ),
 ]
 
 
@@ -122,7 +144,7 @@ def _extract_state_dict(obj) -> Dict:
 
     if any(k.startswith("model.") for k in state.keys()):
         state = {
-            (k[len("model."):] if k.startswith("model.") else k): v
+            (k[len("model.") :] if k.startswith("model.") else k): v
             for k, v in state.items()
         }
 
@@ -244,6 +266,7 @@ def convert_checkpoint(
 
     if input_path.suffix == ".safetensors":
         from safetensors.torch import load_file
+
         raw = load_file(str(input_path))
     else:
         raw = torch.load(str(input_path), map_location="cpu", weights_only=False)
@@ -272,13 +295,15 @@ def convert_checkpoint(
             prefix = key[: -len("to_qkv.weight")]
             third = arr.shape[0] // 3
             mlx_weights[f"{prefix}to_q.weight"] = mx.array(arr[:third])
-            mlx_weights[f"{prefix}to_k.weight"] = mx.array(arr[third:2*third])
-            mlx_weights[f"{prefix}to_v.weight"] = mx.array(arr[2*third:])
+            mlx_weights[f"{prefix}to_k.weight"] = mx.array(arr[third : 2 * third])
+            mlx_weights[f"{prefix}to_v.weight"] = mx.array(arr[2 * third :])
         else:
             mlx_weights[key] = mx.array(arr)
 
     if qkv_splits > 0:
-        print_fn(f"  Split {qkv_splits} packed QKV projections → {qkv_splits * 3} separate weights")
+        print_fn(
+            f"  Split {qkv_splits} packed QKV projections → {qkv_splits * 3} separate weights"
+        )
 
     print_fn(f"  Total MLX keys: {len(mlx_weights)}")
 
@@ -305,20 +330,45 @@ def main():
     parser = argparse.ArgumentParser(
         description="Convert PyTorch Mel-Band-RoFormer checkpoints to MLX format."
     )
-    parser.add_argument("--input", type=str, required=True,
-                       help="Path to PyTorch checkpoint (.ckpt, .pt, or .safetensors)")
-    parser.add_argument("--output", type=str, required=True,
-                       help="Output directory for converted weights")
-    parser.add_argument("--preset", type=str, default=None,
-                       choices=["kim_vocal_2", "viperx_vocals",
-                                "zfturbo_bs_roformer", "zfturbo_vocals_v1"],
-                       help="Architecture preset. If omitted, no companion config.json is written.")
-    parser.add_argument("--depth", type=int, default=None,
-                       help="Override: transformer depth (for custom checkpoints)")
-    parser.add_argument("--num-bands", type=int, default=None,
-                       help="Override: number of mel bands (for custom checkpoints)")
-    parser.add_argument("--force", action="store_true",
-                       help="Re-convert even if output exists")
+    parser.add_argument(
+        "--input",
+        type=str,
+        required=True,
+        help="Path to PyTorch checkpoint (.ckpt, .pt, or .safetensors)",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        required=True,
+        help="Output directory for converted weights",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        choices=[
+            "kim_vocal_2",
+            "viperx_vocals",
+            "zfturbo_bs_roformer",
+            "zfturbo_vocals_v1",
+        ],
+        help="Architecture preset. If omitted, no companion config.json is written.",
+    )
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=None,
+        help="Override: transformer depth (for custom checkpoints)",
+    )
+    parser.add_argument(
+        "--num-bands",
+        type=int,
+        default=None,
+        help="Override: number of mel bands (for custom checkpoints)",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="Re-convert even if output exists"
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -347,6 +397,7 @@ def main():
     except Exception as e:
         print(f"Conversion failed: {e}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 

@@ -41,7 +41,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Skip the entire module if torch is not installed.
 torch = pytest.importorskip("torch", reason="PyTorch required for parity tests")
 
@@ -144,11 +143,14 @@ def _load_audio_stereo_44k(path: Path):
     if sr != 44100:
         try:
             import librosa
+
             # Resample per-channel
             resampled = librosa.resample(audio, orig_sr=sr, target_sr=44100)
             audio = resampled
         except ImportError:
-            pytest.skip(f"Audio is {sr}Hz, need 44.1kHz (install librosa to auto-resample)")
+            pytest.skip(
+                f"Audio is {sr}Hz, need 44.1kHz (install librosa to auto-resample)"
+            )
 
     return audio
 
@@ -172,7 +174,7 @@ def _compute_sdr(reference, estimate, eps: float = 1e-10) -> float:
     reference = reference[..., :min_len]
     estimate = estimate[..., :min_len]
 
-    num = np.sum(reference ** 2) + eps
+    num = np.sum(reference**2) + eps
     den = np.sum((reference - estimate) ** 2) + eps
     return float(10.0 * np.log10(num / den))
 
@@ -277,6 +279,6 @@ class TestMelRoFormerParity:
             q_shape = weights[q_key].shape
             k_shape = weights[k_key].shape
             v_shape = weights[v_key].shape
-            assert q_shape == k_shape == v_shape, (
-                f"QKV shape mismatch at {prefix}: Q={q_shape}, K={k_shape}, V={v_shape}"
-            )
+            assert (
+                q_shape == k_shape == v_shape
+            ), f"QKV shape mismatch at {prefix}: Q={q_shape}, K={k_shape}, V={v_shape}"

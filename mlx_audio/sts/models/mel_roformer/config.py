@@ -43,7 +43,7 @@ class MelRoFormerConfig:
 
     # Processing
     chunk_size: int = 352800  # 8 seconds at 44.1kHz
-    num_overlap: int = 2      # 50% overlap for chunked processing
+    num_overlap: int = 2  # 50% overlap for chunked processing
 
     # Optional metadata (set by presets or from companion config.json)
     checkpoint_family: Optional[str] = None

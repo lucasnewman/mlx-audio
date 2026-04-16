@@ -4,7 +4,7 @@
 
 import pytest
 
-from mlx_audio.sts.models.mel_roformer import MelRoFormerConfig, MelRoFormer
+from mlx_audio.sts.models.mel_roformer import MelRoFormer, MelRoFormerConfig
 
 
 class TestMelRoFormerConfig:
@@ -22,10 +22,10 @@ class TestMelRoFormerConfig:
 
     def test_derived_properties(self):
         config = MelRoFormerConfig()
-        assert config.dim_inner == 512      # 8 * 64
-        assert config.ff_dim == 1536        # 384 * 4
+        assert config.dim_inner == 512  # 8 * 64
+        assert config.ff_dim == 1536  # 384 * 4
         assert config.mlp_hidden == 1536
-        assert config.freq_bins == 1025     # 2048/2 + 1
+        assert config.freq_bins == 1025  # 2048/2 + 1
 
     def test_kim_vocal_2_preset(self):
         config = MelRoFormerConfig.kim_vocal_2()
@@ -78,6 +78,7 @@ class TestMelRoFormerModel:
     @pytest.mark.skip(reason="Forward pass requires GPU")
     def test_forward_shape(self):
         import mlx.core as mx
+
         config = MelRoFormerConfig.kim_vocal_2()
         model = MelRoFormer(config)
         audio = mx.random.normal((1, 2, 44100))  # 1 second stereo
@@ -99,7 +100,9 @@ class TestSanitize:
 
         raw_weights = {
             "layers.0.0.layers.0.0.to_qkv.weight": packed,
-            "layers.0.0.layers.0.0.to_out.weight": mx.random.normal((config.dim, inner_dim)),
+            "layers.0.0.layers.0.0.to_out.weight": mx.random.normal(
+                (config.dim, inner_dim)
+            ),
         }
 
         sanitized = model.sanitize(raw_weights)
@@ -110,9 +113,18 @@ class TestSanitize:
         assert "layers.0.0.layers.0.0.to_qkv.weight" not in sanitized
         assert "layers.0.0.layers.0.0.to_out.weight" in sanitized
 
-        assert sanitized["layers.0.0.layers.0.0.to_q.weight"].shape == (inner_dim, config.dim)
-        assert sanitized["layers.0.0.layers.0.0.to_k.weight"].shape == (inner_dim, config.dim)
-        assert sanitized["layers.0.0.layers.0.0.to_v.weight"].shape == (inner_dim, config.dim)
+        assert sanitized["layers.0.0.layers.0.0.to_q.weight"].shape == (
+            inner_dim,
+            config.dim,
+        )
+        assert sanitized["layers.0.0.layers.0.0.to_k.weight"].shape == (
+            inner_dim,
+            config.dim,
+        )
+        assert sanitized["layers.0.0.layers.0.0.to_v.weight"].shape == (
+            inner_dim,
+            config.dim,
+        )
 
 
 class TestConvert:
@@ -172,9 +184,12 @@ class TestLicenseDetection:
 
     def test_detects_kim_vocal_2(self):
         from pathlib import Path
+
         from mlx_audio.sts.models.mel_roformer.convert import _detect_license
 
-        hint = _detect_license(Path("/downloads/KimberleyJSN_melbandroformer/model.ckpt"))
+        hint = _detect_license(
+            Path("/downloads/KimberleyJSN_melbandroformer/model.ckpt")
+        )
         assert hint is not None
         substring, preset, license_tag, note = hint
         assert preset == "kim_vocal_2"
@@ -182,9 +197,12 @@ class TestLicenseDetection:
 
     def test_detects_viperx(self):
         from pathlib import Path
+
         from mlx_audio.sts.models.mel_roformer.convert import _detect_license
 
-        hint = _detect_license(Path("/downloads/TRvlvr_model_repo/mel_band_roformer.ckpt"))
+        hint = _detect_license(
+            Path("/downloads/TRvlvr_model_repo/mel_band_roformer.ckpt")
+        )
         assert hint is not None
         _, preset, license_tag, _ = hint
         assert preset == "viperx_vocals"
@@ -192,6 +210,7 @@ class TestLicenseDetection:
 
     def test_detects_zfturbo(self):
         from pathlib import Path
+
         from mlx_audio.sts.models.mel_roformer.convert import _detect_license
 
         hint = _detect_license(Path("/downloads/ZFTurbo_release/model.ckpt"))
@@ -202,6 +221,7 @@ class TestLicenseDetection:
 
     def test_no_match_returns_none(self):
         from pathlib import Path
+
         from mlx_audio.sts.models.mel_roformer.convert import _detect_license
 
         hint = _detect_license(Path("/tmp/unknown_checkpoint.ckpt"))
@@ -228,7 +248,9 @@ class TestContentAddressing:
 
         digest = _sha256_of_file(test_file)
         # Known SHA-256 of "hello world"
-        assert digest == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        assert (
+            digest == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        )
 
     def test_sha256_chunked_consistency(self, tmp_path):
         """Hash should be the same regardless of read chunk size."""
@@ -247,6 +269,7 @@ class TestConfigSerialization:
 
     def test_roundtrip(self):
         from dataclasses import fields
+
         from mlx_audio.sts.models.mel_roformer.convert import _config_to_dict
 
         config = MelRoFormerConfig.kim_vocal_2()
