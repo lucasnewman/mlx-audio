@@ -119,6 +119,12 @@ class ModelConfig:
 
     @classmethod
     def from_dict(cls, config: dict) -> "ModelConfig":
+        # Ensure model_type is present so downstream tools (e.g. omlx model
+        # discovery) can identify this as a Parakeet STT model without relying
+        # solely on directory-name heuristics.  NeMo-format config.json files
+        # omit this field; we inject it here if absent.
+        if "model_type" not in config:
+            config = {**config, "model_type": "parakeet"}
         return cls(config)
 
 
