@@ -124,7 +124,7 @@ def get_model_path(
     Raises:
         FileNotFoundError: If a local path is provided but doesn't exist.
     """
-    model_path = Path(path_or_hf_repo)
+    model_path = Path(path_or_hf_repo).expanduser()
 
     if model_path.exists():
         return model_path
