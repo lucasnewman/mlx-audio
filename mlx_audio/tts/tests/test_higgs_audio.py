@@ -20,6 +20,7 @@ from mlx_audio.tts.models.higgs_audio.higgs_audio import HiggsAudioModel
 def _tiny_config():
     """Small config just enough to shape-check forward — not real weights."""
     from mlx_audio.tts.models.higgs_audio.config import HiggsTextConfig
+
     return HiggsAudioConfig(
         text_config=HiggsTextConfig(
             hidden_size=64,
@@ -83,6 +84,7 @@ class TestAudioEmbedding(unittest.TestCase):
 
     def test_lookup_shape_and_sum(self):
         import mlx.nn as nn
+
         K = 4
         C_plus2 = 10
         hidden = 8
@@ -99,9 +101,7 @@ class TestAudioEmbedding(unittest.TestCase):
             emb(mx.arange(K, dtype=mx.int32) * C_plus2), axis=0
         )  # [hidden]
         # out[0] should equal expected_sum
-        np.testing.assert_allclose(
-            np.array(out[0]), np.array(expected_sum), rtol=1e-5
-        )
+        np.testing.assert_allclose(np.array(out[0]), np.array(expected_sum), rtol=1e-5)
 
 
 class TestSampling(unittest.TestCase):
@@ -109,8 +109,9 @@ class TestSampling(unittest.TestCase):
 
     def test_greedy_picks_argmax(self):
         # B=1, T=1, K=2, V=5 — craft logits with known argmax per codebook
-        logits = mx.array([[[[0.0, 1.0, 2.0, 0.5, 0.0],
-                             [3.0, 0.5, 0.2, 0.1, 0.0]]]], dtype=mx.float32)
+        logits = mx.array(
+            [[[[0.0, 1.0, 2.0, 0.5, 0.0], [3.0, 0.5, 0.2, 0.1, 0.0]]]], dtype=mx.float32
+        )
         out = greedy_sample_audio(logits)
         self.assertEqual(out.shape, (1, 1, 2))
         np.testing.assert_array_equal(np.array(out)[0, 0], [2, 0])
@@ -174,18 +175,30 @@ class TestQuantizedLoad(unittest.TestCase):
         layers (audio_codebook_embeddings, audio_decoder_proj.audio_lm_head)
         as plain nn.Linear / nn.Embedding — only the Llama backbone quantizes."""
         import mlx.nn as nn
+
+        from mlx_audio.tts.models.higgs_audio.config import (
+            HiggsAudioConfig,
+            HiggsTextConfig,
+        )
         from mlx_audio.tts.models.higgs_audio.higgs_audio import HiggsAudioModel
-        from mlx_audio.tts.models.higgs_audio.config import HiggsAudioConfig, HiggsTextConfig
 
         cfg = HiggsAudioConfig(
             text_config=HiggsTextConfig(
-                hidden_size=64, num_hidden_layers=2, num_attention_heads=4,
-                num_key_value_heads=2, intermediate_size=128, vocab_size=256,
-                rope_theta=10000.0, rms_norm_eps=1e-5, tie_word_embeddings=True,
+                hidden_size=64,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                intermediate_size=128,
+                vocab_size=256,
+                rope_theta=10000.0,
+                rms_norm_eps=1e-5,
+                tie_word_embeddings=True,
                 rope_scaling=None,
             ),
-            audio_num_codebooks=4, audio_codebook_size=16,
-            audio_stream_bos_id=16, audio_stream_eos_id=17,
+            audio_num_codebooks=4,
+            audio_codebook_size=16,
+            audio_stream_bos_id=16,
+            audio_stream_eos_id=17,
             audio_dual_ffn_layers=[0, 1],
             use_audio_out_self_attention=False,
             audio_decoder_proj_num_layers=0,
@@ -205,9 +218,7 @@ class TestQuantizedLoad(unittest.TestCase):
 
         # Protected: audio_codebook_embeddings remains a plain Embedding.
         self.assertIsInstance(model.audio_codebook_embeddings, nn.Embedding)
-        self.assertNotIsInstance(
-            model.audio_codebook_embeddings, nn.QuantizedEmbedding
-        )
+        self.assertNotIsInstance(model.audio_codebook_embeddings, nn.QuantizedEmbedding)
 
         # Protected: audio_lm_head remains a plain Linear.
         self.assertIsInstance(model.audio_decoder_proj.audio_lm_head, nn.Linear)
@@ -216,9 +227,7 @@ class TestQuantizedLoad(unittest.TestCase):
         )
 
         # Quantized: text_lm_head becomes QuantizedLinear.
-        self.assertIsInstance(
-            model.audio_decoder_proj.text_lm_head, nn.QuantizedLinear
-        )
+        self.assertIsInstance(model.audio_decoder_proj.text_lm_head, nn.QuantizedLinear)
 
 
 class TestFrameworkInterface(unittest.TestCase):
@@ -263,17 +272,15 @@ class TestFrameworkInterface(unittest.TestCase):
         dummy_emb = nn.Embedding(4, 4)
         # Protected names → False (skip quantization)
         self.assertFalse(
-            model.model_quant_predicate(
-                "audio_codebook_embeddings", dummy_emb
-            )
+            model.model_quant_predicate("audio_codebook_embeddings", dummy_emb)
         )
         self.assertFalse(
-            model.model_quant_predicate(
-                "audio_decoder_proj.audio_lm_head", dummy_lin
-            )
+            model.model_quant_predicate("audio_decoder_proj.audio_lm_head", dummy_lin)
         )
         # Unprotected names → True (quantize)
-        self.assertTrue(model.model_quant_predicate("layers.0.mlp.gate_proj", dummy_lin))
+        self.assertTrue(
+            model.model_quant_predicate("layers.0.mlp.gate_proj", dummy_lin)
+        )
         self.assertTrue(
             model.model_quant_predicate("audio_decoder_proj.text_lm_head", dummy_lin)
         )

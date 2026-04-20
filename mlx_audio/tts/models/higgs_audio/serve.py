@@ -19,6 +19,7 @@ Usage:
         temperature=0.7, top_p=0.95,
     )
 """
+
 from __future__ import annotations
 
 import json
@@ -38,8 +39,8 @@ from .higgs_audio import HiggsAudioModel
 
 @dataclass
 class HiggsAudioGenerationResult:
-    pcm: np.ndarray                 # float32 in [-1, 1], mono
-    sampling_rate: int              # 24000 for Higgs v2
+    pcm: np.ndarray  # float32 in [-1, 1], mono
+    sampling_rate: int  # 24000 for Higgs v2
     num_frames_raw: int
     num_frames_aligned: int
     stop_reason: str
@@ -77,8 +78,8 @@ def build_prompt(
     config: HiggsAudioConfig,
     tokenizer,
     codec,
-    embed_tokens,                 # nn.Embedding, text vocab
-    audio_codebook_embeddings,    # nn.Embedding, audio codebook table
+    embed_tokens,  # nn.Embedding, text vocab
+    audio_codebook_embeddings,  # nn.Embedding, audio codebook table
 ) -> Tuple[mx.array, mx.array, dict]:
     """Build (inputs_embeds [1,T,H], audio_out_mask [1,T], info) for a Higgs
     generation step.
@@ -131,9 +132,7 @@ def build_prompt(
             audio_codebook_embeddings, ref_delayed, stride
         )
 
-        full_embeds = mx.concatenate(
-            [prefix_emb, audio_emb, middle_emb], axis=0
-        )[None]
+        full_embeds = mx.concatenate([prefix_emb, audio_emb, middle_emb], axis=0)[None]
         audio_out_mask = mx.concatenate(
             [
                 mx.zeros((len(prefix_ids),), dtype=mx.bool_),
@@ -171,7 +170,7 @@ class HiggsAudioServer:
         self,
         model: HiggsAudioModel,
         codec: HiggsAudioTokenizer,
-        tokenizer,                  # HF AutoTokenizer, kept loose to avoid transformers import here
+        tokenizer,  # HF AutoTokenizer, kept loose to avoid transformers import here
         config: HiggsAudioConfig,
     ):
         self.model = model
@@ -186,8 +185,8 @@ class HiggsAudioServer:
         codec_path: str,
         tokenizer_path: Optional[str] = None,
     ) -> "HiggsAudioServer":
-        from transformers import AutoTokenizer
         import mlx.nn as nn
+        from transformers import AutoTokenizer
 
         # Accept either a local directory or a Hugging Face repo id. Repo ids
         # look like "owner/name" and do not resolve to an existing local path.
@@ -197,6 +196,7 @@ class HiggsAudioServer:
                 return p
             if "/" in path and not path.startswith(("/", "./", "../", "~")):
                 from huggingface_hub import snapshot_download
+
                 return Path(snapshot_download(repo_id=path))
             return p  # will error later with a clear "not found"
 
@@ -272,7 +272,8 @@ class HiggsAudioServer:
         """Backward-compatible thin wrapper around build_prompt()."""
         ref_audio_24k = (
             _load_wav_as_24k_mono(reference_audio_path)
-            if reference_audio_path is not None else None
+            if reference_audio_path is not None
+            else None
         )
         return build_prompt(
             target_text,

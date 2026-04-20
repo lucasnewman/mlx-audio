@@ -57,10 +57,14 @@ def _default_voice_prompt() -> tuple[str, str]:
 def main() -> int:
     p = argparse.ArgumentParser(description="Higgs Audio v2 voice cloning demo")
     default_ref_audio, default_ref_text = _default_voice_prompt()
-    p.add_argument("--ref_audio", default=default_ref_audio,
-                   help="Reference audio WAV (defaults to bundled en_woman sample)")
-    p.add_argument("--ref_text", default=default_ref_text,
-                   help="Transcript of the reference audio")
+    p.add_argument(
+        "--ref_audio",
+        default=default_ref_audio,
+        help="Reference audio WAV (defaults to bundled en_woman sample)",
+    )
+    p.add_argument(
+        "--ref_text", default=default_ref_text, help="Transcript of the reference audio"
+    )
     p.add_argument("--text", required=True, help="Target text to synthesize")
     p.add_argument("--output", default="higgs_clone_output.wav", help="Output WAV path")
     p.add_argument(
@@ -85,8 +89,12 @@ def main() -> int:
     p.add_argument("--max_new_frames", type=int, default=1200)
     p.add_argument("--ras_win_len", type=int, default=7)
     p.add_argument("--ras_max_repeat", type=int, default=2)
-    p.add_argument("--fade_in_ms", type=float, default=30.0,
-                   help="Leading fade (ms) — 30ms suppresses the first-frame transient cleanly")
+    p.add_argument(
+        "--fade_in_ms",
+        type=float,
+        default=30.0,
+        help="Leading fade (ms) — 30ms suppresses the first-frame transient cleanly",
+    )
     p.add_argument("--fade_out_ms", type=float, default=15.0)
     args = p.parse_args()
 
@@ -97,7 +105,9 @@ def main() -> int:
         codec_path=args.codec,
     )
     if args.quantize_bits is not None:
-        print(f"[quantize] group_size=64 bits={args.quantize_bits} (audio head protected)")
+        print(
+            f"[quantize] group_size=64 bits={args.quantize_bits} (audio head protected)"
+        )
         nn.quantize(
             server.model,
             group_size=64,

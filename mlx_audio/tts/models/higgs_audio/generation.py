@@ -5,6 +5,7 @@ Not yet integrated with ChatML / reference audio / streaming — those
 layers build on top of what's here. This module handles the per-frame
 mechanics of autoregressive multi-codebook audio generation.
 """
+
 from __future__ import annotations
 
 from typing import Optional
@@ -63,10 +64,10 @@ def build_delay_pattern_mask(
     """
     K, L = input_ids.shape
     new_L = L + K - 1
-    i_idx = mx.arange(K)[:, None]          # [K, 1]
-    j_idx = mx.arange(new_L)[None, :]      # [1, new_L]
-    bos_mask = j_idx < i_idx                # below diag → BOS
-    eos_mask = j_idx >= (L + i_idx)         # past content end → EOS
+    i_idx = mx.arange(K)[:, None]  # [K, 1]
+    j_idx = mx.arange(new_L)[None, :]  # [1, new_L]
+    bos_mask = j_idx < i_idx  # below diag → BOS
+    eos_mask = j_idx >= (L + i_idx)  # past content end → EOS
     # Middle: input_ids[i, j - i]
     src_j = mx.clip(j_idx - i_idx, 0, L - 1)
     src_j_broad = mx.broadcast_to(src_j, (K, new_L))
@@ -144,7 +145,7 @@ def sample_audio(
 
     if top_p is not None and 0.0 < top_p < 1.0:
         # Nucleus sampling per codebook on the last axis.
-        sorted_idx = mx.argsort(-logits, axis=-1)           # descending order
+        sorted_idx = mx.argsort(-logits, axis=-1)  # descending order
         sorted_logits = mx.take_along_axis(logits, sorted_idx, axis=-1)
         sorted_probs = mx.softmax(sorted_logits, axis=-1)
         cumulative = mx.cumsum(sorted_probs, axis=-1)

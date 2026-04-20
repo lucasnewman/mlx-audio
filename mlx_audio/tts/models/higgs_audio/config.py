@@ -7,6 +7,7 @@ Upstream reference:
   bosonai/higgs-audio-v2-generation-3B-base/config.json
   boson_multimodal/model/higgs_audio/configuration_higgs_audio.py
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from typing import List, Optional
 @dataclass
 class HiggsTextConfig:
     """Llama-3.2-3B backbone configuration."""
+
     hidden_size: int = 3072
     num_hidden_layers: int = 28
     num_attention_heads: int = 24
@@ -51,9 +53,7 @@ class HiggsAudioConfig:
 
     # Dual-FFN layer indices — which backbone layers run the audio MLP path.
     # For v2 3B this is [0..27], i.e. all layers.
-    audio_dual_ffn_layers: List[int] = field(
-        default_factory=lambda: list(range(28))
-    )
+    audio_dual_ffn_layers: List[int] = field(default_factory=lambda: list(range(28)))
 
     # If True, insert a separate audio-attention layer per dual-FFN block.
     # For v2 3B this is 0 — attention is fully shared between text and audio.
@@ -100,7 +100,9 @@ class HiggsAudioConfig:
             audio_stream_bos_id=d.get("audio_stream_bos_id", 1024),
             audio_stream_eos_id=d.get("audio_stream_eos_id", 1025),
             audio_dual_ffn_layers=d.get("audio_dual_ffn_layers", list(range(28))),
-            use_audio_out_self_attention=bool(d.get("use_audio_out_self_attention", False)),
+            use_audio_out_self_attention=bool(
+                d.get("use_audio_out_self_attention", False)
+            ),
             audio_decoder_proj_num_layers=d.get("audio_decoder_proj_num_layers", 0),
             use_delay_pattern=d.get("use_delay_pattern", True),
             audio_in_token_idx=d.get("audio_in_token_idx"),

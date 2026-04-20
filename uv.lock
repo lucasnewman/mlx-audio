@@ -1334,6 +1334,7 @@ all = [
     { name = "mistral-common", extra = ["audio"] },
     { name = "num2words" },
     { name = "phonemizer-fork" },
+    { name = "pydub" },
     { name = "sentencepiece" },
     { name = "setuptools" },
     { name = "spacy" },
@@ -1379,6 +1380,7 @@ tts = [
     { name = "misaki" },
     { name = "num2words" },
     { name = "phonemizer-fork" },
+    { name = "pydub" },
     { name = "sentencepiece" },
     { name = "spacy" },
     { name = "tiktoken" },
@@ -1416,6 +1418,8 @@ requires-dist = [
     { name = "phonemizer-fork", marker = "extra == 'tts'", specifier = ">=3.3.2" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7.0" },
     { name = "protobuf", specifier = ">=6.33.5" },
+    { name = "pydub", marker = "extra == 'all'", specifier = ">=0.25.1" },
+    { name = "pydub", marker = "extra == 'tts'", specifier = ">=0.25.1" },
     { name = "pyloudnorm", specifier = ">=0.2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0.0" },
@@ -2241,6 +2245,15 @@ wheels = [
 [package.optional-dependencies]
 pycountry = [
     { name = "pycountry" },
+]
+
+[[package]]
+name = "pydub"
+version = "0.25.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/9a/e6bca0eed82db26562c73b5076539a4a08d3cffd19c3cc5913a3e61145fd/pydub-0.25.1.tar.gz", hash = "sha256:980a33ce9949cab2a569606b65674d748ecbca4f0796887fd6f46173a7b0d30f", size = 38326, upload-time = "2021-03-10T02:09:54.659Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/53/d78dc063216e62fc55f6b2eebb447f6a4b0a59f55c8406376f76bf959b08/pydub-0.25.1-py2.py3-none-any.whl", hash = "sha256:65617e33033874b59d87db603aa1ed450633288aefead953b30bded59cb599a6", size = 32327, upload-time = "2021-03-10T02:09:53.503Z" },
 ]
 
 [[package]]

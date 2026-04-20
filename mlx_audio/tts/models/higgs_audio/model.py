@@ -13,6 +13,7 @@ matches the framework's standard signature and yields a
 The richer, kwarg-style API (`HiggsAudioServer.from_pretrained(...).generate(target_text=...)`)
 in `serve.py` is preserved as an additional Python entrypoint.
 """
+
 from __future__ import annotations
 
 import time
@@ -26,7 +27,6 @@ from ..base import GenerationResult
 from .config import HiggsAudioConfig
 from .higgs_audio import HiggsAudioModel
 from .serve import build_prompt
-
 
 # Framework loader reads `module.ModelConfig.from_dict(config_json)`; aliasing
 # HiggsAudioConfig keeps a single source of truth.
@@ -79,8 +79,8 @@ class Model(HiggsAudioModel):
         """Attach the HF text tokenizer (from model_path) and the Higgs codec
         (from the default mlx-community repo, overridable post-hoc via
         `model.codec = ...`)."""
-        from transformers import AutoTokenizer
         from huggingface_hub import snapshot_download
+        from transformers import AutoTokenizer
 
         from ....codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
 

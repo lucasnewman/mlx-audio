@@ -10,17 +10,17 @@ sampling from the bos-text-position audio_logits collapses to stream-EOS on
 half the codebooks. See `Model.generate` for the full ramp-in / ramp-out state
 machine.
 """
+
 from __future__ import annotations
 
 from typing import Iterator, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
-
 from mlx_lm.models.base import create_causal_mask
 from mlx_lm.models.cache import make_prompt_cache
-from mlx_lm.models.llama import Attention as LlamaAttention
 from mlx_lm.models.llama import MLP as LlamaMLP
+from mlx_lm.models.llama import Attention as LlamaAttention
 from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
 
 from .config import HiggsAudioConfig
@@ -61,10 +61,16 @@ class HiggsDualFFNDecoderLayer(nn.Module):
 
     def __init__(self, llama_args: LlamaModelArgs, text_cfg):
         super().__init__()
-        self.input_layernorm = nn.RMSNorm(text_cfg.hidden_size, eps=text_cfg.rms_norm_eps)
-        self.audio_input_layernorm = nn.RMSNorm(text_cfg.hidden_size, eps=text_cfg.rms_norm_eps)
+        self.input_layernorm = nn.RMSNorm(
+            text_cfg.hidden_size, eps=text_cfg.rms_norm_eps
+        )
+        self.audio_input_layernorm = nn.RMSNorm(
+            text_cfg.hidden_size, eps=text_cfg.rms_norm_eps
+        )
         self.self_attn = LlamaAttention(llama_args)
-        self.post_attention_layernorm = nn.RMSNorm(text_cfg.hidden_size, eps=text_cfg.rms_norm_eps)
+        self.post_attention_layernorm = nn.RMSNorm(
+            text_cfg.hidden_size, eps=text_cfg.rms_norm_eps
+        )
         self.audio_post_attention_layernorm = nn.RMSNorm(
             text_cfg.hidden_size, eps=text_cfg.rms_norm_eps
         )
@@ -216,9 +222,9 @@ class HiggsAudioModel(nn.Module):
         Returns:
             (text_logits [B, T, vocab], audio_logits [B, T, K, C+2] or None).
         """
-        assert (input_ids is None) != (inputs_embeds is None), (
-            "pass exactly one of input_ids or inputs_embeds"
-        )
+        assert (input_ids is None) != (
+            inputs_embeds is None
+        ), "pass exactly one of input_ids or inputs_embeds"
         if input_ids is not None:
             B, T = input_ids.shape
             h = self.embed_tokens(input_ids)
@@ -228,7 +234,9 @@ class HiggsAudioModel(nn.Module):
 
         caller_wants_audio = audio_out_mask is not None
         # Dual-FFN layers always need a mask; synthesize all-False when caller passes None.
-        layer_mask = audio_out_mask if caller_wants_audio else mx.zeros((B, T), dtype=mx.bool_)
+        layer_mask = (
+            audio_out_mask if caller_wants_audio else mx.zeros((B, T), dtype=mx.bool_)
+        )
 
         if attn_mask is None and T > 1:
             attn_mask = create_causal_mask(T, offset=0)
@@ -317,9 +325,7 @@ class HiggsAudioModel(nn.Module):
 
         for step in range(max_new_frames):
             last = prev_frame.reshape(K, 1)
-            embed = lookup_audio_embedding(
-                self.audio_codebook_embeddings, last, stride
-            )
+            embed = lookup_audio_embedding(self.audio_codebook_embeddings, last, stride)
             _, audio_logits = self(
                 inputs_embeds=embed[None], audio_out_mask=step_mask, cache=cache
             )
@@ -460,7 +466,7 @@ class HiggsAudioModel(nn.Module):
             stop_reason = f"max-frames-{max_new_frames}"
 
         sequence = mx.stack(frames, axis=1).astype(mx.int32)  # [K, N]
-        aligned = revert_delay_pattern(sequence)              # [K, N-K+1]
+        aligned = revert_delay_pattern(sequence)  # [K, N-K+1]
         if trim_boundaries and aligned.shape[1] >= 2:
             aligned = aligned[:, 1:-1]
         aligned = mx.clip(aligned, 0, self.config.audio_codebook_size - 1)
