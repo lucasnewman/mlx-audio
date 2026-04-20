@@ -80,12 +80,20 @@ class EncoderAttention(nn.Module):
 
         # Fused RoPE (traditional=True = GPT-J style interleaved pairs).
         q = mx.fast.rope(
-            q, self.head_dim, traditional=True, base=self.rope_theta,
-            scale=1.0, offset=rope_offset,
+            q,
+            self.head_dim,
+            traditional=True,
+            base=self.rope_theta,
+            scale=1.0,
+            offset=rope_offset,
         )
         k = mx.fast.rope(
-            k, self.head_dim, traditional=True, base=self.rope_theta,
-            scale=1.0, offset=rope_offset,
+            k,
+            self.head_dim,
+            traditional=True,
+            base=self.rope_theta,
+            scale=1.0,
+            offset=rope_offset,
         )
 
         # Update KV cache if provided (for chunked encoding)

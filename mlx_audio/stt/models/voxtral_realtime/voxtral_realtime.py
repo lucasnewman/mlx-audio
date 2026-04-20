@@ -14,7 +14,6 @@ Optimizations:
 - Sampling uses logits directly (skips softmax+log round-trip)
 """
 
-import math
 import time
 from pathlib import Path
 from typing import List, Optional, Union
@@ -26,13 +25,9 @@ import numpy as np
 from ..base import STTOutput
 from .audio import compute_mel_filters, compute_mel_spectrogram
 from .config import (
-    AUDIO_LENGTH_PER_TOK,
-    FRAME_RATE,
-    HOP_LENGTH,
     RAW_AUDIO_LENGTH_PER_TOK,
     SAMPLE_RATE,
     ModelConfig,
-    _num_audio_tokens,
     _num_delay_tokens,
 )
 from .decoder import Decoder, compute_time_embedding

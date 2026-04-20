@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import queue
 import threading
-from typing import Iterator, Optional
+from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -329,9 +329,7 @@ class StreamingConvStem:
         # in fp32 (~2x slower than bf16 on Apple Silicon).
         target_dtype = self._c0.conv.conv.weight.dtype
         if mel_chunk.shape[1] == 0:
-            return mx.zeros(
-                (0, self._c0.conv.conv.weight.shape[0]), dtype=target_dtype
-            )
+            return mx.zeros((0, self._c0.conv.conv.weight.shape[0]), dtype=target_dtype)
         # Match batch: conv_stem takes mel.T[None, :, :] ([1, frames, 128])
         x = mel_chunk.T.astype(target_dtype)  # [frames, 128]
         x = self._c0.step(x)
@@ -642,7 +640,7 @@ class VoxtralStreamingSession:
                     [t for t in self.generated if t != eos]
                 )
                 if text_so_far != self._prev_text:
-                    deltas.append(text_so_far[len(self._prev_text):])
+                    deltas.append(text_so_far[len(self._prev_text) :])
                     self._prev_text = text_so_far
                 self._done = True
                 return deltas
@@ -675,7 +673,7 @@ class VoxtralStreamingSession:
                 [t for t in self.generated if t != eos]
             )
             if text_so_far != self._prev_text:
-                deltas.append(text_so_far[len(self._prev_text):])
+                deltas.append(text_so_far[len(self._prev_text) :])
                 self._prev_text = text_so_far
 
             if token == eos or len(self.generated) > self.max_tokens:

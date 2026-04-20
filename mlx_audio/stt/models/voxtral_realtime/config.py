@@ -1,6 +1,6 @@
 import inspect
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from mlx_audio.base import BaseModelArgs

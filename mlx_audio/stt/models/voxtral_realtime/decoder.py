@@ -113,12 +113,20 @@ class DecoderAttention(nn.Module):
 
         # Fused RoPE kernel (GPT-J style = traditional=True interleaved pairs).
         q = mx.fast.rope(
-            q, self.head_dim, traditional=True, base=self.rope_theta,
-            scale=1.0, offset=start_pos,
+            q,
+            self.head_dim,
+            traditional=True,
+            base=self.rope_theta,
+            scale=1.0,
+            offset=start_pos,
         )
         k = mx.fast.rope(
-            k, self.head_dim, traditional=True, base=self.rope_theta,
-            scale=1.0, offset=start_pos,
+            k,
+            self.head_dim,
+            traditional=True,
+            base=self.rope_theta,
+            scale=1.0,
+            offset=start_pos,
         )
 
         if cache is not None:

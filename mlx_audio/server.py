@@ -23,6 +23,7 @@ from urllib.parse import unquote
 
 import mlx.core as mx
 import numpy as np
+import soundfile as sf
 import uvicorn
 import webrtcvad
 from fastapi import (
@@ -637,9 +638,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
         speech_chunk_count = 0
         last_speech_time = time.time()  # Track when we last detected speech
         silence_threshold_seconds = 0.5  # Process when silence > 0.5 seconds
-        last_process_time = time.time()
         initial_chunk_processed = False  # Track if we've processed the initial chunk
-        processed_samples = 0  # Track how many samples we've already processed
 
         await websocket.send_json({"status": "ready", "message": "Ready to transcribe"})
         print("Ready to transcribe")
@@ -744,7 +743,6 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                 if should_process_initial and len(audio_buffer) >= initial_chunk_size:
                     process_size = initial_chunk_size
                     audio_array = np.array(audio_buffer[:process_size])
-                    processed_samples = process_size
                     initial_chunk_processed = True
 
                     try:
@@ -786,9 +784,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
 
                         # Clear processed audio from buffer and reset state
                         audio_buffer = []
-                        processed_samples = 0
                         initial_chunk_processed = False
-                        last_process_time = current_time
                         print(
                             f"Processed final chunk: {process_size} samples ({process_size/sample_rate:.2f}s), buffer cleared"
                         )
@@ -963,25 +959,31 @@ async def realtime_ws(websocket: WebSocket):
     async def drain_deltas(max_decode_tokens: int = 8) -> bool:
         """Run one session.step off-loop, ship deltas. Returns session.done."""
         async with REALTIME_INFERENCE_LOCK:
-            deltas = await asyncio.to_thread(session.step, max_decode_tokens=max_decode_tokens)
+            deltas = await asyncio.to_thread(
+                session.step, max_decode_tokens=max_decode_tokens
+            )
         for delta in deltas:
             full_text_parts.append(delta)
-            await send_event({
-                "type": "conversation.item.input_audio_transcription.delta",
-                "item_id": current_item_id,
-                "content_index": 0,
-                "delta": delta,
-            })
+            await send_event(
+                {
+                    "type": "conversation.item.input_audio_transcription.delta",
+                    "item_id": current_item_id,
+                    "content_index": 0,
+                    "delta": delta,
+                }
+            )
         return session.done
 
     async def send_done():
         text = "".join(full_text_parts)
-        await send_event({
-            "type": "conversation.item.input_audio_transcription.completed",
-            "item_id": current_item_id,
-            "content_index": 0,
-            "transcript": text,
-        })
+        await send_event(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": current_item_id,
+                "content_index": 0,
+                "transcript": text,
+            }
+        )
 
     session_id = f"sess_{uuid.uuid4().hex[:16]}"
 
@@ -1015,11 +1017,10 @@ async def realtime_ws(websocket: WebSocket):
 
             if msg_type == "session.update":
                 session_payload = msg.get("session") or {}
-                audio_input = ((session_payload.get("audio") or {}).get("input") or {})
+                audio_input = (session_payload.get("audio") or {}).get("input") or {}
                 transcription_cfg = audio_input.get("transcription") or {}
-                resolved_model = (
-                    session_payload.get("model")
-                    or transcription_cfg.get("model")
+                resolved_model = session_payload.get("model") or transcription_cfg.get(
+                    "model"
                 )
                 fmt = audio_input.get("format") or {}
                 requested_rate = fmt.get("rate")
@@ -1047,7 +1048,9 @@ async def realtime_ws(websocket: WebSocket):
                     full_text_parts = []
                     current_item_id = None
 
-                await send_event({"type": "session.updated", "session": _session_snapshot()})
+                await send_event(
+                    {"type": "session.updated", "session": _session_snapshot()}
+                )
 
             elif msg_type == "input_audio_buffer.append":
                 audio_b64 = msg.get("audio", "")
@@ -1055,16 +1058,18 @@ async def realtime_ws(websocket: WebSocket):
                     continue
                 if current_item_id is None:
                     current_item_id = _new_item_id()
-                    await send_event({
-                        "type": "conversation.item.added",
-                        "item": {
-                            "id": current_item_id,
-                            "object": "realtime.item",
-                            "type": "message",
-                            "role": "user",
-                            "content": [{"type": "input_audio"}],
-                        },
-                    })
+                    await send_event(
+                        {
+                            "type": "conversation.item.added",
+                            "item": {
+                                "id": current_item_id,
+                                "object": "realtime.item",
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_audio"}],
+                            },
+                        }
+                    )
                 pcm16 = np.frombuffer(base64.b64decode(audio_b64), dtype=np.int16)
                 samples = _resample_pcm16_to_rate(
                     pcm16, client_input_rate, session.input_sample_rate
@@ -1077,21 +1082,25 @@ async def realtime_ws(websocket: WebSocket):
             elif msg_type == "input_audio_buffer.commit":
                 if current_item_id is None:
                     current_item_id = _new_item_id()
-                    await send_event({
-                        "type": "conversation.item.added",
-                        "item": {
-                            "id": current_item_id,
-                            "object": "realtime.item",
-                            "type": "message",
-                            "role": "user",
-                            "content": [{"type": "input_audio"}],
-                        },
-                    })
-                await send_event({
-                    "type": "input_audio_buffer.committed",
-                    "item_id": current_item_id,
-                    "previous_item_id": None,
-                })
+                    await send_event(
+                        {
+                            "type": "conversation.item.added",
+                            "item": {
+                                "id": current_item_id,
+                                "object": "realtime.item",
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_audio"}],
+                            },
+                        }
+                    )
+                await send_event(
+                    {
+                        "type": "input_audio_buffer.committed",
+                        "item_id": current_item_id,
+                        "previous_item_id": None,
+                    }
+                )
                 async with REALTIME_INFERENCE_LOCK:
                     session.close()
                 while not await drain_deltas(max_decode_tokens=16):
@@ -1134,7 +1143,7 @@ class MLXAudioStudioServer:
 
         try:
             # Install deps silently
-            result = subprocess.run(
+            subprocess.run(
                 ["npm", "install"],
                 cwd=str(ui_path),
                 stdout=subprocess.DEVNULL,
@@ -1171,7 +1180,7 @@ class MLXAudioStudioServer:
             time.sleep(2)
             webbrowser.open("http://localhost:3000")
             print(f"✓ API server starting on http://{host}:{port}")
-            print(f"✓ Studio UI available at http://localhost:3000")
+            print("✓ Studio UI available at http://localhost:3000")
             print("\nPress Ctrl+C to stop both servers")
 
         try:
