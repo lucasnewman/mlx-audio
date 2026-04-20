@@ -465,6 +465,7 @@ class VoxtralStreamingSession:
         )
         self._mel_filters = mel_filters
         self._aec = aec
+        self.input_sample_rate: int = int(aec.sampling_rate)
         self._sconv = StreamingConvStem(model.encoder)
         self._senc = StreamingEncoder(model.encoder)
         self._sproj = StreamingDownsampler(model.encoder)

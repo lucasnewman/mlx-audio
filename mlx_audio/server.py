@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import time
+import uuid
 import webbrowser
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -196,6 +197,7 @@ class SeparationResponse(BaseModel):
 
 # Initialize the ModelProvider
 model_provider = ModelProvider()
+REALTIME_INFERENCE_LOCK = asyncio.Lock()
 
 
 @app.get("/")
@@ -824,17 +826,67 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
             pass
 
 
-_DEFAULT_REALTIME_MODEL_FALLBACK = "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+# OpenAI Realtime clients send PCM at 24 kHz by default, so we assume that
+# until the client declares a different ``audio.input.format.rate``. The
+# model-side rate is read off the streaming session's ``input_sample_rate``
+# attribute; the server resamples client → model on ingress.
+_REALTIME_DEFAULT_CLIENT_RATE = 24000
 
 
-def _default_realtime_model() -> str:
-    """Resolve the default model for /v1/realtime at request time.
+def _default_transcription_delay_ms() -> Optional[int]:
+    raw = os.getenv("MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
-    Read from the env var (overridable via ``--realtime-model`` on startup,
-    which sets it) so the argparse-driven CLI can configure the default
-    without monkey-patching a module constant.
+
+def _open_streaming_session(model, *, temperature: float, delay_ms: Optional[int]):
+    """Open a streaming session, forwarding ``transcription_delay_ms`` only to
+    models that declare the parameter.
     """
-    return os.getenv("MLX_AUDIO_REALTIME_MODEL", _DEFAULT_REALTIME_MODEL_FALLBACK)
+    kwargs: dict = {"temperature": temperature}
+    if delay_ms is not None:
+        sig = inspect.signature(model.create_streaming_session)
+        if "transcription_delay_ms" in sig.parameters:
+            kwargs["transcription_delay_ms"] = delay_ms
+    return model.create_streaming_session(**kwargs)
+
+
+def _resample_pcm16_to_rate(
+    pcm16: np.ndarray, from_rate: int, to_rate: int
+) -> np.ndarray:
+    """Linear resample int16 PCM to ``to_rate``.
+
+    Returns float32 samples in [-1, 1]. If the rates already match, this is
+    a plain dtype cast.
+    """
+    samples = pcm16.astype(np.float32) / 32768.0
+    if from_rate == to_rate or samples.size == 0:
+        return samples
+    n_out = int(round(samples.size * to_rate / from_rate))
+    if n_out <= 1:
+        return samples[:n_out].astype(np.float32, copy=False)
+    src_x = np.linspace(0.0, 1.0, num=samples.size, endpoint=False, dtype=np.float64)
+    dst_x = np.linspace(0.0, 1.0, num=n_out, endpoint=False, dtype=np.float64)
+    return np.interp(dst_x, src_x, samples).astype(np.float32)
+
+
+def _resolve_realtime_model_name(requested_model: Optional[str]) -> Optional[str]:
+    """Return the requested model ID, or the server-configured default.
+
+    The default is read from ``$MLX_AUDIO_REALTIME_MODEL`` (settable via the
+    ``--realtime-model`` CLI flag). Returns ``None`` when neither the client
+    nor the server supplies a model — the caller is expected to reject the
+    connection with a clear error.
+    """
+    normalized = (requested_model or "").strip()
+    if normalized:
+        return normalized
+    configured = (os.getenv("MLX_AUDIO_REALTIME_MODEL") or "").strip()
+    return configured or None
 
 
 @app.websocket("/v1/realtime")
@@ -842,68 +894,113 @@ async def realtime_ws(websocket: WebSocket):
     """OpenAI Realtime API-compatible WebSocket endpoint.
 
     Works with any STT model whose ``load_model`` result exposes the
-    streaming-session protocol: ``create_streaming_session(...)`` returning
-    an object with ``feed(samples)`` / ``close()`` / ``step(max_decode_tokens)``
-    / ``done``. voxtral_realtime is the reference implementation; other
-    models can opt in by implementing the same surface.
+    streaming-session protocol. A streaming session must provide:
+      - ``feed(samples: np.ndarray[float32])``
+      - ``close()``
+      - ``step(max_decode_tokens: int) -> list[str]``
+      - ``done: bool``
+      - ``input_sample_rate: int``  (the native rate expected by ``feed``)
+    Models that support an adjustable transcription-delay / latency knob
+    should accept ``transcription_delay_ms: Optional[int]`` on
+    ``create_streaming_session``; models without the concept can ignore it.
 
-    Protocol (subset):
-      client → server
-        { "type": "session.update", "session": {...} }           # optional
-        { "type": "input_audio_buffer.append", "audio": "<b64 PCM16>" }
-        { "type": "input_audio_buffer.commit", "final": true }   # flush+finish
-      server → client
-        { "type": "session.created", "session": {...} }
-        { "type": "response.audio_transcript.delta", "delta": "..." }
-        { "type": "response.audio_transcript.done", "text": "..." }
-        { "type": "error", "error": {"message": "..."} }
+    Client → server events follow OpenAI Realtime (subset):
+      ``session.update``, ``input_audio_buffer.append``,
+      ``input_audio_buffer.commit``.
+    Server → client events: ``session.created`` / ``session.updated``,
+    ``conversation.item.added``, ``input_audio_buffer.committed``,
+    ``conversation.item.input_audio_transcription.delta`` /
+    ``.completed``, and ``error``.
 
-    Model is selected via the ``?model=<repo>`` query string; defaults to
-    ``$MLX_AUDIO_REALTIME_MODEL``.
+    Model is selected via ``?model=<id>`` or ``session.update.model``;
+    defaults to ``$MLX_AUDIO_REALTIME_MODEL``.
     """
     await websocket.accept()
 
-    model_name = websocket.query_params.get("model", _default_realtime_model())
+    def _new_event_id() -> str:
+        return f"event_{uuid.uuid4().hex[:16]}"
+
+    async def send_event(payload: dict):
+        payload = {"event_id": _new_event_id(), **payload}
+        await websocket.send_json(payload)
+
+    async def send_error(message: str):
+        await send_event({"type": "error", "error": {"message": message}})
+
+    requested_model = websocket.query_params.get("model")
+    model_name = _resolve_realtime_model_name(requested_model)
+    if model_name is None:
+        await send_error(
+            "no realtime model configured: pass ?model=<id>, set "
+            "session.update.model, or start the server with --realtime-model"
+        )
+        await websocket.close()
+        return
     try:
         model = model_provider.load_model(model_name)
     except Exception as e:
-        await websocket.send_json({"type": "error", "error": {"message": f"load failed: {e}"}})
+        await send_error(f"load failed: {e}")
         await websocket.close()
         return
 
     if not hasattr(model, "create_streaming_session"):
-        await websocket.send_json({
-            "type": "error",
-            "error": {"message": f"model {model_name!r} does not support streaming"},
-        })
+        await send_error(f"model {model_name!r} does not support streaming")
         await websocket.close()
         return
 
     temperature = 0.0
-    session = model.create_streaming_session(temperature=temperature)
+    transcription_delay_ms = _default_transcription_delay_ms()
+    session = _open_streaming_session(
+        model, temperature=temperature, delay_ms=transcription_delay_ms
+    )
     full_text_parts: list[str] = []
+    current_item_id: Optional[str] = None
+    client_input_rate = _REALTIME_DEFAULT_CLIENT_RATE
+
+    def _new_item_id() -> str:
+        return f"item_{uuid.uuid4().hex[:16]}"
 
     async def drain_deltas(max_decode_tokens: int = 8) -> bool:
         """Run one session.step off-loop, ship deltas. Returns session.done."""
-        deltas = await asyncio.to_thread(session.step, max_decode_tokens=max_decode_tokens)
+        async with REALTIME_INFERENCE_LOCK:
+            deltas = await asyncio.to_thread(session.step, max_decode_tokens=max_decode_tokens)
         for delta in deltas:
             full_text_parts.append(delta)
-            await websocket.send_json({
-                "type": "response.audio_transcript.delta",
+            await send_event({
+                "type": "conversation.item.input_audio_transcription.delta",
+                "item_id": current_item_id,
+                "content_index": 0,
                 "delta": delta,
             })
         return session.done
 
     async def send_done():
-        await websocket.send_json({
-            "type": "response.audio_transcript.done",
-            "text": "".join(full_text_parts),
+        text = "".join(full_text_parts)
+        await send_event({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": current_item_id,
+            "content_index": 0,
+            "transcript": text,
         })
 
-    await websocket.send_json({
-        "type": "session.created",
-        "session": {"model": model_name, "input_audio_format": "pcm16"},
-    })
+    session_id = f"sess_{uuid.uuid4().hex[:16]}"
+
+    def _session_snapshot() -> dict:
+        return {
+            "id": session_id,
+            "object": "realtime.session",
+            "type": "transcription",
+            "model": model_name,
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcm", "rate": client_input_rate},
+                    "transcription": {"model": model_name},
+                    "turn_detection": None,
+                }
+            },
+        }
+
+    await send_event({"type": "session.created", "session": _session_snapshot()})
 
     try:
         while True:
@@ -911,39 +1008,109 @@ async def realtime_ws(websocket: WebSocket):
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
-                await websocket.send_json({"type": "error", "error": {"message": "invalid JSON"}})
+                await send_error("invalid JSON")
                 continue
 
             msg_type = msg.get("type", "")
 
             if msg_type == "session.update":
-                await websocket.send_json({"type": "session.updated"})
+                session_payload = msg.get("session") or {}
+                audio_input = ((session_payload.get("audio") or {}).get("input") or {})
+                transcription_cfg = audio_input.get("transcription") or {}
+                resolved_model = (
+                    session_payload.get("model")
+                    or transcription_cfg.get("model")
+                )
+                fmt = audio_input.get("format") or {}
+                requested_rate = fmt.get("rate")
+                if isinstance(requested_rate, int) and requested_rate > 0:
+                    client_input_rate = requested_rate
+                target_model_name = _resolve_realtime_model_name(resolved_model)
+                if target_model_name and target_model_name != model_name:
+                    try:
+                        model = model_provider.load_model(target_model_name)
+                    except Exception as e:
+                        await send_error(f"load failed: {e}")
+                        continue
+                    if not hasattr(model, "create_streaming_session"):
+                        await send_error(
+                            f"model {target_model_name!r} does not support streaming"
+                        )
+                        continue
+                    model_name = target_model_name
+                    async with REALTIME_INFERENCE_LOCK:
+                        session = _open_streaming_session(
+                            model,
+                            temperature=temperature,
+                            delay_ms=transcription_delay_ms,
+                        )
+                    full_text_parts = []
+                    current_item_id = None
+
+                await send_event({"type": "session.updated", "session": _session_snapshot()})
 
             elif msg_type == "input_audio_buffer.append":
                 audio_b64 = msg.get("audio", "")
                 if not audio_b64:
                     continue
+                if current_item_id is None:
+                    current_item_id = _new_item_id()
+                    await send_event({
+                        "type": "conversation.item.added",
+                        "item": {
+                            "id": current_item_id,
+                            "object": "realtime.item",
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_audio"}],
+                        },
+                    })
                 pcm16 = np.frombuffer(base64.b64decode(audio_b64), dtype=np.int16)
-                samples = pcm16.astype(np.float32) / 32768.0
-                session.feed(samples)
+                samples = _resample_pcm16_to_rate(
+                    pcm16, client_input_rate, session.input_sample_rate
+                )
+                async with REALTIME_INFERENCE_LOCK:
+                    session.feed(samples)
                 # Opportunistic draining between chunks so deltas flow early.
                 await drain_deltas(max_decode_tokens=8)
 
             elif msg_type == "input_audio_buffer.commit":
-                if msg.get("final"):
+                if current_item_id is None:
+                    current_item_id = _new_item_id()
+                    await send_event({
+                        "type": "conversation.item.added",
+                        "item": {
+                            "id": current_item_id,
+                            "object": "realtime.item",
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_audio"}],
+                        },
+                    })
+                await send_event({
+                    "type": "input_audio_buffer.committed",
+                    "item_id": current_item_id,
+                    "previous_item_id": None,
+                })
+                async with REALTIME_INFERENCE_LOCK:
                     session.close()
-                    while not await drain_deltas(max_decode_tokens=16):
-                        pass
-                    await send_done()
-                    # Start a fresh session for any subsequent utterance.
-                    session = model.create_streaming_session(temperature=temperature)
-                    full_text_parts = []
+                while not await drain_deltas(max_decode_tokens=16):
+                    pass
+                await send_done()
+                async with REALTIME_INFERENCE_LOCK:
+                    session = _open_streaming_session(
+                        model,
+                        temperature=temperature,
+                        delay_ms=transcription_delay_ms,
+                    )
+                full_text_parts = []
+                current_item_id = None
 
     except WebSocketDisconnect:
         pass
     except Exception as e:
         try:
-            await websocket.send_json({"type": "error", "error": {"message": str(e)}})
+            await send_error(str(e))
         except Exception:
             pass
     finally:
@@ -1085,10 +1252,26 @@ def main():
             "Overrides $MLX_AUDIO_REALTIME_MODEL."
         ),
     )
+    parser.add_argument(
+        "--realtime-transcription-delay-ms",
+        type=int,
+        default=None,
+        help=(
+            "Transcription latency/quality knob for streaming STT models that "
+            "expose a ``transcription_delay_ms`` parameter (e.g. voxtral_realtime). "
+            "Lower values reduce latency at the cost of accuracy. When unset, "
+            "each model uses its own default. Overrides "
+            "$MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS."
+        ),
+    )
 
     args = parser.parse_args()
     if args.realtime_model:
         os.environ["MLX_AUDIO_REALTIME_MODEL"] = args.realtime_model
+    if args.realtime_transcription_delay_ms is not None:
+        os.environ["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"] = str(
+            args.realtime_transcription_delay_ms
+        )
     if isinstance(args.workers, float):
         args.workers = max(1, int(os.cpu_count() * args.workers))
 
