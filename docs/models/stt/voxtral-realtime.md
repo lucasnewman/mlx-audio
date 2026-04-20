@@ -62,8 +62,12 @@ For cooperative integrations (async servers, multiple concurrent
 streams) use the lower-level session API. `feed()` is a cheap
 thread-safe queue push; `step(max_decode_tokens=N)` runs a bounded
 unit of MLX work and returns the deltas emitted during that call.
-Releasing the MLX executor between `step()` calls lets another
-stream — or an LLM request — interleave on the same executor:
+This is cooperative scheduling, not parallel MLX execution: a server
+can alternate short `step()` calls across sessions on the same
+executor, but the actual MLX work should still be serialized per
+process/device. This works well when each session can process audio
+faster than real time, leaving room for another stream — or an LLM
+request — to run before the next audio chunk arrives:
 
 ```python
 session = model.create_streaming_session()
