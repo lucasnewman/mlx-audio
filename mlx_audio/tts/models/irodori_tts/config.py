@@ -83,7 +83,9 @@ class IrodoriDiTConfig(BaseModelArgs):
 
     @property
     def caption_layers_resolved(self) -> int:
-        return self.caption_layers if self.caption_layers is not None else self.text_layers
+        return (
+            self.caption_layers if self.caption_layers is not None else self.text_layers
+        )
 
     @property
     def caption_heads_resolved(self) -> int:
