@@ -3981,11 +3981,18 @@ class TestIrodoriVoiceDesignShapes(unittest.TestCase):
         caption_mask = mx.ones((B, 5), dtype=mx.bool_)
 
         text_state, text_mask_out, ctx_state, ctx_mask = self.model.encode_conditions(
-            text_ids, text_mask,
-            caption_input_ids=caption_ids, caption_mask=caption_mask,
+            text_ids,
+            text_mask,
+            caption_input_ids=caption_ids,
+            caption_mask=caption_mask,
         )
         out = self.model.forward_with_conditions(
-            x_t, t, text_state, text_mask_out, ctx_state, ctx_mask,
+            x_t,
+            t,
+            text_state,
+            text_mask_out,
+            ctx_state,
+            ctx_mask,
         )
         mx.eval(out)
         self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
