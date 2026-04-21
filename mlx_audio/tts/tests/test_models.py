@@ -3617,7 +3617,7 @@ class _FakeDACVAE:
         T = max(1, int(audio_in.shape[1]) // self.downsample_factor)
         return mx.zeros((B, self.latent_dim, T), dtype=mx.float32)
 
-    def decode(self, latent: mx.array) -> mx.array:
+    def decode(self, latent: mx.array, **kwargs) -> mx.array:
         B, _D, T = latent.shape
         return mx.zeros((B, T * self.downsample_factor, 1), dtype=mx.float32)
 
@@ -3913,6 +3913,123 @@ class TestIrodoriGenerateSmoke(unittest.TestCase):
         self.assertGreater(result.token_count, 0)
         self.assertIsNotNone(result.audio_duration)
         self.assertGreater(result.real_time_factor, 0.0)
+
+
+def _small_irodori_dit_config_voicedesign(**overrides):
+    defaults = dict(
+        latent_dim=8,
+        latent_patch_size=1,
+        model_dim=32,
+        num_layers=2,
+        num_heads=4,
+        mlp_ratio=2.0,
+        text_mlp_ratio=2.0,
+        text_vocab_size=64,
+        text_dim=32,
+        text_layers=1,
+        text_heads=4,
+        speaker_dim=32,
+        speaker_layers=1,
+        speaker_heads=4,
+        speaker_patch_size=1,
+        timestep_embed_dim=16,
+        adaln_rank=8,
+        norm_eps=1e-5,
+        use_caption_condition=True,
+        caption_vocab_size=64,
+        caption_dim=32,
+        caption_layers=1,
+        caption_heads=4,
+        caption_mlp_ratio=2.0,
+    )
+    defaults.update(overrides)
+    from mlx_audio.tts.models.irodori_tts.config import IrodoriDiTConfig
+
+    return IrodoriDiTConfig(**defaults)
+
+
+def _small_irodori_model_config_voicedesign(**sampler_overrides):
+    from mlx_audio.tts.models.irodori_tts.config import ModelConfig, SamplerConfig
+
+    sampler_defaults = dict(
+        num_steps=1,
+        cfg_scale_text=1.0,
+        cfg_scale_caption=1.0,
+        sequence_length=4,
+    )
+    sampler_defaults.update(sampler_overrides)
+    return ModelConfig(
+        dit=_small_irodori_dit_config_voicedesign(),
+        sampler=SamplerConfig(**sampler_defaults),
+    )
+
+
+class TestIrodoriVoiceDesignShapes(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        self.cfg = _small_irodori_dit_config_voicedesign()
+        self.model = IrodoriDiT(self.cfg)
+
+    def test_forward_shape(self):
+        B, S = 1, 6
+        x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
+        t = mx.array([0.5], dtype=mx.float32)
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        caption_ids = mx.zeros((B, 5), dtype=mx.int32)
+        caption_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        text_state, text_mask_out, ctx_state, ctx_mask = self.model.encode_conditions(
+            text_ids,
+            text_mask,
+            caption_input_ids=caption_ids,
+            caption_mask=caption_mask,
+        )
+        out = self.model.forward_with_conditions(
+            x_t,
+            t,
+            text_state,
+            text_mask_out,
+            ctx_state,
+            ctx_mask,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
+
+
+class TestIrodoriVoiceDesignGenerate(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_voicedesign()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        model._caption_tokenizer = _MockTokenizer()
+        return model
+
+    def test_generate_with_caption(self):
+        model = self._make_model()
+        results = list(model.generate("こんにちは", caption="穏やかな声", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_with_instruct_alias(self):
+        model = self._make_model()
+        results = list(model.generate("こんにちは", instruct="明るい声", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_instruct_takes_priority_over_none_caption(self):
+        model = self._make_model()
+        # instruct should be used when caption is not provided
+        results = list(model.generate("テスト", instruct="低い声", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
 
 
 class TestKugelAudioModel(unittest.TestCase):
