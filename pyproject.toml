@@ -42,7 +42,6 @@ stt = [
 # TTS dependencies
 tts = [
     "tiktoken>=0.9.0",
-    "phonemizer-fork>=3.3.2",
     "pydub>=0.25.1",
     "sentencepiece>=0.2.0",
 ]
@@ -59,7 +58,6 @@ sts = [
     "tiktoken>=0.9.0",
     "mistral-common[audio]",
 
-    "phonemizer-fork>=3.3.2",
     "sentencepiece>=0.2.0",
     
     "webrtcvad>=2.0.10",
@@ -71,7 +69,6 @@ all = [
     "tiktoken>=0.9.0",
     "mistral-common[audio]",
 
-    "phonemizer-fork>=3.3.2",
     "pydub>=0.25.1",
     "sentencepiece>=0.2.0",
 

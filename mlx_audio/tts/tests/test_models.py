@@ -444,6 +444,19 @@ class TestKittenTTSModel(unittest.TestCase):
         self.assertIn("decoder.generator.resblocks.0.alpha2_0", sanitized)
         self.assertNotIn("decoder.generator.resblocks.0.alpha1.0", sanitized)
 
+    def test_missing_phonemizer_error(self):
+        from mlx_audio.tts.models.kitten_tts.kitten_tts import Model, ModelConfig
+
+        config = self._config()
+        model = Model(ModelConfig.from_dict(config))
+
+        with patch(
+            "mlx_audio.tts.models.kitten_tts.kitten_tts.importlib.import_module",
+            side_effect=ModuleNotFoundError("No module named 'phonemizer'"),
+        ):
+            with self.assertRaisesRegex(ImportError, "pip install phonemizer-fork"):
+                model._get_phonemizer()
+
 
 class TestBarkModel(unittest.TestCase):
     @patch("mlx_audio.tts.models.bark.bark.BertTokenizer")

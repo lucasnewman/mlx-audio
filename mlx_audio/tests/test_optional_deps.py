@@ -95,17 +95,26 @@ class TestOptionalDeps:
         assert (
             "misaki" not in dep_names
         ), f"misaki should not be a shared tts dep: {dep_names}"
+        assert (
+            "phonemizer-fork" not in dep_names
+        ), f"phonemizer-fork should not be a shared tts dep: {dep_names}"
 
-    def test_kokoro_specific_deps_not_in_shared_extras(self):
-        """Verify Kokoro-only text deps are not pulled into shared extras."""
+    def test_model_specific_text_deps_not_in_shared_extras(self):
+        """Verify model-specific text deps are not pulled into shared extras."""
         meta = get_package_metadata()
         requires = meta.get_all("Requires-Dist") or []
-        kokoro_only_deps = {"misaki", "num2words", "spacy", "espeakng-loader"}
+        model_specific_text_deps = {
+            "misaki",
+            "num2words",
+            "spacy",
+            "espeakng-loader",
+            "phonemizer-fork",
+        }
 
         for extra in ("tts", "sts", "all"):
             extra_deps = [r for r in requires if f'extra == "{extra}"' in r]
             dep_names = {extract_package_name(r) for r in extra_deps}
-            unexpected = kokoro_only_deps & dep_names
+            unexpected = model_specific_text_deps & dep_names
             assert not unexpected, f"{extra} extra still includes {unexpected}"
 
     def test_server_extra_defined(self):
