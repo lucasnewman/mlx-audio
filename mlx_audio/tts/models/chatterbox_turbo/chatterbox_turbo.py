@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Generator, Optional, Union
 
-import librosa
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
 from mlx_audio.tts.models.base import GenerationResult
+from mlx_audio.utils import load_audio, resample_audio
 
 from .models.s3gen import S3GEN_SIL, S3GEN_SR, S3Gen
 from .models.s3tokenizer import S3TokenizerV2, log_mel_spectrogram
@@ -717,7 +717,7 @@ class ChatterboxTurboTTS(nn.Module):
         # Handle string path vs array input
         if isinstance(ref_audio, str):
             # Load reference audio at 24kHz for S3Gen
-            ref_wav_24k, _sr = librosa.load(ref_audio, sr=S3GEN_SR)
+            ref_wav_24k = np.array(load_audio(ref_audio, sample_rate=S3GEN_SR))
         else:
             # Convert mx.array to numpy if needed
             if isinstance(ref_audio, mx.array):
@@ -728,9 +728,7 @@ class ChatterboxTurboTTS(nn.Module):
             # Resample to S3GEN_SR if sample_rate provided and different
             input_sr = sample_rate if sample_rate is not None else S3GEN_SR
             if input_sr != S3GEN_SR:
-                ref_wav_24k = librosa.resample(
-                    ref_wav_24k, orig_sr=input_sr, target_sr=S3GEN_SR
-                )
+                ref_wav_24k = resample_audio(ref_wav_24k, input_sr, S3GEN_SR)
 
         assert (
             len(ref_wav_24k) / S3GEN_SR > 5.0
@@ -740,7 +738,7 @@ class ChatterboxTurboTTS(nn.Module):
             ref_wav_24k = self.norm_loudness(ref_wav_24k, S3GEN_SR)
 
         # Resample to 16kHz for S3Tokenizer and voice encoder
-        ref_wav_16k = librosa.resample(ref_wav_24k, orig_sr=S3GEN_SR, target_sr=S3_SR)
+        ref_wav_16k = resample_audio(ref_wav_24k, S3GEN_SR, S3_SR)
 
         # Trim 24kHz audio to decoder conditioning length
         ref_wav_24k_trimmed = ref_wav_24k[: self.DEC_COND_LEN]
