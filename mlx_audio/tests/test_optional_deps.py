@@ -28,7 +28,7 @@ def extract_package_name(req: str) -> str:
 
     Examples:
         'tiktoken>=0.9.0; extra == "stt"' -> 'tiktoken'
-        'misaki[en]>=0.8.2; extra == "tts"' -> 'misaki'
+        'mistral-common[audio]; extra == "stt"' -> 'mistral-common'
     """
     import re
 
@@ -91,7 +91,22 @@ class TestOptionalDeps:
         requires = meta.get_all("Requires-Dist") or []
         tts_deps = [r for r in requires if 'extra == "tts"' in r]
         dep_names = [extract_package_name(r) for r in tts_deps]
-        assert "misaki" in dep_names, f"misaki not in tts deps: {dep_names}"
+        assert "tiktoken" in dep_names, f"tiktoken not in tts deps: {dep_names}"
+        assert (
+            "misaki" not in dep_names
+        ), f"misaki should not be a shared tts dep: {dep_names}"
+
+    def test_kokoro_specific_deps_not_in_shared_extras(self):
+        """Verify Kokoro-only text deps are not pulled into shared extras."""
+        meta = get_package_metadata()
+        requires = meta.get_all("Requires-Dist") or []
+        kokoro_only_deps = {"misaki", "num2words", "spacy", "espeakng-loader"}
+
+        for extra in ("tts", "sts", "all"):
+            extra_deps = [r for r in requires if f'extra == "{extra}"' in r]
+            dep_names = {extract_package_name(r) for r in extra_deps}
+            unexpected = kokoro_only_deps & dep_names
+            assert not unexpected, f"{extra} extra still includes {unexpected}"
 
     def test_server_extra_defined(self):
         """Verify [server] extra contains expected deps."""
