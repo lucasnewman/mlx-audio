@@ -578,9 +578,7 @@ def trim_silence(
     rms = np.array(
         [
             np.sqrt(
-                np.mean(
-                    audio_np[i * hop_length : i * hop_length + frame_length] ** 2
-                )
+                np.mean(audio_np[i * hop_length : i * hop_length + frame_length] ** 2)
             )
             for i in range(n_frames)
         ]

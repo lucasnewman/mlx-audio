@@ -6,6 +6,7 @@ from typing import Dict, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+
 from mlx_audio.utils import resample_audio
 
 from .decoder import ConditionalDecoder

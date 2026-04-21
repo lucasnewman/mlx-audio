@@ -11,9 +11,9 @@ from typing import Generator, Optional, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_audio.utils import load_audio, resample_audio
 
 from mlx_audio.tts.models.base import GenerationResult
+from mlx_audio.utils import load_audio, resample_audio
 
 from .models.s3gen import S3GEN_SIL, S3GEN_SR, S3Gen
 from .models.s3tokenizer import S3TokenizerV2, log_mel_spectrogram

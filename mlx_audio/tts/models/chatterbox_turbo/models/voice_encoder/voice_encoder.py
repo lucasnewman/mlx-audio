@@ -5,8 +5,9 @@ from typing import List, Optional, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_audio.utils import resample_audio, trim_silence
 from numpy.lib.stride_tricks import as_strided
+
+from mlx_audio.utils import resample_audio, trim_silence
 
 from .config import VoiceEncConfig
 from .melspec import melspectrogram

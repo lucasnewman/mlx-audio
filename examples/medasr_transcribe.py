@@ -6,7 +6,8 @@ import mlx.core as mx
 import numpy as np
 from transformers import AutoProcessor
 
-from mlx_audio.stt.utils import load as load_mlx, load_audio
+from mlx_audio.stt.utils import load as load_mlx
+from mlx_audio.stt.utils import load_audio
 
 
 def main():

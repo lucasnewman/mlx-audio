@@ -6,6 +6,7 @@ from typing import Union
 
 import mlx.core as mx
 import numpy as np
+
 from mlx_audio.dsp import mel_filters
 
 logger = logging.getLogger(__name__)
