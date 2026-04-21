@@ -33,8 +33,8 @@ from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-import soundfile as sf
 
+from mlx_audio.audio_io import write as audio_write
 from mlx_audio.tts.models.higgs_audio import HiggsAudioServer
 
 
@@ -135,7 +135,7 @@ def main() -> int:
     audio_sec = len(result.pcm) / result.sampling_rate
     rtf = wall / audio_sec if audio_sec > 0 else float("inf")
 
-    sf.write(args.output, result.pcm, result.sampling_rate)
+    audio_write(args.output, result.pcm, result.sampling_rate)
     print(
         f"[done] {audio_sec:.2f}s audio in {wall:.2f}s wall "
         f"(RTF {rtf:.2f}×, {result.num_frames_raw} frames, "

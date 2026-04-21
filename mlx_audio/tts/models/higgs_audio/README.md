@@ -30,7 +30,7 @@ Python API (standard):
 
 ```python
 from mlx_audio.tts.utils import load
-import soundfile as sf
+from mlx_audio.audio_io import write as audio_write
 
 model = load("mlx-community/higgs-audio-v2-3B-mlx-q8")
 
@@ -39,7 +39,7 @@ for result in model.generate(
     ref_audio="path/to/reference.wav",
     ref_text="Transcript of the reference clip.",
 ):
-    sf.write("output.wav", result.audio, result.sample_rate)
+    audio_write("output.wav", result.audio, result.sample_rate)
 ```
 
 Python API (Higgs-specific surface):

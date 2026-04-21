@@ -93,9 +93,9 @@ class Model(nn.Module):
     ) -> np.ndarray:
         """Load and resample audio from file path or array to 16kHz float32 numpy."""
         if isinstance(audio_input, (str, Path)):
-            import soundfile as sf
+            from mlx_audio.audio_io import read as audio_read
 
-            audio_np, sr = sf.read(str(audio_input), dtype="float32")
+            audio_np, sr = audio_read(str(audio_input), dtype="float32")
             audio_np = audio_np.flatten()
             if sr != SAMPLE_RATE:
                 # Resample to 16kHz

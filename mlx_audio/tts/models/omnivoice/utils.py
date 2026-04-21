@@ -109,15 +109,14 @@ def create_voice_clone_prompt(
     if tokenizer is None:
         return mx.zeros((0, 8), dtype=mx.int32)
 
-    import soundfile as sf
-
+    from mlx_audio.audio_io import read as audio_read
     from mlx_audio.codec.models.higgs_audio.higgs_audio import _sinc_resample
 
     path = Path(ref_audio_path)
     if not path.exists():
         raise FileNotFoundError(f"Reference audio not found: {ref_audio_path}")
 
-    audio, sr = sf.read(str(path), dtype="float32", always_2d=True)
+    audio, sr = audio_read(str(path), dtype="float32", always_2d=True)
     mono = audio.mean(axis=1).astype(np.float32)
 
     if sr != 24000:

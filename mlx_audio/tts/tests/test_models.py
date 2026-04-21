@@ -4982,8 +4982,7 @@ class TestOmniVoiceCloneUtils(unittest.TestCase):
         import os
         import tempfile
 
-        import soundfile as sf
-
+        from mlx_audio.audio_io import write as audio_write
         from mlx_audio.codec.models.higgs_audio.config import HiggsAudioConfig
         from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
         from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
@@ -4996,7 +4995,7 @@ class TestOmniVoiceCloneUtils(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp_path = f.name
         audio = np.zeros(24000 * 2, dtype=np.float32)
-        sf.write(tmp_path, audio, 24000)
+        audio_write(tmp_path, audio, 24000)
         result = create_voice_clone_prompt(tmp_path, tokenizer=tok)
         self.assertEqual(result.ndim, 2)
         self.assertEqual(result.shape[1], 8)
