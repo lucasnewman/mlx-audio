@@ -538,9 +538,9 @@ class ParakeetTDT(Model):
         cell_out = cell_out.astype(feature.dtype)
 
         joint_output = self.joint(feature, decoder_output)
-        pred_token = mx.argmax(
-            joint_output[0, 0, :, : self.blank_id + 1]
-        ).astype(mx.int32)
+        pred_token = mx.argmax(joint_output[0, 0, :, : self.blank_id + 1]).astype(
+            mx.int32
+        )
         decision = mx.argmax(joint_output[0, 0, :, self.blank_id + 1 :]).astype(
             mx.int32
         )
