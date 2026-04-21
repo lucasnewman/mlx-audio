@@ -4982,9 +4982,9 @@ class TestOmniVoiceCloneUtils(unittest.TestCase):
         import os
         import tempfile
 
+        from mlx_audio.audio_io import write as audio_write
         from mlx_audio.codec.models.higgs_audio.config import HiggsAudioConfig
         from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
-        from mlx_audio.audio_io import write as audio_write
         from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
 
         tok = HiggsAudioTokenizer(HiggsAudioConfig())

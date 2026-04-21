@@ -109,8 +109,8 @@ def create_voice_clone_prompt(
     if tokenizer is None:
         return mx.zeros((0, 8), dtype=mx.int32)
 
-    from mlx_audio.codec.models.higgs_audio.higgs_audio import _sinc_resample
     from mlx_audio.audio_io import read as audio_read
+    from mlx_audio.codec.models.higgs_audio.higgs_audio import _sinc_resample
 
     path = Path(ref_audio_path)
     if not path.exists():
