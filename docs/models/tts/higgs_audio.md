@@ -30,7 +30,7 @@ unchanged against Higgs.
 
 ```python
 from mlx_audio.tts.utils import load
-import soundfile as sf
+from mlx_audio.audio_io import write as audio_write
 
 model = load("mlx-community/higgs-audio-v2-3B-mlx-q8")
 
@@ -43,7 +43,7 @@ for result in model.generate(
     max_new_frames=1200,
     fade_in_ms=30.0,
 ):
-    sf.write("output.wav", result.audio, result.sample_rate)
+    audio_write("output.wav", result.audio, result.sample_rate)
 ```
 
 Without `ref_audio`, generation runs in "smart voice" mode (random voice
@@ -59,7 +59,7 @@ sampling warmup, pre-loaded codec override, etc.), use `HiggsAudioServer`:
 
 ```python
 from mlx_audio.tts.models.higgs_audio import HiggsAudioServer
-import soundfile as sf
+from mlx_audio.audio_io import write as audio_write
 
 server = HiggsAudioServer.from_pretrained(
     model_path="bosonai/higgs-audio-v2-generation-3B-base",     # bf16 base
@@ -73,7 +73,7 @@ result = server.generate(
     max_new_frames=1200,
     fade_in_ms=30.0,
 )
-sf.write("output.wav", result.pcm, result.sampling_rate)
+audio_write("output.wav", result.pcm, result.sampling_rate)
 ```
 
 ### Recommended parameters
@@ -91,6 +91,8 @@ ChatML prompt — the transcript is required for stable alignment between the
 cloned voice and the target text.
 
 ```python
+from mlx_audio.audio_io import write as audio_write
+
 for result in model.generate(
     text="Hello, this is a cloned voice.",
     ref_audio="reference.wav",
@@ -100,7 +102,7 @@ for result in model.generate(
     max_new_frames=1200,
     fade_in_ms=30.0,
 ):
-    sf.write("output.wav", result.audio, result.sample_rate)
+    audio_write("output.wav", result.audio, result.sample_rate)
 ```
 
 Best results come from 5–15 seconds of clean reference speech.
