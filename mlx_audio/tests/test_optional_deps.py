@@ -125,6 +125,8 @@ class TestOptionalDeps:
         dep_names = [extract_package_name(r) for r in server_deps]
         assert "fastapi" in dep_names, f"fastapi not in server deps: {dep_names}"
         assert "uvicorn" in dep_names, f"uvicorn not in server deps: {dep_names}"
+        assert "webrtcvad" in dep_names, f"webrtcvad not in server deps: {dep_names}"
+        assert "setuptools" in dep_names, f"setuptools not in server deps: {dep_names}"
 
     def test_dev_extra_defined(self):
         """Verify [dev] extra contains expected deps."""
