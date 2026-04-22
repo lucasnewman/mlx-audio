@@ -296,5 +296,180 @@ class TestFrameworkInterface(unittest.TestCase):
             next(iter(model.generate("hello")))
 
 
+class _FakeTokenizer:
+    """Toy tokenizer used by the reference-cache tests. Deterministic char → id
+    mapping so expected shapes are trivially computable."""
+
+    def __init__(self, vocab_size: int = 256):
+        self._vocab_size = vocab_size
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list:
+        return [ord(c) % self._vocab_size for c in text]
+
+
+class _FakeCodec:
+    """Toy codec. Returns a deterministic code tensor shaped like the real
+    HiggsAudioTokenizer.encode output ([1, T_codes, K]) so encode_reference
+    can exercise the downstream path without loading weights."""
+
+    def __init__(self, K: int = 4, T_codes: int = 6, codebook_size: int = 16):
+        self._K = K
+        self._T = T_codes
+        self._cb = codebook_size
+
+    def encode(self, audio_3d: mx.array) -> mx.array:
+        # Deterministic codes: repeat an ascending pattern so repeated
+        # encode() calls return the same values.
+        tokens = mx.arange(self._T, dtype=mx.int32)[:, None]  # [T, 1]
+        tokens = mx.broadcast_to(tokens, (self._T, self._K)) % self._cb
+        return tokens[None]  # [1, T, K]
+
+
+class TestReferenceCache(unittest.TestCase):
+    """ReferenceContext + encode_reference + _build_prompt_voice_clone — the
+    caching path for HiggsAudioServer. Cache must be a pure perf win: same
+    (embeds, mask, info) as the one-shot build_prompt() path."""
+
+    def _setup(self):
+        from mlx_audio.tts.models.higgs_audio.higgs_audio import HiggsAudioModel
+
+        cfg = _tiny_config()
+        model = HiggsAudioModel(cfg)
+        mx.eval(model.parameters())
+
+        tokenizer = _FakeTokenizer(vocab_size=cfg.text_config.vocab_size)
+        codec = _FakeCodec(
+            K=cfg.audio_num_codebooks,
+            T_codes=6,
+            codebook_size=cfg.audio_codebook_size,
+        )
+        # ref_audio content doesn't matter — FakeCodec ignores it.
+        ref_audio_24k = np.zeros(24000, dtype=np.float32)
+        return cfg, model, tokenizer, codec, ref_audio_24k
+
+    def test_reference_context_has_cacheable_fields(self):
+        from mlx_audio.tts.models.higgs_audio.serve import (
+            ReferenceContext,
+            encode_reference,
+        )
+
+        cfg, model, tokenizer, codec, ref_audio_24k = self._setup()
+        ctx = encode_reference(
+            ref_audio_24k,
+            "hello reference",
+            config=cfg,
+            tokenizer=tokenizer,
+            codec=codec,
+            embed_tokens=model.embed_tokens,
+            audio_codebook_embeddings=model.audio_codebook_embeddings,
+        )
+        self.assertIsInstance(ctx, ReferenceContext)
+        self.assertEqual(ctx.prefix_emb.shape, (ctx.prefix_len, cfg.text_config.hidden_size))
+        self.assertEqual(
+            ctx.audio_emb.shape, (ctx.T_ref_delayed, cfg.text_config.hidden_size)
+        )
+        # build_delay_pattern_mask adds K-1 columns of delay padding.
+        self.assertEqual(ctx.T_ref_delayed, ctx.T_ref + 2 + cfg.audio_num_codebooks - 1)
+        self.assertEqual(ctx.ref_text, "hello reference")
+
+    def test_cached_path_matches_one_shot_build_prompt(self):
+        """encode_reference + _build_prompt_voice_clone must produce the same
+        (embeds, mask, info) as the legacy build_prompt(ref_audio_24k=...) path
+        — the cache is a perf optimization, not a behavior change."""
+        from mlx_audio.tts.models.higgs_audio.serve import (
+            _build_prompt_voice_clone,
+            build_prompt,
+            encode_reference,
+        )
+
+        cfg, model, tokenizer, codec, ref_audio_24k = self._setup()
+        target = "say this"
+        ref_text = "the quick brown fox"
+
+        one_shot_embeds, one_shot_mask, one_shot_info = build_prompt(
+            target,
+            ref_text=ref_text,
+            ref_audio_24k=ref_audio_24k,
+            config=cfg,
+            tokenizer=tokenizer,
+            codec=codec,
+            embed_tokens=model.embed_tokens,
+            audio_codebook_embeddings=model.audio_codebook_embeddings,
+        )
+
+        ctx = encode_reference(
+            ref_audio_24k,
+            ref_text,
+            config=cfg,
+            tokenizer=tokenizer,
+            codec=codec,
+            embed_tokens=model.embed_tokens,
+            audio_codebook_embeddings=model.audio_codebook_embeddings,
+        )
+        cached_embeds, cached_mask, cached_info = _build_prompt_voice_clone(
+            target,
+            ctx,
+            tokenizer=tokenizer,
+            embed_tokens=model.embed_tokens,
+        )
+
+        self.assertEqual(one_shot_embeds.shape, cached_embeds.shape)
+        self.assertEqual(one_shot_mask.shape, cached_mask.shape)
+        np.testing.assert_allclose(
+            np.array(one_shot_embeds), np.array(cached_embeds), rtol=1e-6, atol=1e-6
+        )
+        np.testing.assert_array_equal(
+            np.array(one_shot_mask), np.array(cached_mask)
+        )
+        self.assertEqual(one_shot_info["mode"], "voice_clone")
+        self.assertEqual(cached_info["mode"], "voice_clone")
+        self.assertEqual(one_shot_info["T_ref"], cached_info["T_ref"])
+        self.assertEqual(one_shot_info["T_ref_delayed"], cached_info["T_ref_delayed"])
+        self.assertEqual(one_shot_info["text_len"], cached_info["text_len"])
+
+    def test_server_build_prompt_dispatch(self):
+        """HiggsAudioServer._build_prompt dispatch order: explicit path →
+        re-encode; cache populated → use cache; neither → smart-voice."""
+        from mlx_audio.tts.models.higgs_audio.serve import (
+            HiggsAudioServer,
+            encode_reference,
+        )
+
+        cfg, model, tokenizer, codec, ref_audio_24k = self._setup()
+        server = HiggsAudioServer(
+            model=model, codec=codec, tokenizer=tokenizer, config=cfg
+        )
+
+        # No cache, no path → smart-voice.
+        _, _, info = server._build_prompt(
+            "hello", reference_text=None, reference_audio_path=None
+        )
+        self.assertEqual(info["mode"], "smart_voice")
+
+        # Populate cache manually (skipping disk I/O of _load_wav_as_24k_mono).
+        server._reference_cache = encode_reference(
+            ref_audio_24k,
+            "ref text",
+            config=cfg,
+            tokenizer=tokenizer,
+            codec=codec,
+            embed_tokens=model.embed_tokens,
+            audio_codebook_embeddings=model.audio_codebook_embeddings,
+        )
+
+        # Cache set, no path → voice_clone via cache (no codec.encode call).
+        _, _, info = server._build_prompt(
+            "hello", reference_text=None, reference_audio_path=None
+        )
+        self.assertEqual(info["mode"], "voice_clone")
+
+        # clear_reference drops the cache → back to smart-voice.
+        server.clear_reference()
+        _, _, info = server._build_prompt(
+            "hello", reference_text=None, reference_audio_path=None
+        )
+        self.assertEqual(info["mode"], "smart_voice")
+
+
 if __name__ == "__main__":
     unittest.main()

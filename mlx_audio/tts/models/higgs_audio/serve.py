@@ -70,6 +70,138 @@ def _load_wav_as_24k_mono(path: str) -> np.ndarray:
     return samples
 
 
+@dataclass
+class ReferenceContext:
+    """Precomputed reference-audio prompt components.
+
+    Produced once by `encode_reference()`; reusable across any number of
+    `build_prompt()` / `HiggsAudioServer.generate()` calls that share the
+    same voice. Skips codec.encode, delay-pattern wrap, and prefix-text
+    embedding on every call — roughly 300-500 ms per call at q8 on M5 Max
+    for a 3-5 s reference clip.
+    """
+
+    prefix_emb: mx.array  # [prefix_len, H] — text prefix through <|audio_out_bos|>
+    audio_emb: mx.array  # [T_ref_delayed, H] — ref codes as summed codebook embeds
+    prefix_len: int
+    T_ref_delayed: int
+    T_ref: int  # raw ref-code length, pre-delay-pattern (for info)
+    ref_text: str  # what was baked into prefix_emb
+
+
+def encode_reference(
+    ref_audio_24k: np.ndarray,
+    ref_text: str,
+    *,
+    config: HiggsAudioConfig,
+    tokenizer,
+    codec,
+    embed_tokens,  # nn.Embedding, text vocab
+    audio_codebook_embeddings,  # nn.Embedding, audio codebook table
+) -> ReferenceContext:
+    """Encode reference audio + its transcript into cacheable prompt pieces.
+
+    This is the expensive half of prompt assembly: codec.encode on the
+    reference wav, delay-pattern wrap, and the audio codebook embedding
+    lookup. Output is deterministic in the inputs — cache it once per voice.
+    """
+    K = config.audio_num_codebooks
+    stride = config.audio_codebook_size + 2
+
+    ref_codes = codec.encode(mx.array(ref_audio_24k).reshape(1, -1, 1))
+    mx.eval(ref_codes)
+    ref_codes = ref_codes[0].T.astype(mx.int32)  # [K, T_ref]
+    T_ref = ref_codes.shape[1]
+
+    bos_col = mx.full((K, 1), config.audio_stream_bos_id, dtype=mx.int32)
+    eos_col = mx.full((K, 1), config.audio_stream_eos_id, dtype=mx.int32)
+    ref_wrapped = mx.concatenate([bos_col, ref_codes, eos_col], axis=1)
+    ref_delayed = build_delay_pattern_mask(
+        ref_wrapped,
+        bos_token_id=config.audio_stream_bos_id,
+        pad_token_id=config.audio_stream_eos_id,
+    )
+    T_ref_d = ref_delayed.shape[1]
+
+    prefix = (
+        "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
+        f"{ref_text or ''}<|eot_id|>"
+        "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        "<|audio_out_bos|>"
+    )
+    prefix_ids = tokenizer.encode(prefix, add_special_tokens=False)
+    prefix_emb = embed_tokens(mx.array([prefix_ids], dtype=mx.int32))[0]
+    audio_emb = lookup_audio_embedding(audio_codebook_embeddings, ref_delayed, stride)
+    mx.eval(prefix_emb, audio_emb)  # materialize so first generate() is fast
+
+    return ReferenceContext(
+        prefix_emb=prefix_emb,
+        audio_emb=audio_emb,
+        prefix_len=len(prefix_ids),
+        T_ref_delayed=T_ref_d,
+        T_ref=T_ref,
+        ref_text=ref_text or "",
+    )
+
+
+def _build_prompt_voice_clone(
+    target_text: str,
+    reference: ReferenceContext,
+    *,
+    tokenizer,
+    embed_tokens,
+) -> Tuple[mx.array, mx.array, dict]:
+    """Assemble (inputs_embeds, audio_out_mask, info) from a cached reference."""
+    middle = (
+        "<|audio_eos|><|eot_id|>"
+        "<|start_header_id|>user<|end_header_id|>\n\n"
+        f"{target_text}<|eot_id|>"
+        "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        "<|audio_out_bos|>"
+    )
+    middle_ids = tokenizer.encode(middle, add_special_tokens=False)
+    middle_emb = embed_tokens(mx.array([middle_ids], dtype=mx.int32))[0]
+
+    full_embeds = mx.concatenate(
+        [reference.prefix_emb, reference.audio_emb, middle_emb], axis=0
+    )[None]
+    audio_out_mask = mx.concatenate(
+        [
+            mx.zeros((reference.prefix_len,), dtype=mx.bool_),
+            mx.ones((reference.T_ref_delayed,), dtype=mx.bool_),
+            mx.zeros((len(middle_ids),), dtype=mx.bool_),
+        ],
+        axis=0,
+    )[None]
+    info = {
+        "mode": "voice_clone",
+        "T_ref": reference.T_ref,
+        "T_ref_delayed": reference.T_ref_delayed,
+        "text_len": reference.prefix_len + len(middle_ids),
+    }
+    return full_embeds, audio_out_mask, info
+
+
+def _build_prompt_smart_voice(
+    target_text: str,
+    *,
+    tokenizer,
+    embed_tokens,
+) -> Tuple[mx.array, mx.array, dict]:
+    """Assemble the no-reference prompt. Less reliable than voice_clone."""
+    prompt = (
+        "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
+        f"{target_text}<|eot_id|>"
+        "<|start_header_id|>assistant<|end_header_id|>\n\n"
+        "<|audio_out_bos|>"
+    )
+    prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
+    full_embeds = embed_tokens(mx.array([prompt_ids], dtype=mx.int32))
+    audio_out_mask = mx.zeros((1, len(prompt_ids)), dtype=mx.bool_)
+    info = {"mode": "smart_voice", "text_len": len(prompt_ids)}
+    return full_embeds, audio_out_mask, info
+
+
 def build_prompt(
     target_text: str,
     *,
@@ -87,80 +219,27 @@ def build_prompt(
     Voice-clone mode (ref_audio_24k provided): ChatML layout
       user: ref_text / assistant: <ref audio> / user: target / assistant: <|audio_out_bos|>
     Smart-voice mode (no ref_audio_24k): target only, assistant kicks off at <|audio_out_bos|>.
+
+    For repeated calls with the same reference, prefer `encode_reference()`
+    + `HiggsAudioServer.prepare_reference()` — this entry point re-runs
+    codec.encode every call.
     """
-    K = config.audio_num_codebooks
-    stride = config.audio_codebook_size + 2
-
-    def _encode(s: str) -> list[int]:
-        return tokenizer.encode(s, add_special_tokens=False)
-
-    if ref_audio_24k is not None:
-        ref_codes = codec.encode(mx.array(ref_audio_24k).reshape(1, -1, 1))
-        mx.eval(ref_codes)
-        ref_codes = ref_codes[0].T.astype(mx.int32)  # [K, T_ref]
-        T_ref = ref_codes.shape[1]
-
-        bos_col = mx.full((K, 1), config.audio_stream_bos_id, dtype=mx.int32)
-        eos_col = mx.full((K, 1), config.audio_stream_eos_id, dtype=mx.int32)
-        ref_wrapped = mx.concatenate([bos_col, ref_codes, eos_col], axis=1)
-        ref_delayed = build_delay_pattern_mask(
-            ref_wrapped,
-            bos_token_id=config.audio_stream_bos_id,
-            pad_token_id=config.audio_stream_eos_id,
+    if ref_audio_24k is None:
+        return _build_prompt_smart_voice(
+            target_text, tokenizer=tokenizer, embed_tokens=embed_tokens
         )
-        T_ref_d = ref_delayed.shape[1]
-
-        prefix = (
-            "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
-            f"{ref_text or ''}<|eot_id|>"
-            "<|start_header_id|>assistant<|end_header_id|>\n\n"
-            "<|audio_out_bos|>"
-        )
-        middle = (
-            "<|audio_eos|><|eot_id|>"
-            "<|start_header_id|>user<|end_header_id|>\n\n"
-            f"{target_text}<|eot_id|>"
-            "<|start_header_id|>assistant<|end_header_id|>\n\n"
-            "<|audio_out_bos|>"
-        )
-        prefix_ids = _encode(prefix)
-        middle_ids = _encode(middle)
-
-        prefix_emb = embed_tokens(mx.array([prefix_ids], dtype=mx.int32))[0]
-        middle_emb = embed_tokens(mx.array([middle_ids], dtype=mx.int32))[0]
-        audio_emb = lookup_audio_embedding(
-            audio_codebook_embeddings, ref_delayed, stride
-        )
-
-        full_embeds = mx.concatenate([prefix_emb, audio_emb, middle_emb], axis=0)[None]
-        audio_out_mask = mx.concatenate(
-            [
-                mx.zeros((len(prefix_ids),), dtype=mx.bool_),
-                mx.ones((T_ref_d,), dtype=mx.bool_),
-                mx.zeros((len(middle_ids),), dtype=mx.bool_),
-            ],
-            axis=0,
-        )[None]
-        info = {
-            "mode": "voice_clone",
-            "T_ref": T_ref,
-            "T_ref_delayed": T_ref_d,
-            "text_len": len(prefix_ids) + len(middle_ids),
-        }
-    else:
-        # Smart-voice mode: no reference audio context. Less reliable.
-        prompt = (
-            "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n"
-            f"{target_text}<|eot_id|>"
-            "<|start_header_id|>assistant<|end_header_id|>\n\n"
-            "<|audio_out_bos|>"
-        )
-        prompt_ids = _encode(prompt)
-        full_embeds = embed_tokens(mx.array([prompt_ids], dtype=mx.int32))
-        audio_out_mask = mx.zeros((1, len(prompt_ids)), dtype=mx.bool_)
-        info = {"mode": "smart_voice", "text_len": len(prompt_ids)}
-
-    return full_embeds, audio_out_mask, info
+    reference = encode_reference(
+        ref_audio_24k,
+        ref_text or "",
+        config=config,
+        tokenizer=tokenizer,
+        codec=codec,
+        embed_tokens=embed_tokens,
+        audio_codebook_embeddings=audio_codebook_embeddings,
+    )
+    return _build_prompt_voice_clone(
+        target_text, reference, tokenizer=tokenizer, embed_tokens=embed_tokens
+    )
 
 
 class HiggsAudioServer:
@@ -177,6 +256,9 @@ class HiggsAudioServer:
         self.codec = codec
         self.tokenizer = tokenizer
         self.config = config
+        # Populated by prepare_reference(); used by _build_prompt when no
+        # explicit reference_audio_path overrides it on a per-call basis.
+        self._reference_cache: Optional[ReferenceContext] = None
 
     @classmethod
     def from_pretrained(
@@ -260,6 +342,41 @@ class HiggsAudioServer:
         return cls(model=model, codec=codec, tokenizer=tokenizer, config=config)
 
     # ------------------------------------------------------------------
+    # Reference caching
+    # ------------------------------------------------------------------
+
+    def prepare_reference(
+        self,
+        reference_audio_path: str,
+        reference_text: str,
+    ) -> ReferenceContext:
+        """Pre-encode a reference voice once and cache it on this server.
+
+        Subsequent `generate()` / `generate_stream()` calls reuse the cached
+        encoding automatically, as long as no explicit `reference_audio_path=`
+        kwarg is passed. Saves the codec.encode + delay-pattern + prefix
+        embedding work on every call — ~300-500 ms per call at q8 on M5 Max.
+
+        Call `clear_reference()` to drop the cache (e.g. switching voices).
+        """
+        ref_audio_24k = _load_wav_as_24k_mono(reference_audio_path)
+        self._reference_cache = encode_reference(
+            ref_audio_24k,
+            reference_text,
+            config=self.config,
+            tokenizer=self.tokenizer,
+            codec=self.codec,
+            embed_tokens=self.model.embed_tokens,
+            audio_codebook_embeddings=self.model.audio_codebook_embeddings,
+        )
+        return self._reference_cache
+
+    def clear_reference(self) -> None:
+        """Drop the cached reference. Subsequent generate() calls without
+        explicit reference args fall back to smart-voice mode."""
+        self._reference_cache = None
+
+    # ------------------------------------------------------------------
     # Prompt assembly
     # ------------------------------------------------------------------
 
@@ -269,21 +386,36 @@ class HiggsAudioServer:
         reference_text: Optional[str],
         reference_audio_path: Optional[str],
     ) -> Tuple[mx.array, mx.array, dict]:
-        """Backward-compatible thin wrapper around build_prompt()."""
-        ref_audio_24k = (
-            _load_wav_as_24k_mono(reference_audio_path)
-            if reference_audio_path is not None
-            else None
-        )
-        return build_prompt(
+        """Dispatch prompt assembly across three paths:
+
+        1. Explicit `reference_audio_path` → re-encode from scratch
+           (backwards-compatible one-shot path).
+        2. `self._reference_cache` set → reuse cached encoding.
+        3. Neither → smart-voice mode (no reference).
+        """
+        if reference_audio_path is not None:
+            ref_audio_24k = _load_wav_as_24k_mono(reference_audio_path)
+            return build_prompt(
+                target_text,
+                ref_text=reference_text,
+                ref_audio_24k=ref_audio_24k,
+                config=self.config,
+                tokenizer=self.tokenizer,
+                codec=self.codec,
+                embed_tokens=self.model.embed_tokens,
+                audio_codebook_embeddings=self.model.audio_codebook_embeddings,
+            )
+        if self._reference_cache is not None:
+            return _build_prompt_voice_clone(
+                target_text,
+                self._reference_cache,
+                tokenizer=self.tokenizer,
+                embed_tokens=self.model.embed_tokens,
+            )
+        return _build_prompt_smart_voice(
             target_text,
-            ref_text=reference_text,
-            ref_audio_24k=ref_audio_24k,
-            config=self.config,
             tokenizer=self.tokenizer,
-            codec=self.codec,
             embed_tokens=self.model.embed_tokens,
-            audio_codebook_embeddings=self.model.audio_codebook_embeddings,
         )
 
     # ------------------------------------------------------------------
