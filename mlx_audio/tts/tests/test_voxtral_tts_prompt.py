@@ -100,7 +100,9 @@ class TestVoxtralTTSPrompt(unittest.TestCase):
 
             with patch(
                 "mlx_audio.tts.models.voxtral_tts.voxtral_tts.mx.load",
-                side_effect=AssertionError("speech-request path should not load voices"),
+                side_effect=AssertionError(
+                    "speech-request path should not load voices"
+                ),
             ) as mock_load:
                 with patch_fake_speech_request():
                     tokens = Model._encode_text(model, "Hello world.", "casual_male")
