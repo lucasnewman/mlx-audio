@@ -364,7 +364,9 @@ class TestReferenceCache(unittest.TestCase):
             audio_codebook_embeddings=model.audio_codebook_embeddings,
         )
         self.assertIsInstance(ctx, ReferenceContext)
-        self.assertEqual(ctx.prefix_emb.shape, (ctx.prefix_len, cfg.text_config.hidden_size))
+        self.assertEqual(
+            ctx.prefix_emb.shape, (ctx.prefix_len, cfg.text_config.hidden_size)
+        )
         self.assertEqual(
             ctx.audio_emb.shape, (ctx.T_ref_delayed, cfg.text_config.hidden_size)
         )
@@ -418,9 +420,7 @@ class TestReferenceCache(unittest.TestCase):
         np.testing.assert_allclose(
             np.array(one_shot_embeds), np.array(cached_embeds), rtol=1e-6, atol=1e-6
         )
-        np.testing.assert_array_equal(
-            np.array(one_shot_mask), np.array(cached_mask)
-        )
+        np.testing.assert_array_equal(np.array(one_shot_mask), np.array(cached_mask))
         self.assertEqual(one_shot_info["mode"], "voice_clone")
         self.assertEqual(cached_info["mode"], "voice_clone")
         self.assertEqual(one_shot_info["T_ref"], cached_info["T_ref"])
