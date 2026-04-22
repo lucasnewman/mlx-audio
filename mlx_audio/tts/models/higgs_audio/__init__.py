@@ -3,7 +3,13 @@
 from .config import HiggsAudioConfig, HiggsTextConfig
 from .higgs_audio import HiggsAudioModel
 from .model import Model, ModelConfig
-from .serve import HiggsAudioGenerationResult, HiggsAudioServer, build_prompt
+from .serve import (
+    HiggsAudioGenerationResult,
+    HiggsAudioServer,
+    ReferenceContext,
+    build_prompt,
+    encode_reference,
+)
 
 __all__ = [
     # Framework-conforming entry points — used by mlx_audio.tts.utils.load
@@ -15,6 +21,8 @@ __all__ = [
     "HiggsTextConfig",
     "HiggsAudioModel",
     "build_prompt",
+    "encode_reference",
+    "ReferenceContext",
     # Additional Python API — composes model + codec + tokenizer with a
     # kwarg-rich generate(target_text=..., reference_audio_path=..., ...)
     # signature tailored to the Higgs serve flow.
