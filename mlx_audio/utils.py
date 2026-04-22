@@ -519,6 +519,87 @@ def random_select_audio_segment(audio, length: int):
     return audio[start_index:end_index]
 
 
+def resample_audio(
+    audio: Union[mx.array, "np.ndarray"],
+    orig_sample_rate: int,
+    sample_rate: int,
+    axis: int = -1,
+):
+    """Resample audio with polyphase filtering.
+
+    Args:
+        audio: Audio array as numpy or MLX.
+        orig_sample_rate: Original sample rate.
+        sample_rate: Target sample rate.
+        axis: Axis containing the time dimension.
+
+    Returns:
+        Audio resampled to ``sample_rate``. The return type matches the input type.
+    """
+    import math
+
+    import numpy as np
+    from scipy import signal
+
+    if orig_sample_rate == sample_rate:
+        return audio
+
+    audio_np = np.asarray(audio)
+    gcd = math.gcd(int(orig_sample_rate), int(sample_rate))
+    up = sample_rate // gcd
+    down = orig_sample_rate // gcd
+    resampled = signal.resample_poly(
+        audio_np,
+        up,
+        down,
+        axis=axis,
+        padtype="edge",
+    ).astype(np.float32, copy=False)
+
+    if isinstance(audio, mx.array):
+        return mx.array(resampled)
+    return resampled
+
+
+def trim_silence(
+    audio: Union[mx.array, "np.ndarray"],
+    top_db: float = 20,
+    frame_length: int = 2048,
+    hop_length: int = 512,
+):
+    """Trim leading/trailing low-energy regions using a simple RMS gate."""
+    import numpy as np
+
+    audio_np = np.asarray(audio)
+    n_frames = 1 + (len(audio_np) - frame_length) // hop_length
+    if n_frames <= 0:
+        return audio
+
+    rms = np.array(
+        [
+            np.sqrt(
+                np.mean(audio_np[i * hop_length : i * hop_length + frame_length] ** 2)
+            )
+            for i in range(n_frames)
+        ]
+    )
+    rms_db = 20 * np.log10(np.maximum(rms, 1e-10))
+    threshold = np.max(rms_db) - top_db
+    non_silent = np.where(rms_db >= threshold)[0]
+    if len(non_silent) == 0:
+        return audio
+
+    start_frame = int(non_silent[0])
+    end_frame = int(non_silent[-1]) + 1
+    start_sample = start_frame * hop_length
+    end_sample = min(end_frame * hop_length + frame_length, len(audio_np))
+    trimmed = audio_np[start_sample:end_sample]
+
+    if isinstance(audio, mx.array):
+        return mx.array(trimmed.astype(np.float32, copy=False))
+    return trimmed.astype(np.float32, copy=False)
+
+
 def load_audio(
     audio: Union[str, mx.array],
     sample_rate: int = 24000,
@@ -553,7 +634,6 @@ def load_audio(
     import os
 
     import numpy as np
-    from scipy.signal import resample
 
     from mlx_audio.audio_io import read as audio_read
 
@@ -570,9 +650,7 @@ def load_audio(
 
     # Resample if needed
     if sample_rate != orig_sample_rate:
-        duration = samples.shape[0] / orig_sample_rate
-        num_samples = int(duration * sample_rate)
-        samples = resample(samples, num_samples)
+        samples = resample_audio(samples, orig_sample_rate, sample_rate)
 
     # Random segment selection
     if segment_duration is not None:
@@ -605,6 +683,8 @@ __all__ = [
     "mel_filters",
     # Audio utilities
     "load_audio",
+    "resample_audio",
+    "trim_silence",
     "audio_volume_normalize",
     "random_select_audio_segment",
     # Model utilities

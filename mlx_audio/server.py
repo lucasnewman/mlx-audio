@@ -23,7 +23,6 @@ from urllib.parse import unquote
 
 import mlx.core as mx
 import numpy as np
-import soundfile as sf
 import uvicorn
 import webrtcvad
 from fastapi import (
@@ -460,12 +459,12 @@ async def audio_separations(
     # Read uploaded file
     data = await file.read()
     tmp = io.BytesIO(data)
-    audio, sr = sf.read(tmp, always_2d=False)
+    audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
 
     # Save to temp file for processor
     tmp_path = f"/tmp/separation_{time.time()}.wav"
-    sf.write(tmp_path, audio, sr)
+    audio_write(tmp_path, audio, sr)
 
     try:
         # Load model and processor
@@ -504,7 +503,7 @@ async def audio_separations(
         # Encode as base64 WAV
         def audio_to_base64(audio_array, sr):
             buffer = io.BytesIO()
-            sf.write(buffer, audio_array, sr, format="wav")
+            audio_write(buffer, audio_array, sr, format="wav")
             buffer.seek(0)
             return base64.b64encode(buffer.read()).decode("utf-8")
 
