@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from misaki import en
 
 
 # Create a patch for the deprecated open_text function
@@ -226,13 +225,19 @@ class TestKokoroPipeline(unittest.TestCase):
         from mlx_audio.tts.models.kokoro.pipeline import LANG_CODES, KokoroPipeline
 
         # Mock the G2P class to avoid spacy download during tests
-        with patch("mlx_audio.tts.models.kokoro.pipeline.en.G2P") as mock_g2p:
+        mock_en = SimpleNamespace(G2P=MagicMock())
+        mock_espeak = SimpleNamespace(EspeakFallback=MagicMock())
+        with patch(
+            "mlx_audio.tts.models.kokoro.pipeline._get_misaki_en",
+            return_value=mock_en,
+        ):
             with patch(
-                "mlx_audio.tts.models.kokoro.pipeline.espeak.EspeakFallback"
-            ) as mock_fallback:
+                "mlx_audio.tts.models.kokoro.pipeline._get_misaki_espeak",
+                return_value=mock_espeak,
+            ):
                 mock_model = MagicMock()
-                mock_g2p.return_value = MagicMock()
-                mock_fallback.return_value = MagicMock()
+                mock_en.G2P.return_value = MagicMock()
+                mock_espeak.EspeakFallback.return_value = MagicMock()
 
                 # Initialize with default model
                 pipeline = KokoroPipeline(
@@ -249,6 +254,17 @@ class TestKokoroPipeline(unittest.TestCase):
                 # Initialize with no model
                 pipeline = KokoroPipeline(lang_code="a", model=False, repo_id="mock")
                 self.assertIs(pipeline.model, False)
+
+    def test_init_without_misaki(self):
+        """Test KokoroPipeline raises a targeted install hint when misaki is missing."""
+        from mlx_audio.tts.models.kokoro.pipeline import KokoroPipeline
+
+        with patch(
+            "mlx_audio.tts.models.kokoro.pipeline.importlib.import_module",
+            side_effect=ModuleNotFoundError("No module named 'misaki'"),
+        ):
+            with self.assertRaisesRegex(ImportError, "pip install misaki"):
+                KokoroPipeline(lang_code="a", model=False, repo_id="mock")
 
     def test_load_voice(self):
         """Test load_voice method."""
@@ -304,23 +320,14 @@ class TestKokoroPipeline(unittest.TestCase):
         from mlx_audio.tts.models.kokoro.pipeline import KokoroPipeline
 
         # Create mock tokens with whitespace attribute
-        token1 = MagicMock(spec=en.MToken)
-        token1.ps = "p1"
-        token1.whitespace = " "
-        token1.phonemes = "p1"
-
-        token2 = MagicMock(spec=en.MToken)
-        token2.ps = "p2"
-        token2.whitespace = ""
-        token2.phonemes = "p2"
+        token1 = SimpleNamespace(ps="p1", whitespace=" ", phonemes="p1")
+        token2 = SimpleNamespace(ps="p2", whitespace="", phonemes="p2")
 
         tokens = [token1, token2]
 
         # Test the method
-        with patch.object(KokoroPipeline, "__init__", return_value=None):
-            with patch.object(KokoroPipeline, "tokens_to_ps", return_value="p1 p2"):
-                result = KokoroPipeline.tokens_to_ps(tokens)
-                self.assertEqual(result, "p1 p2")
+        result = KokoroPipeline.tokens_to_ps(tokens)
+        self.assertEqual(result, "p1 p2")
 
     def test_tokens_to_text(self):
         """Test tokens_to_text method."""
@@ -328,23 +335,14 @@ class TestKokoroPipeline(unittest.TestCase):
         from mlx_audio.tts.models.kokoro.pipeline import KokoroPipeline
 
         # Create mock tokens with whitespace attribute
-        token1 = MagicMock(spec=en.MToken)
-        token1.text = "Hello"
-        token1.whitespace = " "
-
-        token2 = MagicMock(spec=en.MToken)
-        token2.text = "world"
-        token2.whitespace = ""
+        token1 = SimpleNamespace(text="Hello", whitespace=" ")
+        token2 = SimpleNamespace(text="world", whitespace="")
 
         tokens = [token1, token2]
 
         # Test the method
-        with patch.object(KokoroPipeline, "__init__", return_value=None):
-            with patch.object(
-                KokoroPipeline, "tokens_to_text", return_value="Hello world"
-            ):
-                result = KokoroPipeline.tokens_to_text(tokens)
-                self.assertEqual(result, "Hello world")
+        result = KokoroPipeline.tokens_to_text(tokens)
+        self.assertEqual(result, "Hello world")
 
     def test_result_dataclass(self):
         """Test KokoroPipeline.Result dataclass."""
@@ -445,6 +443,19 @@ class TestKittenTTSModel(unittest.TestCase):
         self.assertIn("decoder.generator.resblocks.0.alpha1_0", sanitized)
         self.assertIn("decoder.generator.resblocks.0.alpha2_0", sanitized)
         self.assertNotIn("decoder.generator.resblocks.0.alpha1.0", sanitized)
+
+    def test_missing_phonemizer_error(self):
+        from mlx_audio.tts.models.kitten_tts.kitten_tts import Model, ModelConfig
+
+        config = self._config()
+        model = Model(ModelConfig.from_dict(config))
+
+        with patch(
+            "mlx_audio.tts.models.kitten_tts.kitten_tts.importlib.import_module",
+            side_effect=ModuleNotFoundError("No module named 'phonemizer'"),
+        ):
+            with self.assertRaisesRegex(ImportError, "pip install phonemizer-fork"):
+                model._get_phonemizer()
 
 
 class TestBarkModel(unittest.TestCase):
@@ -4982,8 +4993,7 @@ class TestOmniVoiceCloneUtils(unittest.TestCase):
         import os
         import tempfile
 
-        import soundfile as sf
-
+        from mlx_audio.audio_io import write as audio_write
         from mlx_audio.codec.models.higgs_audio.config import HiggsAudioConfig
         from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
         from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
@@ -4996,7 +5006,7 @@ class TestOmniVoiceCloneUtils(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp_path = f.name
         audio = np.zeros(24000 * 2, dtype=np.float32)
-        sf.write(tmp_path, audio, 24000)
+        audio_write(tmp_path, audio, 24000)
         result = create_voice_clone_prompt(tmp_path, tokenizer=tok)
         self.assertEqual(result.ndim, 2)
         self.assertEqual(result.shape[1], 8)
