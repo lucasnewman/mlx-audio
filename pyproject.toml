@@ -19,16 +19,15 @@ requires-python = ">=3.10"
 
 # Core dependencies
 dependencies = [
-    "mlx>=0.25.2",
-    "numpy>=1.26.4",
     "huggingface_hub>=1.0",
-    "transformers>=5.0.0",
-    "mlx-lm==0.31.1",
-    "tqdm>=4.67.1",
-    "sounddevice==0.5.3",
     "miniaudio>=1.61",
-    "pyloudnorm>=0.2.0",
-    "protobuf>=6.33.5",
+    "mlx-lm==0.31.1",
+    "mlx>=0.31.1",
+    "numpy>=1.26.4",
+    "scipy>=1.10.0",
+    "sounddevice==0.5.3",
+    "tqdm>=4.67.1",
+    "transformers>=5.5.0",
 ]
 
 [project.optional-dependencies]
