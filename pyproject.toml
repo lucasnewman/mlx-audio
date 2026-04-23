@@ -33,15 +33,12 @@ dependencies = [
 [project.optional-dependencies]
 # STT dependencies
 stt = [
-    "tiktoken>=0.9.0",
-    "mistral-common[audio]",
     "sentencepiece>=0.2.0",
 ]
 
 # TTS dependencies
 tts = [
     "mistral-common[audio]",
-    "tiktoken>=0.9.0",
     "sentencepiece>=0.2.0",
 ]
 
@@ -54,11 +51,8 @@ server = [
     "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
 ]
 
-# STS (Speech-to-Speech) requires both STT and TTS + additional deps
+# STS (Speech-to-Speech) dependencies
 sts = [
-    "tiktoken>=0.9.0",
-    "mistral-common[audio]",
-
     "sentencepiece>=0.2.0",
     
     "webrtcvad>=2.0.10",
@@ -67,7 +61,6 @@ sts = [
 
 # Full installation (all features)
 all = [
-    "tiktoken>=0.9.0",
     "mistral-common[audio]",
     "sentencepiece>=0.2.0",
 

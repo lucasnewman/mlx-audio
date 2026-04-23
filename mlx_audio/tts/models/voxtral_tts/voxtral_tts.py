@@ -16,8 +16,15 @@ from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 from .acoustic_head import AcousticTransformerArgs, FlowMatchingAudioTransformer
 from .audio_tokenizer import AudioTokenizerArgs, VoxtralTTSAudioTokenizer
 from .common import pad_to_multiple
-from .tekken import TekkenTokenizer, is_tekken
 from .text_preprocess import sanitize_tts_input_text_for_demo
+
+
+def is_tekken(path: str | Path) -> bool:
+    """Return True when ``path`` points to a tekken tokenizer JSON file."""
+    if isinstance(path, str):
+        path = Path(path)
+    return path.is_file() and path.suffix == ".json" and "tekken" in path.name
+
 
 # Voice name -> index mapping
 VOICE_MAP = {
@@ -327,14 +334,12 @@ class Model(nn.Module):
 
                 model.tokenizer = MistralTokenizer.from_file(str(tekken_path))
                 print(f"Loaded Mistral tokenizer from {tekken_path}")
-            except ImportError:
-                try:
-                    model.tokenizer = TekkenTokenizer.from_file(tekken_path)
-                    print(f"Loaded local Tekken tokenizer from {tekken_path}")
-                except Exception as e:
-                    print(
-                        f"Warning: Could not load local Tekken tokenizer or Mistral tokenizer: {e}"
-                    )
+            except ImportError as e:
+                raise RuntimeError(
+                    "Voxtral TTS tekken tokenizers require mistral-common[audio]. "
+                    "Install the `tts` extra or add `mistral-common[audio]` to "
+                    "your environment."
+                ) from e
         else:
             try:
                 from transformers import AutoTokenizer
