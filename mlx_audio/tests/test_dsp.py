@@ -59,6 +59,19 @@ def test_dsp_all_exports():
         assert hasattr(dsp, name), f"Missing export: {name}"
 
 
+def test_lfilter_fir_and_iir():
+    """Verify the local lfilter recurrence for FIR and IIR filters."""
+    from mlx_audio.dsp import lfilter
+
+    x = np.array([1.0, 2.0, 4.0], dtype=np.float32)
+    fir = lfilter([1.0, -0.5], [1.0], x)
+    np.testing.assert_allclose(fir, [1.0, 1.5, 3.0])
+
+    impulse = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    iir = lfilter([1.0], [1.0, -0.5], impulse)
+    np.testing.assert_allclose(iir, [1.0, 0.5, 0.25, 0.125])
+
+
 def test_utils_lazy_imports():
     """Verify utils.py uses lazy imports for TTS/STT/STS.
 

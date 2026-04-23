@@ -81,15 +81,12 @@ class Model(nn.Module):
         """Load and resample audio from file path or array to 16kHz float32 numpy."""
         if isinstance(audio_input, (str, Path)):
             from mlx_audio.audio_io import read as audio_read
+            from mlx_audio.utils import resample_audio
 
             audio_np, sr = audio_read(str(audio_input), dtype="float32")
             audio_np = audio_np.flatten()
             if sr != SAMPLE_RATE:
-                # Resample to 16kHz
-                from scipy.signal import resample
-
-                n_samples = int(len(audio_np) * SAMPLE_RATE / sr)
-                audio_np = resample(audio_np, n_samples).astype(np.float32)
+                audio_np = resample_audio(audio_np, sr, SAMPLE_RATE)
             return audio_np
         if isinstance(audio_input, list):
             audio_input = audio_input[0]
