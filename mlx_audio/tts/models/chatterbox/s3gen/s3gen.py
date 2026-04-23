@@ -16,7 +16,6 @@ from .mel import mel_spectrogram
 from .transformer.upsample_encoder import UpsampleConformerEncoder
 from .xvector import CAMPPlus
 
-
 # Constants
 S3GEN_SR = 24000
 S3_SR = 16000
