@@ -1,5 +1,7 @@
 import functools
 import io
+import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import mlx.core as mx
@@ -8,13 +10,15 @@ import pytest
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
+from mlx_audio.server_inference import InferenceRequest
 
 # python-multipart is required for FastAPI file uploads
 pytest.importorskip("multipart", reason="python-multipart is required for server tests")
 
 from fastapi.testclient import TestClient
 
-from mlx_audio.server import app
+from mlx_audio.server import SpeechRequest, SpeechTaskPayload, TTSExecutionAdapter, app
+from mlx_audio.tts.models.base import BatchGenerationResult
 
 
 @pytest.fixture
@@ -105,6 +109,15 @@ def sync_mock_audio_stream_generator(input_text: str, **kwargs):
     yield MockAudioResult(audio_data.astype(np.float32), sample_rate)
 
 
+def _collect_inference_chunks(request: InferenceRequest):
+    chunks = []
+    while True:
+        chunk = request.result_queue.get(timeout=2.0)
+        chunks.append(chunk)
+        if chunk.kind == "done":
+            return chunks
+
+
 def test_tts_speech(client, mock_model_provider):
     # Test that the tts_speech endpoint returns a 200 status code
     mock_tts_model = MagicMock()
@@ -134,6 +147,307 @@ def test_tts_speech(client, mock_model_provider):
         assert len(audio_data) > 0
     except Exception as e:
         pytest.fail(f"Failed to read or validate MP3 content: {e}")
+
+
+class MockQwen3BatchModel:
+    model_type = "qwen3_tts"
+    sample_rate = 16000
+
+    def __init__(self, tts_model_type="base"):
+        self.config = SimpleNamespace(tts_model_type=tts_model_type)
+        self.batch_calls = []
+        self.generate_calls = []
+
+    def batch_generate(self, **kwargs):
+        self.batch_calls.append(kwargs)
+        for index, _text in enumerate(kwargs["texts"]):
+            audio = np.full(800, index / 10.0, dtype=np.float32)
+            yield BatchGenerationResult(
+                audio=audio,
+                sequence_idx=index,
+                samples=audio.shape[0],
+                sample_rate=self.sample_rate,
+                token_count=4,
+                audio_duration="00:00:00.050",
+                processing_time_seconds=0.01,
+                peak_memory_usage=0.0,
+            )
+
+    def generate(self, *args, **kwargs):
+        self.generate_calls.append((args, kwargs))
+        yield MockAudioResult(np.zeros(800, dtype=np.float32), self.sample_rate)
+
+
+class MockContinuousEngine:
+    def __init__(self, sample_rate, complete_after=5):
+        self.sample_rate = sample_rate
+        self.complete_after = complete_after
+        self.pending = []
+        self.active = []
+        self.step_count = 0
+        self.admissions = []
+
+    @property
+    def active_count(self):
+        return len(self.active)
+
+    @property
+    def idle(self):
+        return not self.pending and not self.active
+
+    def submit(self, *, sequence_idx, text, voice=None, instruct=None):
+        self.pending.append(
+            {
+                "sequence_idx": sequence_idx,
+                "text": text,
+                "voice": voice,
+                "instruct": instruct,
+                "steps": 0,
+            }
+        )
+
+    def cancel(self, sequence_idx):
+        self.pending = [
+            request
+            for request in self.pending
+            if request["sequence_idx"] != sequence_idx
+        ]
+        self.active = [
+            request
+            for request in self.active
+            if request["sequence_idx"] != sequence_idx
+        ]
+
+    def step(self):
+        if self.pending:
+            admitted = [request["sequence_idx"] for request in self.pending]
+            self.admissions.append((self.step_count, admitted))
+            self.active.extend(self.pending)
+            self.pending = []
+
+        time.sleep(0.025)
+        self.step_count += 1
+
+        completed = []
+        still_active = []
+        for request in self.active:
+            request["steps"] += 1
+            if request["steps"] >= self.complete_after:
+                audio = np.full(
+                    800,
+                    request["sequence_idx"] / 10.0,
+                    dtype=np.float32,
+                )
+                completed.append(
+                    BatchGenerationResult(
+                        audio=audio,
+                        sequence_idx=request["sequence_idx"],
+                        samples=audio.shape[0],
+                        sample_rate=self.sample_rate,
+                        token_count=request["steps"],
+                        audio_duration="00:00:00.050",
+                        processing_time_seconds=0.01,
+                        peak_memory_usage=0.0,
+                    )
+                )
+            else:
+                still_active.append(request)
+        self.active = still_active
+        return completed
+
+
+class MockContinuousQwen3Model(MockQwen3BatchModel):
+    def __init__(self, tts_model_type="base"):
+        super().__init__(tts_model_type=tts_model_type)
+        self.continuous_engine_calls = []
+        self.continuous_engines = []
+
+    def create_continuous_batch_engine(self, **kwargs):
+        self.continuous_engine_calls.append(kwargs)
+        engine = MockContinuousEngine(self.sample_rate)
+        self.continuous_engines.append(engine)
+        return engine
+
+
+def _speech_inference_request(
+    text: str,
+    *,
+    model="mlx-community/Qwen3-TTS-test",
+    voice="Chelsie",
+    instruct=None,
+    stream=False,
+):
+    return InferenceRequest(
+        endpoint_kind="tts",
+        model_name=model,
+        payload=SpeechTaskPayload(
+            request=SpeechRequest(
+                model=model,
+                input=text,
+                voice=voice,
+                instruct=instruct,
+                lang_code="English",
+                response_format="wav",
+                max_tokens=8,
+                stream=stream,
+            )
+        ),
+    )
+
+
+def test_tts_adapter_batches_qwen3_base_requests():
+    model = MockQwen3BatchModel()
+    adapter = TTSExecutionAdapter()
+
+    first = _speech_inference_request("first request")
+    second = _speech_inference_request("second request")
+
+    with patch("mlx_audio.server._load_model_for_inference", return_value=model):
+        assert adapter.supports_batch(first)
+        adapter.run_batch([first, second])
+
+    first_chunks = _collect_inference_chunks(first)
+    second_chunks = _collect_inference_chunks(second)
+
+    assert [chunk.kind for chunk in first_chunks] == ["data", "done"]
+    assert [chunk.kind for chunk in second_chunks] == ["data", "done"]
+    assert len(model.batch_calls) == 1
+    assert model.batch_calls[0]["texts"] == ["first request", "second request"]
+    assert model.generate_calls == []
+
+    first_audio, first_sr = audio_read(io.BytesIO(first_chunks[0].payload))
+    second_audio, second_sr = audio_read(io.BytesIO(second_chunks[0].payload))
+    assert first_sr == second_sr == model.sample_rate
+    assert len(first_audio) > 0
+    assert len(second_audio) > 0
+
+
+def test_tts_adapter_batches_qwen3_custom_voice_requests_with_instructs():
+    model = MockQwen3BatchModel(tts_model_type="custom_voice")
+    adapter = TTSExecutionAdapter()
+
+    first = _speech_inference_request(
+        "first request",
+        voice="Vivian",
+        instruct="Very happy.",
+    )
+    second = _speech_inference_request(
+        "second request",
+        voice="Ryan",
+        instruct="Calm narration.",
+    )
+
+    with patch("mlx_audio.server._load_model_for_inference", return_value=model):
+        assert adapter.supports_batch(first)
+        adapter.run_batch([first, second])
+
+    _collect_inference_chunks(first)
+    _collect_inference_chunks(second)
+
+    assert len(model.batch_calls) == 1
+    assert model.batch_calls[0]["texts"] == ["first request", "second request"]
+    assert model.batch_calls[0]["voices"] == ["Vivian", "Ryan"]
+    assert model.batch_calls[0]["instructs"] == ["Very happy.", "Calm narration."]
+    assert model.generate_calls == []
+
+
+def test_tts_adapter_does_not_batch_qwen3_base_requests_with_instructs():
+    model = MockQwen3BatchModel(tts_model_type="base")
+    adapter = TTSExecutionAdapter()
+
+    request = _speech_inference_request("first request", instruct="Very happy.")
+
+    with patch("mlx_audio.server._load_model_for_inference", return_value=model):
+        assert not adapter.supports_batch(request)
+
+
+def test_tts_adapter_batches_qwen3_non_streaming_requests_with_newlines():
+    model = MockQwen3BatchModel()
+    adapter = TTSExecutionAdapter()
+
+    request = _speech_inference_request("first line\nsecond line")
+
+    with patch("mlx_audio.server._load_model_for_inference", return_value=model):
+        assert adapter.supports_batch(request)
+
+
+def test_tts_adapter_does_not_batch_qwen3_base_streaming_requests_with_newlines():
+    model = MockQwen3BatchModel()
+    adapter = TTSExecutionAdapter()
+
+    request = _speech_inference_request("first line\nsecond line", stream=True)
+
+    with patch("mlx_audio.server._load_model_for_inference", return_value=model):
+        assert not adapter.supports_batch(request)
+
+
+def test_tts_adapter_serial_qwen3_base_non_streaming_disables_newline_split():
+    model = MockQwen3BatchModel(tts_model_type="base")
+    adapter = TTSExecutionAdapter()
+
+    request = _speech_inference_request("first line\nsecond line")
+
+    with patch("mlx_audio.server._load_model_for_inference", return_value=model):
+        adapter.run_serial(request)
+
+    _collect_inference_chunks(request)
+
+    assert len(model.generate_calls) == 1
+    args, kwargs = model.generate_calls[0]
+    assert args == ("first line\nsecond line",)
+    assert kwargs["split_pattern"] is None
+
+
+def test_tts_adapter_continuous_runner_admits_late_request_in_flight():
+    model = MockContinuousQwen3Model()
+    adapter = TTSExecutionAdapter()
+    adapter._runner_idle_timeout_s = 0.1
+
+    first = _speech_inference_request("first request")
+    second = _speech_inference_request("second request")
+
+    with patch("mlx_audio.server._load_model_for_inference", return_value=model):
+        assert adapter.supports_continuous_batch(first)
+        adapter.run_continuous(first)
+        time.sleep(0.035)
+        adapter.run_continuous(second)
+
+        first_chunks = _collect_inference_chunks(first)
+        second_chunks = _collect_inference_chunks(second)
+
+    adapter.shutdown()
+
+    assert [chunk.kind for chunk in first_chunks] == ["data", "done"]
+    assert [chunk.kind for chunk in second_chunks] == ["data", "done"]
+    assert len(model.continuous_engine_calls) == 1
+    assert model.batch_calls == []
+    assert model.generate_calls == []
+
+    engine = model.continuous_engines[0]
+    assert engine.admissions[0] == (0, [0])
+    assert any(step > 0 and admitted == [1] for step, admitted in engine.admissions)
+
+
+def test_tts_adapter_continuous_runner_cancellation_does_not_block_batch():
+    model = MockContinuousQwen3Model()
+    adapter = TTSExecutionAdapter()
+    adapter._runner_idle_timeout_s = 0.1
+
+    first = _speech_inference_request("first request")
+    second = _speech_inference_request("second request")
+
+    with patch("mlx_audio.server._load_model_for_inference", return_value=model):
+        adapter.run_continuous(first)
+        adapter.run_continuous(second)
+        second.cancel_event.set()
+
+        second_chunks = _collect_inference_chunks(second)
+        first_chunks = _collect_inference_chunks(first)
+
+    adapter.shutdown()
+
+    assert [chunk.kind for chunk in second_chunks] == ["done"]
+    assert [chunk.kind for chunk in first_chunks] == ["data", "done"]
 
 
 def test_stt_transcriptions(client, mock_model_provider):

@@ -12,8 +12,11 @@ import inspect
 import io
 import json
 import os
+import queue
 import subprocess
+import threading
 import time
+import traceback
 import uuid
 import webbrowser
 from contextlib import asynccontextmanager
@@ -228,6 +231,170 @@ def _load_model_for_inference(model_name: str):
     return model_provider.load_model(model_name)
 
 
+class _TTSContinuousBatchRunner:
+    def __init__(
+        self,
+        *,
+        adapter: "TTSExecutionAdapter",
+        runner_key: Any,
+        model_name: str,
+        model: Any,
+        max_batch_size: int,
+        idle_timeout_s: float,
+        retire_callback,
+    ):
+        self.adapter = adapter
+        self.runner_key = runner_key
+        self.model_name = model_name
+        self.model = model
+        self.max_batch_size = max_batch_size
+        self.idle_timeout_s = idle_timeout_s
+        self.retire_callback = retire_callback
+        self._queue: "queue.Queue[InferenceRequest | None]" = queue.Queue()
+        self._requests: dict[int, InferenceRequest] = {}
+        self._next_sequence_idx = 0
+        self._engine = None
+        self._closed = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    @property
+    def is_alive(self) -> bool:
+        return not self._closed.is_set() and self._thread.is_alive()
+
+    def submit(self, request: InferenceRequest) -> bool:
+        if self._closed.is_set():
+            return False
+        self._queue.put(request)
+        return True
+
+    def stop_and_join(self, timeout: float = 5.0) -> None:
+        self._queue.put(None)
+        self._thread.join(timeout=timeout)
+
+    def _run(self) -> None:
+        try:
+            while True:
+                if not self._drain_queue(block=self._is_idle()):
+                    break
+
+                self._cancel_finished_requests()
+
+                if self._engine is None or self._engine.idle:
+                    continue
+
+                results = self._engine.step()
+                self._emit_results(results)
+        except Exception as exc:  # pragma: no cover - defensive runner guard
+            traceback.print_exc()
+            self._fail_all(exc)
+        finally:
+            self._closed.set()
+            self.retire_callback(self.runner_key, self)
+
+    def _is_idle(self) -> bool:
+        return self._engine is None or self._engine.idle
+
+    def _drain_queue(self, *, block: bool) -> bool:
+        saw_item = False
+        while True:
+            try:
+                if block and not saw_item:
+                    item = self._queue.get(timeout=self.idle_timeout_s)
+                else:
+                    item = self._queue.get_nowait()
+            except queue.Empty:
+                return saw_item or not block
+
+            if item is None:
+                return False
+
+            saw_item = True
+            self._submit_to_engine(item)
+
+    def _submit_to_engine(self, request: InferenceRequest) -> None:
+        if request.cancel_event.is_set():
+            request.emit_done()
+            return
+
+        payload: SpeechTaskPayload = request.payload
+        speech_request = payload.request
+
+        if self._engine is None or self._engine.idle:
+            self._engine = self.model.create_continuous_batch_engine(
+                temperature=speech_request.temperature,
+                lang_code=speech_request.lang_code,
+                max_tokens=speech_request.max_tokens,
+                top_k=speech_request.top_k,
+                top_p=speech_request.top_p,
+                repetition_penalty=speech_request.repetition_penalty,
+                max_batch_size=self.max_batch_size,
+                verbose=speech_request.verbose,
+            )
+            print(
+                f"[tts-continuous] runner active for {self.model_name}",
+                flush=True,
+            )
+        elif self._engine.active_count > 0:
+            print(
+                "[tts-continuous] queued request for in-flight runner "
+                f"active={self._engine.active_count}",
+                flush=True,
+            )
+
+        sequence_idx = self._next_sequence_idx
+        self._next_sequence_idx += 1
+        self._requests[sequence_idx] = request
+        self._engine.submit(
+            sequence_idx=sequence_idx,
+            text=speech_request.input,
+            voice=speech_request.voice,
+            instruct=speech_request.instruct,
+        )
+
+    def _cancel_finished_requests(self) -> None:
+        if self._engine is None:
+            return
+
+        for sequence_idx, request in list(self._requests.items()):
+            if not request.cancel_event.is_set():
+                continue
+            self._engine.cancel(sequence_idx)
+            self._requests.pop(sequence_idx, None)
+            request.emit_done()
+
+    def _emit_results(self, results) -> None:
+        for result in results:
+            request = self._requests.pop(result.sequence_idx, None)
+            if request is None:
+                continue
+            if request.cancel_event.is_set():
+                request.emit_done()
+                continue
+
+            speech_request: SpeechRequest = request.payload.request
+            if result.samples <= 0:
+                request.emit_error(
+                    HTTPException(status_code=400, detail="No audio generated")
+                )
+                request.emit_done()
+                continue
+
+            self.adapter._emit_audio(
+                request,
+                speech_request,
+                result.audio,
+                result.sample_rate,
+            )
+            request.emit_done()
+
+    def _fail_all(self, exc: BaseException) -> None:
+        for request in list(self._requests.values()):
+            request.emit_error(exc)
+            request.emit_done()
+        self._requests.clear()
+
+
 class STTExecutionAdapter(BaseModelExecutionAdapter):
     def run_serial(self, request: InferenceRequest) -> None:
         payload: TranscriptionTaskPayload = request.payload
@@ -279,10 +446,165 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
 
 
 class TTSExecutionAdapter(BaseModelExecutionAdapter):
+    _REQUEST_MODEL_ATTR = "_mlx_audio_loaded_model"
+
+    def __init__(self):
+        raw_max_batch_size = os.getenv("MLX_AUDIO_TTS_MAX_BATCH_SIZE", "8")
+        try:
+            self.max_batch_size = max(1, int(raw_max_batch_size))
+        except ValueError:
+            self.max_batch_size = 8
+        raw_idle_timeout_ms = os.getenv("MLX_AUDIO_TTS_BATCH_IDLE_TIMEOUT_MS", "2000")
+        try:
+            self._runner_idle_timeout_s = max(0.1, float(raw_idle_timeout_ms) / 1000.0)
+        except ValueError:
+            self._runner_idle_timeout_s = 2.0
+        self._continuous_runners: dict[Any, _TTSContinuousBatchRunner] = {}
+        self._continuous_lock = threading.Lock()
+
+    def _get_model_for_request(self, request: InferenceRequest):
+        model = getattr(request, self._REQUEST_MODEL_ATTR, None)
+        if model is None:
+            model = _load_model_for_inference(request.model_name)
+            setattr(request, self._REQUEST_MODEL_ATTR, model)
+        return model
+
+    def _is_batchable_request(self, request: InferenceRequest, model) -> bool:
+        payload: SpeechTaskPayload = request.payload
+        speech_request = payload.request
+
+        if not hasattr(model, "batch_generate"):
+            return False
+        if getattr(model, "model_type", None) != "qwen3_tts":
+            return False
+
+        tts_model_type = getattr(getattr(model, "config", None), "tts_model_type", None)
+        if tts_model_type not in {"base", "custom_voice"}:
+            return False
+        if speech_request.ref_audio or speech_request.ref_text:
+            return False
+        if tts_model_type == "base" and speech_request.instruct:
+            return False
+        if tts_model_type == "custom_voice" and not speech_request.voice:
+            return False
+        if (
+            tts_model_type == "base"
+            and speech_request.stream
+            and "\n" in speech_request.input
+        ):
+            return False
+        if speech_request.speed not in (None, 1.0):
+            return False
+        if speech_request.pitch not in (None, 1.0):
+            return False
+        return True
+
+    def supports_batch(self, request: InferenceRequest) -> bool:
+        model = self._get_model_for_request(request)
+        return self._is_batchable_request(request, model)
+
+    def supports_continuous_batch(self, request: InferenceRequest) -> bool:
+        payload: SpeechTaskPayload = request.payload
+        speech_request = payload.request
+        if speech_request.stream:
+            return False
+
+        model = self._get_model_for_request(request)
+        return self._is_batchable_request(request, model) and hasattr(
+            model, "create_continuous_batch_engine"
+        )
+
+    def batch_key(self, request: InferenceRequest) -> Any:
+        payload: SpeechTaskPayload = request.payload
+        speech_request = payload.request
+        return (
+            "qwen3_tts_batch",
+            speech_request.stream,
+            speech_request.lang_code,
+            speech_request.temperature,
+            speech_request.top_p,
+            speech_request.top_k,
+            speech_request.repetition_penalty,
+            speech_request.max_tokens,
+            speech_request.streaming_interval if speech_request.stream else None,
+            speech_request.verbose,
+        )
+
+    def run_continuous(self, request: InferenceRequest) -> None:
+        model = self._get_model_for_request(request)
+        runner_key = (request.model_name, request.batch_key)
+
+        with self._continuous_lock:
+            runner = self._continuous_runners.get(runner_key)
+            if runner is None or not runner.is_alive:
+                runner = _TTSContinuousBatchRunner(
+                    adapter=self,
+                    runner_key=runner_key,
+                    model_name=request.model_name,
+                    model=model,
+                    max_batch_size=self.max_batch_size,
+                    idle_timeout_s=self._runner_idle_timeout_s,
+                    retire_callback=self._retire_continuous_runner,
+                )
+                self._continuous_runners[runner_key] = runner
+
+        if not runner.submit(request):
+            with self._continuous_lock:
+                current = self._continuous_runners.get(runner_key)
+                if current is runner:
+                    self._continuous_runners.pop(runner_key, None)
+                runner = _TTSContinuousBatchRunner(
+                    adapter=self,
+                    runner_key=runner_key,
+                    model_name=request.model_name,
+                    model=model,
+                    max_batch_size=self.max_batch_size,
+                    idle_timeout_s=self._runner_idle_timeout_s,
+                    retire_callback=self._retire_continuous_runner,
+                )
+                self._continuous_runners[runner_key] = runner
+            runner.submit(request)
+
+    def _retire_continuous_runner(
+        self,
+        runner_key: Any,
+        runner: _TTSContinuousBatchRunner,
+    ) -> None:
+        with self._continuous_lock:
+            if self._continuous_runners.get(runner_key) is runner:
+                self._continuous_runners.pop(runner_key, None)
+        print(
+            f"[tts-continuous] runner idle for {runner.model_name}",
+            flush=True,
+        )
+
+    def shutdown(self) -> None:
+        with self._continuous_lock:
+            runners = list(self._continuous_runners.values())
+            self._continuous_runners.clear()
+        for runner in runners:
+            runner.stop_and_join()
+
+    def _emit_audio(
+        self,
+        request: InferenceRequest,
+        speech_request: SpeechRequest,
+        audio,
+        sample_rate: int,
+    ) -> None:
+        buffer = io.BytesIO()
+        audio_write(
+            buffer,
+            audio,
+            sample_rate,
+            format=speech_request.response_format,
+        )
+        request.emit_data(buffer.getvalue())
+
     def run_serial(self, request: InferenceRequest) -> None:
         payload: SpeechTaskPayload = request.payload
         speech_request = payload.request
-        model = _load_model_for_inference(request.model_name)
+        model = self._get_model_for_request(request)
 
         ref_audio = speech_request.ref_audio
         if ref_audio and isinstance(ref_audio, str):
@@ -303,39 +625,42 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
 
         audio_chunks = []
         sample_rate = None
-        for result in model.generate(
-            speech_request.input,
-            voice=speech_request.voice,
-            speed=speech_request.speed,
-            gender=speech_request.gender,
-            pitch=speech_request.pitch,
-            instruct=speech_request.instruct,
-            lang_code=speech_request.lang_code,
-            ref_audio=ref_audio,
-            ref_text=speech_request.ref_text,
-            temperature=speech_request.temperature,
-            top_p=speech_request.top_p,
-            top_k=speech_request.top_k,
-            repetition_penalty=speech_request.repetition_penalty,
-            stream=speech_request.stream,
-            streaming_interval=speech_request.streaming_interval,
-            max_tokens=speech_request.max_tokens,
-            verbose=speech_request.verbose,
-        ):
+        generate_kwargs = {
+            "voice": speech_request.voice,
+            "speed": speech_request.speed,
+            "gender": speech_request.gender,
+            "pitch": speech_request.pitch,
+            "instruct": speech_request.instruct,
+            "lang_code": speech_request.lang_code,
+            "ref_audio": ref_audio,
+            "ref_text": speech_request.ref_text,
+            "temperature": speech_request.temperature,
+            "top_p": speech_request.top_p,
+            "top_k": speech_request.top_k,
+            "repetition_penalty": speech_request.repetition_penalty,
+            "stream": speech_request.stream,
+            "streaming_interval": speech_request.streaming_interval,
+            "max_tokens": speech_request.max_tokens,
+            "verbose": speech_request.verbose,
+        }
+
+        # Don't split non-streaming generation by default.
+        if not speech_request.stream:
+            generate_kwargs["split_pattern"] = None
+
+        for result in model.generate(speech_request.input, **generate_kwargs):
             if request.cancel_event.is_set():
                 mx.clear_cache()
                 request.emit_done()
                 return
 
             if speech_request.stream:
-                buffer = io.BytesIO()
-                audio_write(
-                    buffer,
+                self._emit_audio(
+                    request,
+                    speech_request,
                     result.audio,
                     result.sample_rate,
-                    format=speech_request.response_format,
                 )
-                request.emit_data(buffer.getvalue())
             else:
                 audio_chunks.append(result.audio)
                 if sample_rate is None:
@@ -349,15 +674,111 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             raise HTTPException(status_code=400, detail="No audio generated")
 
         concatenated_audio = np.concatenate(audio_chunks)
-        buffer = io.BytesIO()
-        audio_write(
-            buffer,
-            concatenated_audio,
-            sample_rate,
-            format=speech_request.response_format,
-        )
-        request.emit_data(buffer.getvalue())
+        self._emit_audio(request, speech_request, concatenated_audio, sample_rate)
         request.emit_done()
+
+    def run_batch(self, requests: list[InferenceRequest]) -> None:
+        if len(requests) == 1:
+            self.run_serial(requests[0])
+            return
+
+        model = self._get_model_for_request(requests[0])
+        if not all(self._is_batchable_request(request, model) for request in requests):
+            for request in requests:
+                self.run_serial(request)
+            return
+
+        first_speech_request: SpeechRequest = requests[0].payload.request
+        texts = [request.payload.request.input for request in requests]
+        voices = [request.payload.request.voice for request in requests]
+        instructs = [request.payload.request.instruct for request in requests]
+
+        print(
+            f"[tts-batch] running {len(requests)} Qwen3 TTS requests "
+            f"for {requests[0].model_name}",
+            flush=True,
+        )
+
+        if first_speech_request.stream:
+            done_sequences: set[int] = set()
+            for result in model.batch_generate(
+                texts=texts,
+                voices=voices,
+                instructs=instructs,
+                temperature=first_speech_request.temperature,
+                lang_code=first_speech_request.lang_code,
+                max_tokens=first_speech_request.max_tokens,
+                top_k=first_speech_request.top_k,
+                top_p=first_speech_request.top_p,
+                repetition_penalty=first_speech_request.repetition_penalty,
+                stream=True,
+                streaming_interval=first_speech_request.streaming_interval,
+                verbose=first_speech_request.verbose,
+            ):
+                sequence_idx = result.sequence_idx
+                request = requests[sequence_idx]
+                speech_request = request.payload.request
+                if request.cancel_event.is_set():
+                    continue
+                self._emit_audio(
+                    request,
+                    speech_request,
+                    result.audio,
+                    result.sample_rate,
+                )
+                if result.is_final_chunk:
+                    done_sequences.add(sequence_idx)
+                    request.emit_done()
+
+            for sequence_idx, request in enumerate(requests):
+                if sequence_idx not in done_sequences:
+                    request.emit_done()
+            return
+
+        audio_chunks_by_sequence: list[list[Any]] = [[] for _ in requests]
+        sample_rates: list[int | None] = [None for _ in requests]
+
+        for result in model.batch_generate(
+            texts=texts,
+            voices=voices,
+            instructs=instructs,
+            temperature=first_speech_request.temperature,
+            lang_code=first_speech_request.lang_code,
+            max_tokens=first_speech_request.max_tokens,
+            top_k=first_speech_request.top_k,
+            top_p=first_speech_request.top_p,
+            repetition_penalty=first_speech_request.repetition_penalty,
+            stream=False,
+            verbose=first_speech_request.verbose,
+        ):
+            sequence_idx = result.sequence_idx
+            if requests[sequence_idx].cancel_event.is_set():
+                continue
+            audio_chunks_by_sequence[sequence_idx].append(result.audio)
+            sample_rates[sequence_idx] = result.sample_rate
+
+        for sequence_idx, request in enumerate(requests):
+            if request.cancel_event.is_set():
+                request.emit_done()
+                continue
+
+            chunks = audio_chunks_by_sequence[sequence_idx]
+            if not chunks or sample_rates[sequence_idx] is None:
+                request.emit_error(
+                    HTTPException(status_code=400, detail="No audio generated")
+                )
+                request.emit_done()
+                continue
+
+            speech_request = request.payload.request
+            concatenated_audio = np.concatenate(chunks)
+            self._emit_audio(
+                request,
+                speech_request,
+                concatenated_audio,
+                sample_rates[sequence_idx],
+            )
+            request.emit_done()
 
 
 class SeparationExecutionAdapter(BaseModelExecutionAdapter):
@@ -1402,6 +1823,15 @@ def main():
         action="store_true",
         help="Start the server for /v1/realtime usage.",
     )
+    parser.add_argument(
+        "--tts-max-batch-size",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of compatible Qwen3 TTS speech requests in a "
+            "continuous runner. Overrides $MLX_AUDIO_TTS_MAX_BATCH_SIZE."
+        ),
+    )
 
     args = parser.parse_args()
     if args.realtime_model:
@@ -1410,6 +1840,8 @@ def main():
         os.environ["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"] = str(
             args.realtime_transcription_delay_ms
         )
+    if args.tts_max_batch_size is not None:
+        os.environ["MLX_AUDIO_TTS_MAX_BATCH_SIZE"] = str(args.tts_max_batch_size)
 
     setup_cors(app, args.allowed_origins)
 

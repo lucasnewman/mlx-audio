@@ -71,6 +71,10 @@ class ModelExecutionAdapter(Protocol):
 
     def run_batch(self, requests: list[InferenceRequest]) -> None: ...
 
+    def supports_continuous_batch(self, request: InferenceRequest) -> bool: ...
+
+    def run_continuous(self, request: InferenceRequest) -> None: ...
+
 
 class BaseModelExecutionAdapter:
     max_batch_size = 1
@@ -90,6 +94,13 @@ class BaseModelExecutionAdapter:
         if len(requests) != 1:
             raise NotImplementedError
         self.run_serial(requests[0])
+
+    def supports_continuous_batch(self, request: InferenceRequest) -> bool:
+        del request
+        return False
+
+    def run_continuous(self, request: InferenceRequest) -> None:
+        self.run_serial(request)
 
 
 class InferenceBroker:
@@ -114,6 +125,10 @@ class InferenceBroker:
         self._stop.set()
         self._requests.put(None)
         self._thread.join(timeout=timeout)
+        for adapter in self._adapters.values():
+            shutdown = getattr(adapter, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
 
     def submit(
         self,
@@ -175,7 +190,17 @@ class InferenceBroker:
                 continue
 
             requests = [request]
-            if adapter.supports_batch(request) and adapter.max_batch_size > 1:
+            can_batch = adapter.max_batch_size > 1 and adapter.supports_batch(request)
+            if can_batch:
+                if adapter.supports_continuous_batch(request):
+                    try:
+                        adapter.run_continuous(request)
+                    except Exception as exc:
+                        traceback.print_exc()
+                        request.emit_error(exc)
+                        request.emit_done()
+                    continue
+
                 requests.extend(
                     self._select_batch_candidates(request, adapter, pending)
                 )

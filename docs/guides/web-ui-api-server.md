@@ -26,32 +26,16 @@ The API will be available at `http://localhost:8000` and the Studio UI at `http:
 |------|---------|-------------|
 | `--host` | `localhost` | Host to bind the server to |
 | `--port` | `8000` | Port for the API server |
-| `--workers` | `2` | Number of worker processes (see below) |
 | `--reload` | `false` | Auto-reload on code changes (development) |
 | `--start-ui` | `false` | Start the Studio UI alongside the API |
 | `--allowed-origins` | `*` | CORS allowed origins (space-separated) |
 | `--log-dir` | `logs` | Directory for server logs |
 | `--realtime-model` | `null` | Default model for `/v1/realtime` when the client omits `?model=` |
 | `--realtime-transcription-delay-ms` | `null` | Transcription latency/quality knob for models that support it (e.g. `voxtral_realtime`) |
+| `--tts-max-batch-size` | `8` | Maximum compatible Qwen3 TTS speech requests in a continuous runner |
 
 The two realtime flags also read from `MLX_AUDIO_REALTIME_MODEL` and `MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS` if present; the CLI flags take precedence.
-
-### Worker Configuration
-
-The `--workers` flag accepts either an integer or a float:
-
-```bash
-# Fixed number of workers
-mlx_audio.server --workers 4
-
-# Fraction of CPU cores (0.5 = half)
-mlx_audio.server --workers 0.5
-
-# All CPU cores
-mlx_audio.server --workers 1.0
-```
-
-You can also set the `MLX_AUDIO_NUM_WORKERS` environment variable.
+The TTS batching flag also reads from `MLX_AUDIO_TTS_MAX_BATCH_SIZE`.
 
 ### CORS Configuration
 
@@ -62,6 +46,27 @@ mlx_audio.server --allowed-origins http://localhost:3000 https://myapp.example.c
 ```
 
 Or set the `MLX_AUDIO_ALLOWED_ORIGINS` environment variable with a comma-separated list.
+
+### TTS Continuous Batching
+
+Compatible non-streaming Qwen3 TTS Base and CustomVoice `/v1/audio/speech`
+requests are routed to a per-model continuous runner. Later compatible requests
+can join the runner while earlier requests are still generating.
+Reference-audio requests, VoiceDesign requests, non-Qwen3 models, and streaming
+requests continue through the existing serial or opportunistic batch paths.
+
+```bash
+mlx_audio.server --host 127.0.0.1 --port 8000 \
+  --tts-max-batch-size 8
+
+python examples/qwen3_tts_continuous_batching_server.py \
+  --requests 4 \
+  --concurrency 4 \
+  --stagger-ms 300
+```
+
+The server logs `[tts-continuous]` when a runner is created and when a later
+request is queued for an in-flight runner.
 
 ## OpenAI-Compatible API
 
