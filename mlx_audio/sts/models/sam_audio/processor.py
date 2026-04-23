@@ -388,19 +388,6 @@ def save_audio(
     if audio.ndim > 1:
         audio = audio.squeeze()
 
-    try:
-        from mlx_audio.audio_io import write as audio_write
+    from mlx_audio.audio_io import write as audio_write
 
-        audio_write(path, audio, sample_rate)
-    except ImportError:
-        try:
-            from scipy.io import wavfile
-
-            # Normalize to int16 range
-            audio_int = (audio * 32767).astype(np.int16)
-            wavfile.write(path, sample_rate, audio_int)
-        except ImportError:
-            raise ImportError(
-                "Please install miniaudio or scipy for audio saving: "
-                "pip install miniaudio scipy"
-            )
+    audio_write(path, audio, sample_rate)

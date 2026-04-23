@@ -4,8 +4,8 @@ from functools import lru_cache
 
 import mlx.core as mx
 import numpy as np
-from scipy import signal
 
+from mlx_audio.dsp import lfilter
 from mlx_audio.utils import mel_filters, stft
 
 from .config import VoiceEncConfig
@@ -29,7 +29,7 @@ def mel_basis(hp: VoiceEncConfig):
 
 def preemphasis(wav, hp: VoiceEncConfig):
     assert hp.preemphasis != 0
-    wav = signal.lfilter([1, -hp.preemphasis], [1], wav)
+    wav = lfilter([1, -hp.preemphasis], [1], wav)
     wav = np.clip(wav, -1, 1)
     return wav
 

@@ -18,6 +18,7 @@ __all__ = [
     "ISTFTCache",
     "mel_filters",
     "integrated_loudness",
+    "lfilter",
     "normalize_loudness",
     "normalize_peak",
     # Kaldi-compatible features
@@ -154,9 +155,50 @@ def _biquad_coefficients(
     return np.array([b0, b1, b2]) / a0, np.array([a0, a1, a2]) / a0
 
 
-def _apply_lfilter(b: np.ndarray, a: np.ndarray, data: np.ndarray) -> np.ndarray:
-    from scipy.signal import lfilter
+def lfilter(b: np.ndarray, a: np.ndarray, data: np.ndarray) -> np.ndarray:
+    """Apply a 1-D causal linear filter.
 
+    This implements the standard direct-form II transposed recurrence for the
+    1-D DSP paths used in this package.
+    """
+    b = np.asarray(b, dtype=np.float64)
+    a = np.asarray(a, dtype=np.float64)
+    data = np.asarray(data)
+
+    if data.ndim != 1:
+        raise ValueError("dsp.lfilter only supports 1-D input")
+    if a.size == 0 or a[0] == 0:
+        raise ValueError("filter denominator must have a non-zero leading term")
+    if b.size == 0:
+        return np.zeros_like(data)
+
+    b = b / a[0]
+    a = a / a[0]
+
+    dtype = np.result_type(data.dtype, b.dtype, a.dtype)
+    x = data.astype(dtype, copy=False)
+    y = np.empty_like(x, dtype=dtype)
+
+    state_len = max(len(a), len(b)) - 1
+    if state_len == 0:
+        return b[0] * x
+
+    state = np.zeros(state_len, dtype=dtype)
+    for n, sample in enumerate(x):
+        output = b[0] * sample + state[0]
+        for i in range(1, state_len):
+            feedforward = b[i] * sample if i < len(b) else 0.0
+            feedback = a[i] * output if i < len(a) else 0.0
+            state[i - 1] = state[i] + feedforward - feedback
+        feedforward = b[state_len] * sample if state_len < len(b) else 0.0
+        feedback = a[state_len] * output if state_len < len(a) else 0.0
+        state[-1] = feedforward - feedback
+        y[n] = output
+
+    return y
+
+
+def _apply_lfilter(b: np.ndarray, a: np.ndarray, data: np.ndarray) -> np.ndarray:
     return lfilter(b, a, data)
 
 

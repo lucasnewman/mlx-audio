@@ -427,7 +427,7 @@ class ChatterboxTurboTTS(nn.Module):
                 logger.info(f"Loading {len(s3gen_weights)} S3Gen weights")
                 # S3Gen has some parameters generated at init (not from weights):
                 # - encoder.embed.pos_enc.pe, encoder.up_embed.pos_enc.pe (positional encodings)
-                # - mel2wav.stft_window (STFT window from scipy)
+                # - mel2wav.stft_window (periodic Hann STFT window)
                 # - trim_fade (fade buffer)
                 init_generated_params = {
                     "encoder.embed.pos_enc.pe",

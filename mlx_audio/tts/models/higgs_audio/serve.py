@@ -23,7 +23,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional, Tuple
@@ -47,26 +46,18 @@ class HiggsAudioGenerationResult:
 
 
 def _load_wav_as_24k_mono(path: str) -> np.ndarray:
-    """Minimal wav loader → float32 mono at 24 kHz. Pure-python fallback.
+    """Load audio as float32 mono at 24 kHz.
 
-    Higgs codec expects 24 kHz mono input. We resample via scipy if available
-    and fall back to a noisy message if the source isn't already 24 kHz.
+    Higgs codec expects 24 kHz mono input.
     """
-    with wave.open(path, "rb") as r:
-        sr = r.getframerate()
-        nchan = r.getnchannels()
-        raw = r.readframes(r.getnframes())
-    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-    if nchan == 2:
-        samples = samples.reshape(-1, 2).mean(axis=1)
+    from mlx_audio.audio_io import read as audio_read
+    from mlx_audio.utils import resample_audio
+
+    samples, sr = audio_read(path, dtype="float32")
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1)
     if sr != 24000:
-        try:
-            from scipy.signal import resample_poly
-        except ImportError as e:
-            raise RuntimeError(
-                f"reference audio is {sr} Hz; install scipy to resample, or pre-convert to 24 kHz mono wav"
-            ) from e
-        samples = resample_poly(samples, up=24000, down=sr).astype(np.float32)
+        samples = resample_audio(samples, sr, 24000)
     return samples
 
 

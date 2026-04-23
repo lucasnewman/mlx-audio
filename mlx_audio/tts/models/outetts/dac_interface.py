@@ -2,11 +2,11 @@ import math
 
 import mlx.core as mx
 import numpy as np
-import scipy.signal
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.codec import DAC
 from mlx_audio.dsp import integrated_loudness, normalize_loudness, normalize_peak
+from mlx_audio.utils import resample_audio
 
 
 def process_audio_array(
@@ -66,7 +66,7 @@ class DacInterface:
         if len(audio_np.shape) < 2:
             audio_np = audio_np.reshape(1, -1)
 
-        channels, length = audio_np.shape[-2:]
+        channels = audio_np.shape[-2]
 
         if target_channels == 1:
             if channels > 1:
@@ -78,13 +78,7 @@ class DacInterface:
                 audio_np = audio_np[..., :2, :]
 
         if sr != target_sr:
-            new_length = int(length * target_sr / sr)
-            resampled = np.zeros((target_channels, new_length))
-
-            for ch in range(target_channels):
-                resampled[ch] = scipy.signal.resample(audio_np[ch], new_length)
-
-            audio_np = resampled
+            audio_np = resample_audio(audio_np, sr, target_sr, axis=-1)
 
         return mx.array(audio_np)
 

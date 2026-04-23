@@ -984,7 +984,6 @@ all = [
     { name = "mistral-common", extra = ["audio"] },
     { name = "sentencepiece" },
     { name = "setuptools" },
-    { name = "tiktoken" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "webrtcvad" },
 ]
@@ -1007,21 +1006,16 @@ server = [
     { name = "webrtcvad" },
 ]
 sts = [
-    { name = "mistral-common", extra = ["audio"] },
     { name = "sentencepiece" },
     { name = "setuptools" },
-    { name = "tiktoken" },
     { name = "webrtcvad" },
 ]
 stt = [
-    { name = "mistral-common", extra = ["audio"] },
     { name = "sentencepiece" },
-    { name = "tiktoken" },
 ]
 tts = [
     { name = "mistral-common", extra = ["audio"] },
     { name = "sentencepiece" },
-    { name = "tiktoken" },
 ]
 
 [package.metadata]
@@ -1033,8 +1027,6 @@ requires-dist = [
     { name = "isort", marker = "extra == 'dev'", specifier = ">=5.13.2" },
     { name = "miniaudio", specifier = ">=1.61" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'all'" },
-    { name = "mistral-common", extras = ["audio"], marker = "extra == 'sts'" },
-    { name = "mistral-common", extras = ["audio"], marker = "extra == 'stt'" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'tts'" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.6" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.29" },
@@ -1054,10 +1046,6 @@ requires-dist = [
     { name = "setuptools", marker = "extra == 'server'", specifier = "<81" },
     { name = "setuptools", marker = "extra == 'sts'", specifier = "<81" },
     { name = "sounddevice", specifier = "==0.5.3" },
-    { name = "tiktoken", marker = "extra == 'all'", specifier = ">=0.9.0" },
-    { name = "tiktoken", marker = "extra == 'sts'", specifier = ">=0.9.0" },
-    { name = "tiktoken", marker = "extra == 'stt'", specifier = ">=0.9.0" },
-    { name = "tiktoken", marker = "extra == 'tts'", specifier = ">=0.9.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "transformers", specifier = ">=5.5.0" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'all'", specifier = ">=0.22.0" },
