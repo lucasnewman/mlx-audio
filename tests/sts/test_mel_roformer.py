@@ -193,7 +193,8 @@ class TestLicenseDetection:
         assert hint is not None
         substring, preset, license_tag, note = hint
         assert preset == "kim_vocal_2"
-        assert license_tag == "GPL-3.0"
+        # Kim Vocal 2 was relicensed MIT in April 2026 (previously GPL-3.0)
+        assert license_tag == "MIT"
 
     def test_detects_viperx(self):
         from pathlib import Path

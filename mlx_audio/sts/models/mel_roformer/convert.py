@@ -44,11 +44,18 @@ _LICENSE_HINTS = [
     (
         "KimberleyJSN",
         "kim_vocal_2",
-        "GPL-3.0",
-        "Running inference locally is unrestricted. Redistribution or "
-        "distribution in a product triggers GPL-3.0 obligations.",
+        "MIT",
+        "Kim Vocal 2 was relicensed to MIT by the author in April 2026. "
+        "Previously tagged GPL-3.0; inference and redistribution are both "
+        "unrestricted under the current license.",
     ),
-    ("kimvocal", "kim_vocal_2", "GPL-3.0", "Likely Kim Vocal 2 variant — GPL-3.0."),
+    (
+        "kimvocal",
+        "kim_vocal_2",
+        "MIT",
+        "Likely Kim Vocal 2 variant — MIT since April 2026 (was GPL-3.0). "
+        "Confirm against the specific source repo's current LICENSE.",
+    ),
     (
         "TRvlvr",
         "viperx_vocals",

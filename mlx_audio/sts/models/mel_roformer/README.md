@@ -40,7 +40,7 @@ Individual checkpoint weights have independent licenses:
 
 | Checkpoint family | Source | License |
 |-------------------|--------|---------|
-| Kim Vocal 2 | [`KimberleyJSN/melbandroformer`](https://huggingface.co/KimberleyJSN/melbandroformer) | **GPL-3.0** (author-tagged June 2025) |
+| Kim Vocal 2 | [`KimberleyJSN/melbandroformer`](https://huggingface.co/KimberleyJSN/melbandroformer) | **MIT** (relicensed April 2026 by author) |
 | viperx vocals | [`TRvlvr/model_repo`](https://github.com/TRvlvr/model_repo/releases) | Undeclared (default copyright) |
 | anvuew dereverb | [`anvuew/dereverb_mel_band_roformer`](https://huggingface.co/anvuew/dereverb_mel_band_roformer) | GPL-3.0 |
 | ZFTurbo MSS-Training release assets | [ZFTurbo MSS-Training releases](https://github.com/ZFTurbo/Music-Source-Separation-Training/releases) | MIT (inherited from repo) |
@@ -56,22 +56,24 @@ weights or weight-derived artifacts as part of a product.
 
 Concretely:
 
-- ✅ **Running Kim Vocal 2 or any GPL-3.0 weight locally on your own audio**:
-  No obligation. You're the end user.
-- ✅ **Publishing a research paper or demo that used GPL-3.0 weights**:
-  Attribution is polite; distribution of the weights triggers GPL.
-- ⚠️ **Shipping an app or service that bundles or auto-downloads GPL-3.0 weights**:
-  Your product becomes subject to GPL-3 obligations.
-- ❌ **Shipping a closed-source commercial product that uses GPL-3.0 weights**:
-  Not permitted without dual-licensing from the weight author.
+- ✅ **Running any of these checkpoints locally on your own audio**:
+  No obligation regardless of license. You're the end user.
+- ✅ **Publishing a research paper or demo that used GPL-3.0 weights**
+  (e.g., anvuew dereverb): Attribution is polite; distribution of the weights
+  triggers GPL.
+- ⚠️ **Shipping an app or service that bundles or auto-downloads GPL-3.0
+  weights**: Your product becomes subject to GPL-3 obligations.
+- ❌ **Shipping a closed-source commercial product that bundles GPL-3.0
+  weights**: Not permitted without dual-licensing from the weight author.
 - ⚠️ **Using weights with an undeclared license (e.g., viperx) in any
   distributed product**: No explicit redistribution right exists — proceed
   only after clarifying with the original author or choosing a different
   checkpoint.
 
-For commercial products and distributed applications, the safest choice is
-a ZFTurbo release-asset checkpoint (MIT) or a checkpoint you train yourself
-using the MIT-licensed MSS-Training configs.
+For commercial products and distributed applications, MIT-licensed checkpoints
+— including Kim Vocal 2 (as of April 2026) and the ZFTurbo MSS-Training
+release assets — are the safest choice, alongside any checkpoint you train
+yourself using the MIT-licensed MSS-Training configs.
 
 ## Usage
 
