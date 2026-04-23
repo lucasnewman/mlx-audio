@@ -12,6 +12,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.dsp import integrated_loudness
 from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.utils import load_audio, resample_audio
 
@@ -625,10 +626,7 @@ class ChatterboxTurboTTS(nn.Module):
     ) -> np.ndarray:
         """Normalize audio loudness."""
         try:
-            import pyloudnorm as ln
-
-            meter = ln.Meter(sr)
-            loudness = meter.integrated_loudness(wav)
+            loudness = integrated_loudness(wav, sr)
             gain_db = target_lufs - loudness
             gain_linear = 10.0 ** (gain_db / 20.0)
             if math.isfinite(gain_linear) and gain_linear > 0.0:
