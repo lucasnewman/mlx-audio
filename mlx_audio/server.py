@@ -16,7 +16,8 @@ import subprocess
 import time
 import uuid
 import webbrowser
-from dataclasses import asdict, is_dataclass
+from contextlib import asynccontextmanager
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
@@ -42,6 +43,13 @@ from pydantic import BaseModel
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
+from mlx_audio.server_inference import (
+    BaseModelExecutionAdapter,
+    InferenceBroker,
+    InferenceHandle,
+    InferenceRequest,
+    InferenceResultChunk,
+)
 from mlx_audio.utils import load_model
 
 
@@ -71,9 +79,6 @@ def sanitize_for_json(obj: Any) -> Any:
         return obj
 
 
-MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
-
-
 class ModelProvider:
     def __init__(self):
         self.models: Dict[str, Dict[str, Any]] = {}
@@ -98,26 +103,6 @@ class ModelProvider:
 
 
 app = FastAPI()
-
-
-def int_or_float(value):
-
-    try:
-        return int(value)
-    except ValueError:
-        try:
-            return float(value)
-        except ValueError:
-            raise argparse.ArgumentTypeError(f"{value} is not an int or float")
-
-
-def calculate_default_workers(workers: int = 2) -> int:
-    if num_workers_env := os.getenv("MLX_AUDIO_NUM_WORKERS"):
-        try:
-            workers = int(num_workers_env)
-        except ValueError:
-            workers = max(1, int(os.cpu_count() * float(num_workers_env)))
-    return workers
 
 
 # Add CORS middleware
@@ -151,6 +136,21 @@ default_origins = (
 
 # Setup CORS
 setup_cors(app, default_origins)
+
+
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    del app
+    try:
+        yield
+    finally:
+        global INFERENCE_BROKER
+        if INFERENCE_BROKER is not None:
+            INFERENCE_BROKER.stop_and_join()
+            INFERENCE_BROKER = None
+
+
+app.router.lifespan_context = app_lifespan
 
 
 # Request schemas for OpenAI-compatible endpoints
@@ -198,6 +198,279 @@ class SeparationResponse(BaseModel):
 # Initialize the ModelProvider
 model_provider = ModelProvider()
 REALTIME_INFERENCE_LOCK = asyncio.Lock()
+INFERENCE_BROKER: Optional[InferenceBroker] = None
+
+
+@dataclass
+class SpeechTaskPayload:
+    request: SpeechRequest
+
+
+@dataclass
+class TranscriptionTaskPayload:
+    request: TranscriptionRequest
+    filename: str
+    audio: np.ndarray
+    sample_rate: int
+
+
+@dataclass
+class SeparationTaskPayload:
+    model_name: str
+    audio: np.ndarray
+    sample_rate: int
+    description: str
+    method: str
+    steps: int
+
+
+def _load_model_for_inference(model_name: str):
+    return model_provider.load_model(model_name)
+
+
+class STTExecutionAdapter(BaseModelExecutionAdapter):
+    def run_serial(self, request: InferenceRequest) -> None:
+        payload: TranscriptionTaskPayload = request.payload
+        _, ext = os.path.splitext(payload.filename or "")
+        suffix = ext or ".mp3"
+        tmp_path = f"/tmp/{time.time()}_{request.request_id}{suffix}"
+        audio_write(tmp_path, payload.audio, payload.sample_rate)
+
+        try:
+            stt_model = _load_model_for_inference(request.model_name)
+            gen_kwargs = payload.request.model_dump(
+                exclude={"model"}, exclude_none=True
+            )
+            signature = inspect.signature(stt_model.generate)
+            gen_kwargs = {
+                key: value
+                for key, value in gen_kwargs.items()
+                if key in signature.parameters
+            }
+
+            result = stt_model.generate(tmp_path, **gen_kwargs)
+            if hasattr(result, "__iter__") and hasattr(result, "__next__"):
+                accumulated_text = ""
+                for chunk in result:
+                    if request.cancel_event.is_set():
+                        break
+                    if isinstance(chunk, str):
+                        accumulated_text += chunk
+                        chunk_data = {
+                            "text": chunk,
+                            "accumulated": accumulated_text,
+                        }
+                    else:
+                        chunk_data = {
+                            "text": chunk.text,
+                            "start": getattr(chunk, "start_time", None),
+                            "end": getattr(chunk, "end_time", None),
+                            "is_final": getattr(chunk, "is_final", None),
+                            "language": getattr(chunk, "language", None),
+                        }
+                    request.emit_data(json.dumps(sanitize_for_json(chunk_data)) + "\n")
+            elif not request.cancel_event.is_set():
+                request.emit_data(json.dumps(sanitize_for_json(result)) + "\n")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+        request.emit_done()
+
+
+class TTSExecutionAdapter(BaseModelExecutionAdapter):
+    def run_serial(self, request: InferenceRequest) -> None:
+        payload: SpeechTaskPayload = request.payload
+        speech_request = payload.request
+        model = _load_model_for_inference(request.model_name)
+
+        ref_audio = speech_request.ref_audio
+        if ref_audio and isinstance(ref_audio, str):
+            if not os.path.exists(ref_audio):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Reference audio file not found: {ref_audio}",
+                )
+
+            from mlx_audio.tts.generate import load_audio
+
+            normalize = hasattr(model, "model_type") and model.model_type == "spark"
+            ref_audio = load_audio(
+                ref_audio,
+                sample_rate=model.sample_rate,
+                volume_normalize=normalize,
+            )
+
+        audio_chunks = []
+        sample_rate = None
+        for result in model.generate(
+            speech_request.input,
+            voice=speech_request.voice,
+            speed=speech_request.speed,
+            gender=speech_request.gender,
+            pitch=speech_request.pitch,
+            instruct=speech_request.instruct,
+            lang_code=speech_request.lang_code,
+            ref_audio=ref_audio,
+            ref_text=speech_request.ref_text,
+            temperature=speech_request.temperature,
+            top_p=speech_request.top_p,
+            top_k=speech_request.top_k,
+            repetition_penalty=speech_request.repetition_penalty,
+            stream=speech_request.stream,
+            streaming_interval=speech_request.streaming_interval,
+            max_tokens=speech_request.max_tokens,
+            verbose=speech_request.verbose,
+        ):
+            if request.cancel_event.is_set():
+                mx.clear_cache()
+                request.emit_done()
+                return
+
+            if speech_request.stream:
+                buffer = io.BytesIO()
+                audio_write(
+                    buffer,
+                    result.audio,
+                    result.sample_rate,
+                    format=speech_request.response_format,
+                )
+                request.emit_data(buffer.getvalue())
+            else:
+                audio_chunks.append(result.audio)
+                if sample_rate is None:
+                    sample_rate = result.sample_rate
+
+        if speech_request.stream:
+            request.emit_done()
+            return
+
+        if not audio_chunks:
+            raise HTTPException(status_code=400, detail="No audio generated")
+
+        concatenated_audio = np.concatenate(audio_chunks)
+        buffer = io.BytesIO()
+        audio_write(
+            buffer,
+            concatenated_audio,
+            sample_rate,
+            format=speech_request.response_format,
+        )
+        request.emit_data(buffer.getvalue())
+        request.emit_done()
+
+
+class SeparationExecutionAdapter(BaseModelExecutionAdapter):
+    def __init__(self):
+        self._model_name: str | None = None
+        self._model = None
+        self._processor = None
+
+    def _get_resources(self, model_name: str):
+        if self._model_name == model_name and self._model is not None:
+            return self._model, self._processor
+
+        from mlx_audio.sts import SAMAudio, SAMAudioProcessor
+
+        self._processor = SAMAudioProcessor.from_pretrained(model_name)
+        self._model = SAMAudio.from_pretrained(model_name)
+        self._model_name = model_name
+        return self._model, self._processor
+
+    def run_serial(self, request: InferenceRequest) -> None:
+        payload: SeparationTaskPayload = request.payload
+        tmp_path = f"/tmp/separation_{time.time()}_{request.request_id}.wav"
+        audio_write(tmp_path, payload.audio, payload.sample_rate)
+
+        try:
+            model, processor = self._get_resources(payload.model_name)
+            batch = processor(
+                descriptions=[payload.description],
+                audios=[tmp_path],
+            )
+
+            step_size = 2 / (payload.steps * 2)
+            ode_opt = {"method": payload.method, "step_size": step_size}
+
+            result = model.separate_long(
+                audios=batch.audios,
+                descriptions=batch.descriptions,
+                anchor_ids=batch.anchor_ids,
+                anchor_alignment=batch.anchor_alignment,
+                ode_opt=ode_opt,
+                ode_decode_chunk_size=50,
+            )
+
+            mx.clear_cache()
+
+            target_audio = np.array(result.target[0])
+            residual_audio = np.array(result.residual[0])
+            sample_rate = model.sample_rate
+
+            def audio_to_base64(audio_array, sr):
+                buffer = io.BytesIO()
+                audio_write(buffer, audio_array, sr, format="wav")
+                buffer.seek(0)
+                return base64.b64encode(buffer.read()).decode("utf-8")
+
+            request.emit_data(
+                SeparationResponse(
+                    target=audio_to_base64(target_audio, sample_rate),
+                    residual=audio_to_base64(residual_audio, sample_rate),
+                    sample_rate=sample_rate,
+                )
+            )
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+        request.emit_done()
+
+
+def get_inference_broker() -> InferenceBroker:
+    global INFERENCE_BROKER
+    if INFERENCE_BROKER is None:
+        broker = InferenceBroker()
+        broker.register_adapter("stt", STTExecutionAdapter())
+        broker.register_adapter("tts", TTSExecutionAdapter())
+        broker.register_adapter("separation", SeparationExecutionAdapter())
+        INFERENCE_BROKER = broker
+    return INFERENCE_BROKER
+
+
+async def _next_inference_chunk(handle: InferenceHandle) -> InferenceResultChunk:
+    return await asyncio.to_thread(handle.result_queue.get)
+
+
+async def _stream_inference_results(handle: InferenceHandle, request: Request):
+    try:
+        while True:
+            chunk = await _next_inference_chunk(handle)
+            if chunk.kind == "done":
+                break
+            if chunk.kind == "error":
+                raise chunk.error
+            yield chunk.payload
+            await asyncio.sleep(0)
+            if await request.is_disconnected():
+                handle.cancel()
+                break
+    finally:
+        handle.cancel()
+
+
+async def _await_inference_result(handle: InferenceHandle):
+    result = None
+    try:
+        while True:
+            chunk = await _next_inference_chunk(handle)
+            if chunk.kind == "done":
+                return result
+            if chunk.kind == "error":
+                raise chunk.error
+            result = chunk.payload
+    finally:
+        handle.cancel()
 
 
 @app.get("/")
@@ -263,81 +536,25 @@ async def remove_model(model_name: str):
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
 
 
-async def generate_audio(model, payload: SpeechRequest, request: Request):
-    # Load reference audio if provided
-    ref_audio = payload.ref_audio
-    audio_chunks = []
-    sample_rate = None
-    if ref_audio and isinstance(ref_audio, str):
-        if not os.path.exists(ref_audio):
-            raise HTTPException(
-                status_code=400, detail=f"Reference audio file not found: {ref_audio}"
-            )
-        # Import load_audio from generate module
-        from mlx_audio.tts.generate import load_audio
-
-        # Determine if volume normalization is needed
-        normalize = hasattr(model, "model_type") and model.model_type == "spark"
-
-        ref_audio = load_audio(
-            ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
-        )
-
-    for result in model.generate(
-        payload.input,
-        voice=payload.voice,
-        speed=payload.speed,
-        gender=payload.gender,
-        pitch=payload.pitch,
-        instruct=payload.instruct,
-        lang_code=payload.lang_code,
-        ref_audio=ref_audio,
-        ref_text=payload.ref_text,
-        temperature=payload.temperature,
-        top_p=payload.top_p,
-        top_k=payload.top_k,
-        repetition_penalty=payload.repetition_penalty,
-        stream=payload.stream,
-        streaming_interval=payload.streaming_interval,
-        max_tokens=payload.max_tokens,
-        verbose=payload.verbose,
-    ):
-
-        if await request.is_disconnected():
-            mx.clear_cache()
-            return
-
-        if payload.stream:
-            buffer = io.BytesIO()
-            audio_write(
-                buffer, result.audio, result.sample_rate, format=payload.response_format
-            )
-            yield buffer.getvalue()
-        else:
-            audio_chunks.append(result.audio)
-            if sample_rate is None:
-                sample_rate = result.sample_rate
-
-        await asyncio.sleep(0)  # register any disconnects
-
-    if payload.stream:
-        return
-
-    if not audio_chunks:
-        raise HTTPException(status_code=400, detail="No audio generated")
-
-    concatenated_audio = np.concatenate(audio_chunks)
-    buffer = io.BytesIO()
-    audio_write(buffer, concatenated_audio, sample_rate, format=payload.response_format)
-    yield buffer.getvalue()
-
-
 @app.post("/v1/audio/speech")
 async def tts_speech(payload: SpeechRequest, request: Request):
     """Generate speech audio following the OpenAI text-to-speech API."""
-    model = model_provider.load_model(payload.model)
+    if payload.ref_audio and isinstance(payload.ref_audio, str):
+        if not os.path.exists(payload.ref_audio):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Reference audio file not found: {payload.ref_audio}",
+            )
+
+    handle = get_inference_broker().submit(
+        endpoint_kind="tts",
+        model_name=payload.model,
+        payload=SpeechTaskPayload(request=payload),
+        normalized_kwargs=payload.model_dump(exclude={"model"}, exclude_none=True),
+        stream=payload.stream,
+    )
     return StreamingResponse(
-        generate_audio(model, payload, request),
+        _stream_inference_results(handle, request),
         media_type=f"audio/{payload.response_format}",
         headers={
             "Content-Disposition": f"attachment; filename=speech.{payload.response_format}"
@@ -345,40 +562,9 @@ async def tts_speech(payload: SpeechRequest, request: Request):
     )
 
 
-def generate_transcription_stream(stt_model, tmp_path: str, gen_kwargs: dict):
-    """Generator that yields transcription chunks and cleans up temp file."""
-    try:
-        # Call generate with stream=True (models handle streaming internally)
-        result = stt_model.generate(tmp_path, **gen_kwargs)
-
-        # Check if result is a generator (streaming mode)
-        if hasattr(result, "__iter__") and hasattr(result, "__next__"):
-            accumulated_text = ""
-            for chunk in result:
-                # Handle different chunk types (string tokens vs structured chunks)
-                if isinstance(chunk, str):
-                    accumulated_text += chunk
-                    chunk_data = {"text": chunk, "accumulated": accumulated_text}
-                else:
-                    # Structured chunk (e.g., Whisper streaming)
-                    chunk_data = {
-                        "text": chunk.text,
-                        "start": getattr(chunk, "start_time", None),
-                        "end": getattr(chunk, "end_time", None),
-                        "is_final": getattr(chunk, "is_final", None),
-                        "language": getattr(chunk, "language", None),
-                    }
-                yield json.dumps(sanitize_for_json(chunk_data)) + "\n"
-        else:
-            # Not a generator, yield the full result
-            yield json.dumps(sanitize_for_json(result)) + "\n"
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
-
 @app.post("/v1/audio/transcriptions")
 async def stt_transcriptions(
+    request: Request,
     file: UploadFile = File(...),
     model: str = Form(...),
     language: Optional[str] = Form(None),
@@ -392,7 +578,6 @@ async def stt_transcriptions(
     text: Optional[str] = Form(None),
 ):
     """Transcribe audio using an STT model in OpenAI format."""
-    # Create TranscriptionRequest from form fields
     payload = TranscriptionRequest(
         model=model,
         language=language,
@@ -405,32 +590,28 @@ async def stt_transcriptions(
         prefill_step_size=prefill_step_size,
         text=text,
     )
-
     data = await file.read()
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
-    _, ext = os.path.splitext(file.filename)
-    tmp_path = f"/tmp/{time.time()}.{ext if ext else 'mp3'}"
-    audio_write(tmp_path, audio, sr)
 
-    stt_model = model_provider.load_model(payload.model)
-
-    # Build kwargs for generate, filtering None values
-    gen_kwargs = payload.model_dump(exclude={"model"}, exclude_none=True)
-
-    # Filter kwargs to only include parameters the model's generate method accepts
-    signature = inspect.signature(stt_model.generate)
-    gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
-
-    return StreamingResponse(
-        generate_transcription_stream(stt_model, tmp_path, gen_kwargs),
-        media_type="application/x-ndjson",
+    handle = get_inference_broker().submit(
+        endpoint_kind="stt",
+        model_name=payload.model,
+        payload=TranscriptionTaskPayload(
+            request=payload,
+            filename=file.filename or "audio.mp3",
+            audio=audio,
+            sample_rate=sr,
+        ),
+        normalized_kwargs=payload.model_dump(exclude={"model"}, exclude_none=True),
+        stream=payload.stream,
     )
 
-
-SAM_MODEL = None
-SAM_PROCESSOR = None
+    return StreamingResponse(
+        _stream_inference_results(handle, request),
+        media_type="application/x-ndjson",
+    )
 
 
 @app.post("/v1/audio/separations")
@@ -453,70 +634,29 @@ async def audio_separations(
     Returns:
         JSON with base64-encoded target and residual audio, plus sample rate
     """
-    global SAM_MODEL, SAM_PROCESSOR
-    from mlx_audio.sts import SAMAudio, SAMAudioProcessor
-
-    # Read uploaded file
     data = await file.read()
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
 
-    # Save to temp file for processor
-    tmp_path = f"/tmp/separation_{time.time()}.wav"
-    audio_write(tmp_path, audio, sr)
-
-    try:
-        # Load model and processor
-        if SAM_PROCESSOR is None:
-            SAM_PROCESSOR = SAMAudioProcessor.from_pretrained(model)
-        if SAM_MODEL is None:
-            SAM_MODEL = SAMAudio.from_pretrained(model)
-
-        # Process inputs
-        batch = SAM_PROCESSOR(
-            descriptions=[description],
-            audios=[tmp_path],
-        )
-
-        # Calculate step_size from steps
-        step_size = 2 / (steps * 2)  # e.g., 16 steps -> 2/32 = 0.0625
-        ode_opt = {"method": method, "step_size": step_size}
-
-        # Separate audio
-        result = SAM_MODEL.separate_long(
-            audios=batch.audios,
-            descriptions=batch.descriptions,
-            anchor_ids=batch.anchor_ids,
-            anchor_alignment=batch.anchor_alignment,
-            ode_opt=ode_opt,
-            ode_decode_chunk_size=50,
-        )
-
-        mx.clear_cache()
-
-        # Convert results to numpy
-        target_audio = np.array(result.target[0])
-        residual_audio = np.array(result.residual[0])
-        sample_rate = SAM_MODEL.sample_rate
-
-        # Encode as base64 WAV
-        def audio_to_base64(audio_array, sr):
-            buffer = io.BytesIO()
-            audio_write(buffer, audio_array, sr, format="wav")
-            buffer.seek(0)
-            return base64.b64encode(buffer.read()).decode("utf-8")
-
-        return SeparationResponse(
-            target=audio_to_base64(target_audio, sample_rate),
-            residual=audio_to_base64(residual_audio, sample_rate),
-            sample_rate=sample_rate,
-        )
-
-    finally:
-        # Clean up temp file
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    handle = get_inference_broker().submit(
+        endpoint_kind="separation",
+        model_name=model,
+        payload=SeparationTaskPayload(
+            model_name=model,
+            audio=audio,
+            sample_rate=sr,
+            description=description,
+            method=method,
+            steps=steps,
+        ),
+        normalized_kwargs={
+            "description": description,
+            "method": method,
+            "steps": steps,
+        },
+    )
+    return await _await_inference_result(handle)
 
 
 async def _stream_transcription(
@@ -1173,7 +1313,7 @@ class MLXAudioStudioServer:
         except Exception as e:
             raise Exception(f"✗ Failed to start UI: {e}")
 
-    def start_server(self, host="localhost", port=8000, reload=False, workers=2):
+    def start_server(self, host="localhost", port=8000, reload=False, realtime=False):
         if self.start_ui:
             self.start_ui_background()
             time.sleep(2)
@@ -1181,6 +1321,9 @@ class MLXAudioStudioServer:
             print(f"✓ API server starting on http://{host}:{port}")
             print("✓ Studio UI available at http://localhost:3000")
             print("\nPress Ctrl+C to stop both servers")
+        elif realtime:
+            print(f"✓ Realtime server starting on http://{host}:{port}")
+            print("✓ Standard endpoints remain mounted; prefer realtime endpoints.")
 
         try:
             uvicorn.run(
@@ -1188,7 +1331,7 @@ class MLXAudioStudioServer:
                 host=host,
                 port=port,
                 reload=reload,
-                workers=workers,
+                workers=1,
                 loop="asyncio",
             )
         finally:
@@ -1220,25 +1363,7 @@ def main():
         "--reload",
         type=bool,
         default=False,
-        help="Enable auto-reload of the server. Only works when 'workers' is set to None.",
-    )
-
-    parser.add_argument(
-        "--workers",
-        type=int_or_float,
-        default=0,
-        help="""Number of workers. Overrides the `MLX_AUDIO_NUM_WORKERS` env variable.
-        Can be either an int or a float.
-        If an int, it will be the number of workers to use.
-        If a float, number of workers will be this fraction of the  number of CPU cores available, with a minimum of 1.
-        Defaults to the `MLX_AUDIO_NUM_WORKERS` env variable if set and to 2 if not.
-        To use all available CPU cores, set it to 1.0.
-
-        Examples:
-        --workers 1 (will use 1 worker)
-        --workers 1.0 (will use all available CPU cores)
-        --workers 0.5 (will use half the number of CPU cores available)
-        --workers 0.0 (will use 1 worker)""",
+        help="Enable auto-reload of the server.",
     )
     parser.add_argument(
         "--start-ui",
@@ -1272,6 +1397,11 @@ def main():
             "$MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS."
         ),
     )
+    parser.add_argument(
+        "--realtime",
+        action="store_true",
+        help="Start the server for /v1/realtime usage.",
+    )
 
     args = parser.parse_args()
     if args.realtime_model:
@@ -1280,8 +1410,6 @@ def main():
         os.environ["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"] = str(
             args.realtime_transcription_delay_ms
         )
-    if isinstance(args.workers, float):
-        args.workers = max(1, int(os.cpu_count() * args.workers))
 
     setup_cors(app, args.allowed_origins)
 
@@ -1289,8 +1417,8 @@ def main():
     client.start_server(
         host=args.host,
         port=args.port,
-        reload=args.reload if args.workers is None else False,
-        workers=args.workers,
+        reload=args.reload,
+        realtime=args.realtime,
     )
 
 
