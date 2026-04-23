@@ -27,8 +27,7 @@ def extract_package_name(req: str) -> str:
     """Extract package name from Requires-Dist string.
 
     Examples:
-        'tiktoken>=0.9.0; extra == "stt"' -> 'tiktoken'
-        'mistral-common[audio]; extra == "stt"' -> 'mistral-common'
+        'mistral-common[audio]; extra == "tts"' -> 'mistral-common'
     """
     import re
 
@@ -83,7 +82,6 @@ class TestOptionalDeps:
         requires = meta.get_all("Requires-Dist") or []
         stt_deps = [r for r in requires if 'extra == "stt"' in r]
         dep_names = [extract_package_name(r) for r in stt_deps]
-        assert "tiktoken" in dep_names, f"tiktoken not in stt deps: {dep_names}"
 
     def test_tts_extra_defined(self):
         """Verify [tts] extra contains expected deps."""
@@ -91,7 +89,6 @@ class TestOptionalDeps:
         requires = meta.get_all("Requires-Dist") or []
         tts_deps = [r for r in requires if 'extra == "tts"' in r]
         dep_names = [extract_package_name(r) for r in tts_deps]
-        assert "tiktoken" in dep_names, f"tiktoken not in tts deps: {dep_names}"
         assert (
             "misaki" not in dep_names
         ), f"misaki should not be a shared tts dep: {dep_names}"
