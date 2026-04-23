@@ -101,7 +101,7 @@ def test_inference_broker_serializes_requests():
 
 
 def test_inference_broker_routes_continuous_batch_without_collect_window():
-    broker = InferenceBroker(batch_collect_s=0.05)
+    broker = InferenceBroker()
     adapter = ContinuousAdapter()
     broker.register_adapter("batch", adapter)
 
@@ -115,30 +115,5 @@ def test_inference_broker_routes_continuous_batch_without_collect_window():
         assert _collect(handle)[0].payload == ("continuous", "first")
         assert adapter.continuous_payloads == ["first"]
         assert adapter.batch_sizes == []
-    finally:
-        broker.stop_and_join()
-
-
-def test_inference_broker_collects_nearby_batch_requests():
-    broker = InferenceBroker(batch_collect_s=0.05)
-    adapter = BatchingAdapter()
-    broker.register_adapter("batch", adapter)
-
-    try:
-        first = broker.submit(
-            endpoint_kind="batch",
-            model_name="model-a",
-            payload="first",
-        )
-        time.sleep(0.01)
-        second = broker.submit(
-            endpoint_kind="batch",
-            model_name="model-a",
-            payload="second",
-        )
-
-        assert _collect(first)[0].payload == ("batch", "first")
-        assert _collect(second)[0].payload == ("batch", "second")
-        assert adapter.batch_sizes == [2]
     finally:
         broker.stop_and_join()

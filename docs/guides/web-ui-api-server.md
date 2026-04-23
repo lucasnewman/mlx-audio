@@ -53,7 +53,7 @@ Compatible non-streaming Qwen3 TTS Base and CustomVoice `/v1/audio/speech`
 requests are routed to a per-model continuous runner. Later compatible requests
 can join the runner while earlier requests are still generating.
 Reference-audio requests, VoiceDesign requests, non-Qwen3 models, and streaming
-requests continue through the existing serial or fixed-window batch paths.
+requests continue through the existing serial or opportunistic batch paths.
 
 ```bash
 mlx_audio.server --host 127.0.0.1 --port 8000 \
