@@ -2568,13 +2568,16 @@ class TestQwen3TTSPrepareICLInputs(unittest.TestCase):
         hidden_size = model.config.talker_config.hidden_size
 
         ref_audio = mx.random.normal((24000,))  # 1s audio
-        input_embeds, trailing, tts_pad, ref_codes = (
-            model._prepare_icl_generation_inputs(
-                text="Hello world",
-                ref_audio=ref_audio,
-                ref_text="Reference text",
-                language="auto",
-            )
+        (
+            input_embeds,
+            trailing,
+            tts_pad,
+            ref_codes,
+        ) = model._prepare_icl_generation_inputs(
+            text="Hello world",
+            ref_audio=ref_audio,
+            ref_text="Reference text",
+            language="auto",
         )
         mx.eval(input_embeds, trailing, tts_pad, ref_codes)
 
@@ -2599,13 +2602,16 @@ class TestQwen3TTSPrepareICLInputs(unittest.TestCase):
         model, ref_time = self._make_model_with_mocks()
 
         ref_audio = mx.random.normal((24000,))
-        input_embeds, trailing, tts_pad, ref_codes = (
-            model._prepare_icl_generation_inputs(
-                text="Hello",
-                ref_audio=ref_audio,
-                ref_text="Ref",
-                language="auto",
-            )
+        (
+            input_embeds,
+            trailing,
+            tts_pad,
+            ref_codes,
+        ) = model._prepare_icl_generation_inputs(
+            text="Hello",
+            ref_audio=ref_audio,
+            ref_text="Ref",
+            language="auto",
         )
         mx.eval(input_embeds)
 
@@ -4973,6 +4979,34 @@ class TestOmniVoiceGenerate(unittest.TestCase):
 
 
 class TestOmniVoiceCloneUtils(unittest.TestCase):
+    def test_remove_silence_matches_omnivoice_gap_policy(self):
+        from mlx_audio.tts.models.omnivoice.utils import _remove_silence
+
+        sr = 24000
+        tone = np.full(int(0.3 * sr), 0.2, dtype=np.float32)
+        silence = np.zeros(int(0.5 * sr), dtype=np.float32)
+        long_gap = np.zeros(int(1.2 * sr), dtype=np.float32)
+        audio = np.concatenate([silence, tone, long_gap, tone, silence])
+
+        trimmed = _remove_silence(audio, sr)
+
+        self.assertEqual(trimmed.dtype, np.float32)
+        self.assertEqual(len(trimmed), int(1.6 * sr))
+
+    def test_trim_long_audio_splits_at_last_gap_before_max_duration(self):
+        from mlx_audio.tts.models.omnivoice.utils import _trim_long_audio
+
+        sr = 24000
+        first = np.full(10 * sr, 0.2, dtype=np.float32)
+        gap = np.zeros(1 * sr, dtype=np.float32)
+        second = np.full(10 * sr, 0.2, dtype=np.float32)
+        audio = np.concatenate([first, gap, second])
+
+        trimmed = _trim_long_audio(audio, sr)
+
+        self.assertEqual(trimmed.dtype, np.float32)
+        self.assertEqual(len(trimmed), 11 * sr)
+
     def test_no_tokenizer_returns_empty(self):
         from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
 

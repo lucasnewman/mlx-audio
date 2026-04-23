@@ -77,7 +77,7 @@ The MLX port matches the original Python pipeline for reference audio preprocess
 
 - torchaudio-compatible Hann-windowed sinc resampling
 - RMS normalization for quiet references
-- silence removal via pydub
+- fixed-threshold silence removal with built-in preprocessing
 - long-audio trimming at silence gaps
 
 Best results come from 5–15 seconds of clean speech after silence trimming.
