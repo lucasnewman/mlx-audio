@@ -97,8 +97,10 @@ class InferenceBroker:
         self,
         *,
         idle_poll_s: float = 0.1,
+        batch_collect_s: float = 0.015,
     ):
         self.idle_poll_s = idle_poll_s
+        self.batch_collect_s = max(0.0, batch_collect_s)
         self._requests: "queue.Queue[Optional[InferenceRequest]]" = queue.Queue()
         self._adapters: dict[str, ModelExecutionAdapter] = {}
         self._stop = threading.Event()
@@ -175,7 +177,9 @@ class InferenceBroker:
                 continue
 
             requests = [request]
-            if adapter.supports_batch(request) and adapter.max_batch_size > 1:
+            can_batch = adapter.max_batch_size > 1 and adapter.supports_batch(request)
+            if can_batch:
+                self._collect_batch_window(request, adapter, pending)
                 requests.extend(
                     self._select_batch_candidates(request, adapter, pending)
                 )
@@ -215,6 +219,38 @@ class InferenceBroker:
                 return
             pending.append(item)
 
+    def _collect_batch_window(
+        self,
+        request: InferenceRequest,
+        adapter: ModelExecutionAdapter,
+        pending: list[InferenceRequest],
+    ) -> None:
+        """Briefly wait for compatible requests before dispatching a batch.
+
+        HTTP clients that start concurrently often reach the broker a few
+        milliseconds apart. Without this small dispatch window, the first
+        request tends to start serial generation before its peers are visible.
+        """
+        if self.batch_collect_s <= 0:
+            return
+
+        deadline = time.time() + self.batch_collect_s
+        while (
+            time.time() < deadline
+            and self._compatible_count(request, adapter, pending)
+            < adapter.max_batch_size - 1
+        ):
+            remaining = max(0.0, deadline - time.time())
+            try:
+                item = self._requests.get(timeout=remaining)
+            except queue.Empty:
+                return
+
+            if item is None:
+                self._stop.set()
+                return
+            pending.append(item)
+
     def _select_batch_candidates(
         self,
         request: InferenceRequest,
@@ -246,4 +282,16 @@ class InferenceBroker:
             and candidate.model_name == request.model_name
             and candidate.batch_key == request.batch_key
             and adapter.supports_batch(candidate)
+        )
+
+    def _compatible_count(
+        self,
+        request: InferenceRequest,
+        adapter: ModelExecutionAdapter,
+        pending: list[InferenceRequest],
+    ) -> int:
+        return sum(
+            1
+            for candidate in pending
+            if self._is_batch_compatible(request, candidate, adapter)
         )

@@ -458,7 +458,7 @@ class Model(nn.Module):
             seq_len = embeds.shape[1]
             pad_len = max_prefill - seq_len
             if pad_len > 0:
-                padding = mx.zeros((1, pad_len, hidden_size))
+                padding = mx.zeros((1, pad_len, hidden_size), dtype=embeds.dtype)
                 padded = mx.concatenate([padding, embeds], axis=1)
                 mask_row = mx.concatenate(
                     [mx.zeros((1, pad_len)), mx.ones((1, seq_len))], axis=1
@@ -1354,6 +1354,11 @@ class Model(nn.Module):
             raise ValueError(
                 f"voices length ({len(voices)}) must match texts length ({batch_size})"
             )
+        if instructs is not None and len(instructs) != batch_size:
+            raise ValueError(
+                "instructs length "
+                f"({len(instructs)}) must match texts length ({batch_size})"
+            )
 
         start_time = time.time()
         config = self.config.talker_config
@@ -1493,7 +1498,7 @@ class Model(nn.Module):
             ]  # [batch, 1, hidden]
 
             # Replace exhausted positions with pad embed (unconditional, no sync)
-            exhausted = clamped_indices >= max_trailing_len - 1  # [batch]
+            exhausted = trailing_indices[:, 0] >= max_trailing_len  # [batch]
             pad_broadcast = mx.broadcast_to(tts_pad_embed, text_embeds.shape)
             text_embeds = mx.where(exhausted[:, None, None], pad_broadcast, text_embeds)
 

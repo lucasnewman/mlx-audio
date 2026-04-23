@@ -39,6 +39,29 @@ class SerializedAdapter(BaseModelExecutionAdapter):
         request.emit_done()
 
 
+class BatchingAdapter(BaseModelExecutionAdapter):
+    max_batch_size = 4
+
+    def __init__(self):
+        self.batch_sizes = []
+
+    def supports_batch(self, request: InferenceRequest) -> bool:
+        return request.payload != "serial"
+
+    def batch_key(self, request: InferenceRequest):
+        return "same"
+
+    def run_serial(self, request: InferenceRequest) -> None:
+        request.emit_data(("serial", request.payload))
+        request.emit_done()
+
+    def run_batch(self, requests: list[InferenceRequest]) -> None:
+        self.batch_sizes.append(len(requests))
+        for request in requests:
+            request.emit_data(("batch", request.payload))
+            request.emit_done()
+
+
 def test_inference_broker_serializes_requests():
     broker = InferenceBroker()
     adapter = SerializedAdapter()
@@ -59,5 +82,30 @@ def test_inference_broker_serializes_requests():
         assert _collect(first)[0].payload == "first"
         assert _collect(second)[0].payload == "second"
         assert adapter.max_active == 1
+    finally:
+        broker.stop_and_join()
+
+
+def test_inference_broker_collects_nearby_batch_requests():
+    broker = InferenceBroker(batch_collect_s=0.05)
+    adapter = BatchingAdapter()
+    broker.register_adapter("batch", adapter)
+
+    try:
+        first = broker.submit(
+            endpoint_kind="batch",
+            model_name="model-a",
+            payload="first",
+        )
+        time.sleep(0.01)
+        second = broker.submit(
+            endpoint_kind="batch",
+            model_name="model-a",
+            payload="second",
+        )
+
+        assert _collect(first)[0].payload == ("batch", "first")
+        assert _collect(second)[0].payload == ("batch", "second")
+        assert adapter.batch_sizes == [2]
     finally:
         broker.stop_and_join()
