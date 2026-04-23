@@ -42,7 +42,6 @@ stt = [
 tts = [
     "mistral-common[audio]",
     "tiktoken>=0.9.0",
-    "pydub>=0.25.1",
     "sentencepiece>=0.2.0",
 ]
 
@@ -70,8 +69,6 @@ sts = [
 all = [
     "tiktoken>=0.9.0",
     "mistral-common[audio]",
-
-    "pydub>=0.25.1",
     "sentencepiece>=0.2.0",
 
     "fastapi>=0.95.0",
