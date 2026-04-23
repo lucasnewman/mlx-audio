@@ -32,11 +32,10 @@ The API will be available at `http://localhost:8000` and the Studio UI at `http:
 | `--log-dir` | `logs` | Directory for server logs |
 | `--realtime-model` | `null` | Default model for `/v1/realtime` when the client omits `?model=` |
 | `--realtime-transcription-delay-ms` | `null` | Transcription latency/quality knob for models that support it (e.g. `voxtral_realtime`) |
-| `--tts-max-batch-size` | `8` | Maximum compatible Qwen3 TTS speech requests to batch |
-| `--inference-batch-wait-ms` | `15` | Milliseconds to wait for compatible requests before dispatching a batch |
+| `--tts-max-batch-size` | `8` | Maximum compatible Qwen3 TTS speech requests in a continuous runner |
 
 The two realtime flags also read from `MLX_AUDIO_REALTIME_MODEL` and `MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS` if present; the CLI flags take precedence.
-The TTS batching flags also read from `MLX_AUDIO_TTS_MAX_BATCH_SIZE` and `MLX_AUDIO_INFERENCE_BATCH_WAIT_MS`.
+The TTS batching flag also reads from `MLX_AUDIO_TTS_MAX_BATCH_SIZE`.
 
 ### CORS Configuration
 
@@ -50,23 +49,24 @@ Or set the `MLX_AUDIO_ALLOWED_ORIGINS` environment variable with a comma-separat
 
 ### TTS Continuous Batching
 
-Compatible Qwen3 TTS Base and CustomVoice `/v1/audio/speech` requests are
-grouped through the server inference broker and executed with `batch_generate()`.
+Compatible non-streaming Qwen3 TTS Base and CustomVoice `/v1/audio/speech`
+requests are routed to a per-model continuous runner. Later compatible requests
+can join the runner while earlier requests are still generating.
 Reference-audio requests, VoiceDesign requests, non-Qwen3 models, and streaming
-Qwen3 Base requests with multi-line inputs continue through the serial path.
+requests continue through the existing serial or fixed-window batch paths.
 
 ```bash
 mlx_audio.server --host 127.0.0.1 --port 8000 \
-  --tts-max-batch-size 4 \
-  --inference-batch-wait-ms 25
+  --tts-max-batch-size 8
 
 python examples/qwen3_tts_continuous_batching_server.py \
   --requests 4 \
   --concurrency 4 \
-  --stagger-ms 5
+  --stagger-ms 300
 ```
 
-The server logs `[tts-batch]` with the actual batch size when requests coalesce.
+The server logs `[tts-continuous]` when a runner is created and when a later
+request is queued for an in-flight runner.
 
 ## OpenAI-Compatible API
 

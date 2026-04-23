@@ -71,6 +71,10 @@ class ModelExecutionAdapter(Protocol):
 
     def run_batch(self, requests: list[InferenceRequest]) -> None: ...
 
+    def supports_continuous_batch(self, request: InferenceRequest) -> bool: ...
+
+    def run_continuous(self, request: InferenceRequest) -> None: ...
+
 
 class BaseModelExecutionAdapter:
     max_batch_size = 1
@@ -91,13 +95,20 @@ class BaseModelExecutionAdapter:
             raise NotImplementedError
         self.run_serial(requests[0])
 
+    def supports_continuous_batch(self, request: InferenceRequest) -> bool:
+        del request
+        return False
+
+    def run_continuous(self, request: InferenceRequest) -> None:
+        self.run_serial(request)
+
 
 class InferenceBroker:
     def __init__(
         self,
         *,
         idle_poll_s: float = 0.1,
-        batch_collect_s: float = 0.015,
+        batch_collect_s: float = 0.0,
     ):
         self.idle_poll_s = idle_poll_s
         self.batch_collect_s = max(0.0, batch_collect_s)
@@ -116,6 +127,10 @@ class InferenceBroker:
         self._stop.set()
         self._requests.put(None)
         self._thread.join(timeout=timeout)
+        for adapter in self._adapters.values():
+            shutdown = getattr(adapter, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
 
     def submit(
         self,
@@ -179,6 +194,15 @@ class InferenceBroker:
             requests = [request]
             can_batch = adapter.max_batch_size > 1 and adapter.supports_batch(request)
             if can_batch:
+                if adapter.supports_continuous_batch(request):
+                    try:
+                        adapter.run_continuous(request)
+                    except Exception as exc:
+                        traceback.print_exc()
+                        request.emit_error(exc)
+                        request.emit_done()
+                    continue
+
                 self._collect_batch_window(request, adapter, pending)
                 requests.extend(
                     self._select_batch_candidates(request, adapter, pending)
