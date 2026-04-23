@@ -60,7 +60,7 @@ def test_dsp_all_exports():
 
 
 def test_utils_lazy_imports():
-    """Verify utils.py uses lazy imports for TTS/STT.
+    """Verify utils.py uses lazy imports for TTS/STT/STS.
 
     Runs in subprocess to avoid interference with other tests.
     """
@@ -69,6 +69,7 @@ import sys
 from mlx_audio.utils import stft
 assert "mlx_audio.tts.utils" not in sys.modules, "TTS utils was imported"
 assert "mlx_audio.stt.utils" not in sys.modules, "STT utils was imported"
+assert "mlx_audio.sts.utils" not in sys.modules, "STS utils was imported"
 print("OK")
 """
     result = subprocess.run(
