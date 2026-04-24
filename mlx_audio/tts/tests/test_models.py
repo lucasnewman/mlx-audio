@@ -3604,6 +3604,224 @@ class TestFishSpeechModel(unittest.TestCase):
         self.assertEqual(config.audio_decoder_config.num_codebooks, 2)
         self.assertEqual(config.semantic_start_token_id, 1000)
 
+    def test_sample_semantic_only_samples_high_temp_when_rejected(self):
+        from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
+
+        config = tiny_config()
+        config.semantic_start_token_id = 10
+        config.semantic_end_token_id = 15
+        model = Model(config)
+        model.semantic_logit_bias = mx.zeros((1, 16), dtype=mx.float32)
+        calls = []
+
+        def fake_sample_logits(logits, temperature, top_p, top_k):
+            calls.append((temperature, top_p, logits.shape[0]))
+            if top_p == 0.9:
+                return mx.array([11], dtype=mx.int32)
+            return mx.array([10], dtype=mx.int32)
+
+        with patch(
+            "mlx_audio.tts.models.fish_qwen3_omni.fish_speech._sample_logits",
+            side_effect=fake_sample_logits,
+        ):
+            accepted = model._sample_semantic(
+                logits=mx.zeros((1, 16), dtype=mx.float32),
+                previous_semantic_tokens=[],
+                top_p=0.7,
+                top_k=0,
+                temperature=0.7,
+            )
+            rejected = model._sample_semantic(
+                logits=mx.zeros((1, 16), dtype=mx.float32),
+                previous_semantic_tokens=[10],
+                top_p=0.7,
+                top_k=0,
+                temperature=0.7,
+            )
+
+        self.assertEqual(accepted.tolist(), [10])
+        self.assertEqual(rejected.tolist(), [11])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0], (0.7, 0.7, 1))
+        self.assertEqual(calls[1], (0.7, 0.7, 1))
+        self.assertEqual(calls[2], (1.0, 0.9, 1))
+
+    def test_sample_semantic_batch_only_resamples_rejected_rows(self):
+        from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
+
+        config = tiny_config()
+        config.semantic_start_token_id = 10
+        config.semantic_end_token_id = 15
+        model = Model(config)
+        model.semantic_logit_bias = mx.zeros((1, 16), dtype=mx.float32)
+        calls = []
+
+        def fake_sample_logits(logits, temperature, top_p, top_k):
+            calls.append((temperature, top_p, logits.shape[0]))
+            if top_p == 0.9:
+                return mx.array([13, 14][: logits.shape[0]], dtype=mx.int32)
+            return mx.array([10, 11, 12][: logits.shape[0]], dtype=mx.int32)
+
+        with patch(
+            "mlx_audio.tts.models.fish_qwen3_omni.fish_speech._sample_logits",
+            side_effect=fake_sample_logits,
+        ):
+            tokens = model._sample_semantic_batch(
+                logits=mx.zeros((3, 16), dtype=mx.float32),
+                previous_semantic_tokens=[[10], [], [12]],
+                top_p=0.7,
+                top_k=0,
+                temperature=0.7,
+            )
+
+        self.assertEqual(tokens.tolist(), [13, 11, 14])
+        self.assertEqual(calls, [(0.7, 0.7, 3), (1.0, 0.9, 2)])
+
+    def test_prepare_batched_prompt_inputs_left_pads_variable_lengths(self):
+        from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
+        from mlx_audio.tts.models.fish_qwen3_omni.prompt import Message, TextPart
+
+        class VariableTokenizer:
+            semantic_begin_id = 1000
+
+            def encode(self, text):
+                return list(range(1, max(1, len(text.split())) + 1))
+
+        model = Model(tiny_config())
+        model.tokenizer = VariableTokenizer()
+
+        short = model._build_conversation([], [])
+        short.append(
+            Message(
+                role="user",
+                parts=[TextPart("short")],
+                add_im_start=True,
+                add_im_end=True,
+            )
+        )
+        long = model._build_conversation([], [])
+        long.append(
+            Message(
+                role="user",
+                parts=[TextPart("this is a much longer prompt")],
+                add_im_start=True,
+                add_im_end=True,
+            )
+        )
+
+        prompt, mask = model._prepare_batched_prompt_inputs([short, long])
+        mx.eval(prompt, mask)
+
+        self.assertEqual(prompt.shape[0], 2)
+        self.assertEqual(prompt.shape[1], model.model.num_codebooks + 1)
+        self.assertEqual(prompt.shape[2], mask.shape[1])
+        self.assertEqual(mask.tolist()[0][0], 0.0)
+        self.assertEqual(mask.tolist()[0][-1], 1.0)
+        self.assertTrue(all(value == 1.0 for value in mask.tolist()[1]))
+
+    def test_batch_generate_yields_sequence_results(self):
+        from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
+
+        model = Model(tiny_config())
+        model.tokenizer = FakeTokenizer()
+        model.codec = object()
+        calls = []
+
+        def fake_generate_codes(**kwargs):
+            calls.append(list(kwargs["batch_texts"]))
+            return [
+                mx.array([[1, 2, 3], [4, 5, 6]], dtype=mx.int32)
+                for _ in kwargs["batch_texts"]
+            ]
+
+        def fake_decode_codes(codes_list):
+            return [
+                mx.ones((codes.shape[1] * 4,), dtype=mx.float32) * (idx + 1)
+                for idx, codes in enumerate(codes_list)
+            ]
+
+        model._generate_codes_for_text_batch = fake_generate_codes
+        model._decode_codes_batch = fake_decode_codes
+
+        results = list(model.batch_generate(["first", "second"], verbose=False))
+
+        self.assertEqual(calls, [["first", "second"]])
+        self.assertEqual([result.sequence_idx for result in results], [0, 1])
+        self.assertEqual([result.token_count for result in results], [3, 3])
+        self.assertEqual([result.samples for result in results], [12, 12])
+
+    def test_generate_codes_for_text_batch_with_tiny_model(self):
+        from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
+        from mlx_audio.tts.models.fish_qwen3_omni.prompt import Message, TextPart
+
+        class TinyTokenizer:
+            semantic_begin_id = 10
+            vocab_size = 32
+
+            def encode(self, text):
+                words = text.split() or [text]
+                return [idx % 20 + 1 for idx, _ in enumerate(words)]
+
+            def get_token_id(self, token):
+                return 2
+
+        config = tiny_config()
+        config.semantic_start_token_id = 10
+        config.semantic_end_token_id = 17
+        model = Model(config)
+        model.tokenizer = TinyTokenizer()
+        semantic_bias = mx.full((1, config.text_config.vocab_size), -1e9)
+        semantic_bias[:, 10:18] = 0.0
+        model.semantic_logit_bias = semantic_bias
+
+        short = model._build_conversation([], [])
+        short.append(
+            Message(
+                role="user",
+                parts=[TextPart("short")],
+                add_im_start=True,
+                add_im_end=True,
+            )
+        )
+        long = model._build_conversation([], [])
+        long.append(
+            Message(
+                role="user",
+                parts=[TextPart("this is longer")],
+                add_im_start=True,
+                add_im_end=True,
+            )
+        )
+
+        codes = model._generate_codes_for_text_batch(
+            conversations=[short, long],
+            batch_texts=["short", "this is longer"],
+            max_new_tokens=1,
+            top_p=1.0,
+            top_k=0,
+            temperature=0.0,
+        )
+
+        self.assertEqual(len(codes), 2)
+        self.assertEqual(tuple(codes[0].shape), (2, 1))
+        self.assertEqual(tuple(codes[1].shape), (2, 1))
+
+    def test_batch_generate_validates_parallel_arg_lengths(self):
+        from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
+
+        model = Model(tiny_config())
+        model.tokenizer = FakeTokenizer()
+        model.codec = object()
+
+        with self.assertRaises(ValueError):
+            list(
+                model.batch_generate(
+                    ["first", "second"],
+                    ref_texts=["only one"],
+                    verbose=False,
+                )
+            )
+
 
 # ---------------------------------------------------------------------------
 # Irodori-TTS helpers
