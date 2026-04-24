@@ -38,6 +38,10 @@ MODEL_REMAPPING = {
     "longcat": "longcat_audiodit",
     "omnivoice": "omnivoice",
     "melotts": "melotts",
+    "moss": "moss_tts_nano",
+    "moss_tts": "moss_tts_nano",
+    "moss-tts-nano": "moss_tts_nano",
+    "moss_tts_nano": "moss_tts_nano",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
@@ -83,6 +87,7 @@ def get_model_and_args(model_type: str, model_name: List[str]) -> Tuple[Any, str
     Raises:
         ValueError: If the model type is not supported (module import fails).
     """
+    model_type = MODEL_REMAPPING.get(model_type, model_type)
     return get_model_class(
         model_type=model_type,
         model_name=model_name,
