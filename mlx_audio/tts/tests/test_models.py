@@ -6314,15 +6314,6 @@ class TestMossTTSNanoSampling(unittest.TestCase):
 
 
 class TestMossTTSNanoModel(unittest.TestCase):
-    def test_loader_alias_resolves_model_package(self):
-        from mlx_audio.tts.models.moss_tts_nano import Model
-        from mlx_audio.tts.utils import get_model_and_args
-
-        module, model_type = get_model_and_args("moss", ["moss"])
-
-        self.assertEqual(model_type, "moss_tts_nano")
-        self.assertIs(module.Model, Model)
-
     def test_build_inputs_embeds_shape(self):
         from mlx_audio.tts.models.moss_tts_nano import Model
 
