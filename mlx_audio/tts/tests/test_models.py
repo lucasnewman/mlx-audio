@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from misaki import en
 
 
 # Create a patch for the deprecated open_text function
@@ -226,13 +225,19 @@ class TestKokoroPipeline(unittest.TestCase):
         from mlx_audio.tts.models.kokoro.pipeline import LANG_CODES, KokoroPipeline
 
         # Mock the G2P class to avoid spacy download during tests
-        with patch("mlx_audio.tts.models.kokoro.pipeline.en.G2P") as mock_g2p:
+        mock_en = SimpleNamespace(G2P=MagicMock())
+        mock_espeak = SimpleNamespace(EspeakFallback=MagicMock())
+        with patch(
+            "mlx_audio.tts.models.kokoro.pipeline._get_misaki_en",
+            return_value=mock_en,
+        ):
             with patch(
-                "mlx_audio.tts.models.kokoro.pipeline.espeak.EspeakFallback"
-            ) as mock_fallback:
+                "mlx_audio.tts.models.kokoro.pipeline._get_misaki_espeak",
+                return_value=mock_espeak,
+            ):
                 mock_model = MagicMock()
-                mock_g2p.return_value = MagicMock()
-                mock_fallback.return_value = MagicMock()
+                mock_en.G2P.return_value = MagicMock()
+                mock_espeak.EspeakFallback.return_value = MagicMock()
 
                 # Initialize with default model
                 pipeline = KokoroPipeline(
@@ -249,6 +254,17 @@ class TestKokoroPipeline(unittest.TestCase):
                 # Initialize with no model
                 pipeline = KokoroPipeline(lang_code="a", model=False, repo_id="mock")
                 self.assertIs(pipeline.model, False)
+
+    def test_init_without_misaki(self):
+        """Test KokoroPipeline raises a targeted install hint when misaki is missing."""
+        from mlx_audio.tts.models.kokoro.pipeline import KokoroPipeline
+
+        with patch(
+            "mlx_audio.tts.models.kokoro.pipeline.importlib.import_module",
+            side_effect=ModuleNotFoundError("No module named 'misaki'"),
+        ):
+            with self.assertRaisesRegex(ImportError, "pip install misaki"):
+                KokoroPipeline(lang_code="a", model=False, repo_id="mock")
 
     def test_load_voice(self):
         """Test load_voice method."""
@@ -304,23 +320,14 @@ class TestKokoroPipeline(unittest.TestCase):
         from mlx_audio.tts.models.kokoro.pipeline import KokoroPipeline
 
         # Create mock tokens with whitespace attribute
-        token1 = MagicMock(spec=en.MToken)
-        token1.ps = "p1"
-        token1.whitespace = " "
-        token1.phonemes = "p1"
-
-        token2 = MagicMock(spec=en.MToken)
-        token2.ps = "p2"
-        token2.whitespace = ""
-        token2.phonemes = "p2"
+        token1 = SimpleNamespace(ps="p1", whitespace=" ", phonemes="p1")
+        token2 = SimpleNamespace(ps="p2", whitespace="", phonemes="p2")
 
         tokens = [token1, token2]
 
         # Test the method
-        with patch.object(KokoroPipeline, "__init__", return_value=None):
-            with patch.object(KokoroPipeline, "tokens_to_ps", return_value="p1 p2"):
-                result = KokoroPipeline.tokens_to_ps(tokens)
-                self.assertEqual(result, "p1 p2")
+        result = KokoroPipeline.tokens_to_ps(tokens)
+        self.assertEqual(result, "p1 p2")
 
     def test_tokens_to_text(self):
         """Test tokens_to_text method."""
@@ -328,23 +335,14 @@ class TestKokoroPipeline(unittest.TestCase):
         from mlx_audio.tts.models.kokoro.pipeline import KokoroPipeline
 
         # Create mock tokens with whitespace attribute
-        token1 = MagicMock(spec=en.MToken)
-        token1.text = "Hello"
-        token1.whitespace = " "
-
-        token2 = MagicMock(spec=en.MToken)
-        token2.text = "world"
-        token2.whitespace = ""
+        token1 = SimpleNamespace(text="Hello", whitespace=" ")
+        token2 = SimpleNamespace(text="world", whitespace="")
 
         tokens = [token1, token2]
 
         # Test the method
-        with patch.object(KokoroPipeline, "__init__", return_value=None):
-            with patch.object(
-                KokoroPipeline, "tokens_to_text", return_value="Hello world"
-            ):
-                result = KokoroPipeline.tokens_to_text(tokens)
-                self.assertEqual(result, "Hello world")
+        result = KokoroPipeline.tokens_to_text(tokens)
+        self.assertEqual(result, "Hello world")
 
     def test_result_dataclass(self):
         """Test KokoroPipeline.Result dataclass."""
@@ -445,6 +443,19 @@ class TestKittenTTSModel(unittest.TestCase):
         self.assertIn("decoder.generator.resblocks.0.alpha1_0", sanitized)
         self.assertIn("decoder.generator.resblocks.0.alpha2_0", sanitized)
         self.assertNotIn("decoder.generator.resblocks.0.alpha1.0", sanitized)
+
+    def test_missing_phonemizer_error(self):
+        from mlx_audio.tts.models.kitten_tts.kitten_tts import Model, ModelConfig
+
+        config = self._config()
+        model = Model(ModelConfig.from_dict(config))
+
+        with patch(
+            "mlx_audio.tts.models.kitten_tts.kitten_tts.importlib.import_module",
+            side_effect=ModuleNotFoundError("No module named 'phonemizer'"),
+        ):
+            with self.assertRaisesRegex(ImportError, "pip install phonemizer-fork"):
+                model._get_phonemizer()
 
 
 class TestBarkModel(unittest.TestCase):
@@ -2557,13 +2568,16 @@ class TestQwen3TTSPrepareICLInputs(unittest.TestCase):
         hidden_size = model.config.talker_config.hidden_size
 
         ref_audio = mx.random.normal((24000,))  # 1s audio
-        input_embeds, trailing, tts_pad, ref_codes = (
-            model._prepare_icl_generation_inputs(
-                text="Hello world",
-                ref_audio=ref_audio,
-                ref_text="Reference text",
-                language="auto",
-            )
+        (
+            input_embeds,
+            trailing,
+            tts_pad,
+            ref_codes,
+        ) = model._prepare_icl_generation_inputs(
+            text="Hello world",
+            ref_audio=ref_audio,
+            ref_text="Reference text",
+            language="auto",
         )
         mx.eval(input_embeds, trailing, tts_pad, ref_codes)
 
@@ -2588,13 +2602,16 @@ class TestQwen3TTSPrepareICLInputs(unittest.TestCase):
         model, ref_time = self._make_model_with_mocks()
 
         ref_audio = mx.random.normal((24000,))
-        input_embeds, trailing, tts_pad, ref_codes = (
-            model._prepare_icl_generation_inputs(
-                text="Hello",
-                ref_audio=ref_audio,
-                ref_text="Ref",
-                language="auto",
-            )
+        (
+            input_embeds,
+            trailing,
+            tts_pad,
+            ref_codes,
+        ) = model._prepare_icl_generation_inputs(
+            text="Hello",
+            ref_audio=ref_audio,
+            ref_text="Ref",
+            language="auto",
         )
         mx.eval(input_embeds)
 
@@ -3617,7 +3634,7 @@ class _FakeDACVAE:
         T = max(1, int(audio_in.shape[1]) // self.downsample_factor)
         return mx.zeros((B, self.latent_dim, T), dtype=mx.float32)
 
-    def decode(self, latent: mx.array) -> mx.array:
+    def decode(self, latent: mx.array, **kwargs) -> mx.array:
         B, _D, T = latent.shape
         return mx.zeros((B, T * self.downsample_factor, 1), dtype=mx.float32)
 
@@ -3913,6 +3930,123 @@ class TestIrodoriGenerateSmoke(unittest.TestCase):
         self.assertGreater(result.token_count, 0)
         self.assertIsNotNone(result.audio_duration)
         self.assertGreater(result.real_time_factor, 0.0)
+
+
+def _small_irodori_dit_config_voicedesign(**overrides):
+    defaults = dict(
+        latent_dim=8,
+        latent_patch_size=1,
+        model_dim=32,
+        num_layers=2,
+        num_heads=4,
+        mlp_ratio=2.0,
+        text_mlp_ratio=2.0,
+        text_vocab_size=64,
+        text_dim=32,
+        text_layers=1,
+        text_heads=4,
+        speaker_dim=32,
+        speaker_layers=1,
+        speaker_heads=4,
+        speaker_patch_size=1,
+        timestep_embed_dim=16,
+        adaln_rank=8,
+        norm_eps=1e-5,
+        use_caption_condition=True,
+        caption_vocab_size=64,
+        caption_dim=32,
+        caption_layers=1,
+        caption_heads=4,
+        caption_mlp_ratio=2.0,
+    )
+    defaults.update(overrides)
+    from mlx_audio.tts.models.irodori_tts.config import IrodoriDiTConfig
+
+    return IrodoriDiTConfig(**defaults)
+
+
+def _small_irodori_model_config_voicedesign(**sampler_overrides):
+    from mlx_audio.tts.models.irodori_tts.config import ModelConfig, SamplerConfig
+
+    sampler_defaults = dict(
+        num_steps=1,
+        cfg_scale_text=1.0,
+        cfg_scale_caption=1.0,
+        sequence_length=4,
+    )
+    sampler_defaults.update(sampler_overrides)
+    return ModelConfig(
+        dit=_small_irodori_dit_config_voicedesign(),
+        sampler=SamplerConfig(**sampler_defaults),
+    )
+
+
+class TestIrodoriVoiceDesignShapes(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        self.cfg = _small_irodori_dit_config_voicedesign()
+        self.model = IrodoriDiT(self.cfg)
+
+    def test_forward_shape(self):
+        B, S = 1, 6
+        x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
+        t = mx.array([0.5], dtype=mx.float32)
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        caption_ids = mx.zeros((B, 5), dtype=mx.int32)
+        caption_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        text_state, text_mask_out, ctx_state, ctx_mask = self.model.encode_conditions(
+            text_ids,
+            text_mask,
+            caption_input_ids=caption_ids,
+            caption_mask=caption_mask,
+        )
+        out = self.model.forward_with_conditions(
+            x_t,
+            t,
+            text_state,
+            text_mask_out,
+            ctx_state,
+            ctx_mask,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
+
+
+class TestIrodoriVoiceDesignGenerate(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_voicedesign()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        model._caption_tokenizer = _MockTokenizer()
+        return model
+
+    def test_generate_with_caption(self):
+        model = self._make_model()
+        results = list(model.generate("こんにちは", caption="穏やかな声", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_with_instruct_alias(self):
+        model = self._make_model()
+        results = list(model.generate("こんにちは", instruct="明るい声", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_instruct_takes_priority_over_none_caption(self):
+        model = self._make_model()
+        # instruct should be used when caption is not provided
+        results = list(model.generate("テスト", instruct="低い声", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
 
 
 class TestKugelAudioModel(unittest.TestCase):
@@ -4845,6 +4979,34 @@ class TestOmniVoiceGenerate(unittest.TestCase):
 
 
 class TestOmniVoiceCloneUtils(unittest.TestCase):
+    def test_remove_silence_matches_omnivoice_gap_policy(self):
+        from mlx_audio.tts.models.omnivoice.utils import _remove_silence
+
+        sr = 24000
+        tone = np.full(int(0.3 * sr), 0.2, dtype=np.float32)
+        silence = np.zeros(int(0.5 * sr), dtype=np.float32)
+        long_gap = np.zeros(int(1.2 * sr), dtype=np.float32)
+        audio = np.concatenate([silence, tone, long_gap, tone, silence])
+
+        trimmed = _remove_silence(audio, sr)
+
+        self.assertEqual(trimmed.dtype, np.float32)
+        self.assertEqual(len(trimmed), int(1.6 * sr))
+
+    def test_trim_long_audio_splits_at_last_gap_before_max_duration(self):
+        from mlx_audio.tts.models.omnivoice.utils import _trim_long_audio
+
+        sr = 24000
+        first = np.full(10 * sr, 0.2, dtype=np.float32)
+        gap = np.zeros(1 * sr, dtype=np.float32)
+        second = np.full(10 * sr, 0.2, dtype=np.float32)
+        audio = np.concatenate([first, gap, second])
+
+        trimmed = _trim_long_audio(audio, sr)
+
+        self.assertEqual(trimmed.dtype, np.float32)
+        self.assertEqual(len(trimmed), 11 * sr)
+
     def test_no_tokenizer_returns_empty(self):
         from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
 
@@ -4865,8 +5027,7 @@ class TestOmniVoiceCloneUtils(unittest.TestCase):
         import os
         import tempfile
 
-        import soundfile as sf
-
+        from mlx_audio.audio_io import write as audio_write
         from mlx_audio.codec.models.higgs_audio.config import HiggsAudioConfig
         from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
         from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
@@ -4879,7 +5040,7 @@ class TestOmniVoiceCloneUtils(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp_path = f.name
         audio = np.zeros(24000 * 2, dtype=np.float32)
-        sf.write(tmp_path, audio, 24000)
+        audio_write(tmp_path, audio, 24000)
         result = create_voice_clone_prompt(tmp_path, tokenizer=tok)
         self.assertEqual(result.ndim, 2)
         self.assertEqual(result.shape[1], 8)
