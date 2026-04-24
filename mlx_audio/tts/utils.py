@@ -38,9 +38,6 @@ MODEL_REMAPPING = {
     "longcat": "longcat_audiodit",
     "omnivoice": "omnivoice",
     "melotts": "melotts",
-    "moss": "moss_tts_nano",
-    "moss_tts": "moss_tts_nano",
-    "moss-tts-nano": "moss_tts_nano",
     "moss_tts_nano": "moss_tts_nano",
 }
 MAX_FILE_SIZE_GB = 5
