@@ -84,7 +84,6 @@ def get_model_and_args(model_type: str, model_name: List[str]) -> Tuple[Any, str
     Raises:
         ValueError: If the model type is not supported (module import fails).
     """
-    model_type = MODEL_REMAPPING.get(model_type, model_type)
     return get_model_class(
         model_type=model_type,
         model_name=model_name,
