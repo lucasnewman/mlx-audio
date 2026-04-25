@@ -713,6 +713,8 @@ class Model(nn.Module):
             )
             previous_codebooks = semantic_code[:, None]
             fast_cache = self.model.make_fast_cache()
+            fast_prefill = self.model.fast_forward_cached(hidden_state, fast_cache)
+            mx.async_eval(fast_prefill)
             fast_hidden = self.model.fast_embeddings(semantic_code)
 
             for _ in range(self.model.num_codebooks - 1):
@@ -762,11 +764,10 @@ class Model(nn.Module):
             return []
 
         prompt, attention_mask = self._prepare_batched_prompt_inputs(conversations)
-        mx.async_eval(prompt, attention_mask)
-
         cache = self.model.make_cache()
         result = self.model(prompt, cache=cache, attention_mask=attention_mask)
         logits = result.logits[:, -1]
+        hidden_state = result.hidden_states[:, -1]
 
         previous_semantic_tokens: list[list[int]] = [[] for _ in range(batch_size)]
         generated_steps: list[list[mx.array]] = [[] for _ in range(batch_size)]
@@ -823,6 +824,8 @@ class Model(nn.Module):
             previous_codebooks = semantic_code[:, None]
 
             fast_cache = self.model.make_fast_cache()
+            fast_prefill = self.model.fast_forward_cached(hidden_state, fast_cache)
+            mx.async_eval(fast_prefill)
             fast_hidden = self.model.fast_embeddings(semantic_code)
 
             for _ in range(self.model.num_codebooks - 1):
@@ -843,7 +846,6 @@ class Model(nn.Module):
                 )
                 fast_hidden = self.model.fast_embeddings(residual_token)
 
-            mx.async_eval(previous_codebooks)
             for idx, keep_generating in enumerate(should_continue):
                 if not keep_generating:
                     continue
@@ -869,6 +871,7 @@ class Model(nn.Module):
                 attention_mask=attention_mask,
             )
             logits = next_result.logits[:, -1]
+            hidden_state = next_result.hidden_states[:, -1]
 
             if all(finished):
                 break
