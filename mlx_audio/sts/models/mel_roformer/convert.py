@@ -173,9 +173,32 @@ def _sha256_of_file(path: Path, chunk_size: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
-def _content_addressed_name(input_path: Path, digest_hex: str) -> str:
-    """Build the output basename: `<input_stem>.<hash[:8]>`."""
-    return f"{input_path.stem}.{digest_hex[:8]}"
+def _content_addressed_name(input_path: Path, digest_hex: str, dtype: str) -> str:
+    """Build the output basename: `<input_stem>.<hash[:8]>.<dtype>`.
+
+    Including ``dtype`` in the basename keeps fp32 / fp16 / bf16 conversions of
+    the same source from colliding when re-run with different precisions.
+    """
+    return f"{input_path.stem}.{digest_hex[:8]}.{dtype}"
+
+
+def _resolve_dtype(name: str):
+    """Resolve a dtype string to an MLX dtype.
+
+    Imported lazily so the module loads without MLX.
+    """
+    import mlx.core as mx
+
+    table = {
+        "float32": mx.float32,
+        "float16": mx.float16,
+        "bfloat16": mx.bfloat16,
+    }
+    if name not in table:
+        raise ValueError(
+            f"Unknown dtype '{name}'. Choose one of: {sorted(table.keys())}."
+        )
+    return table[name]
 
 
 # ---------- Config resolution ----------
@@ -210,6 +233,7 @@ def convert_checkpoint(
     output_dir: Path,
     config: Optional[MelRoFormerConfig] = None,
     force: bool = False,
+    dtype: str = "float32",
     print_fn=print,
 ) -> tuple:
     """Convert a PyTorch Mel-Band-RoFormer checkpoint to MLX safetensors.
@@ -220,6 +244,11 @@ def convert_checkpoint(
         config: Optional MelRoFormerConfig to freeze alongside the weights.
                 If None, no companion config.json is written.
         force: Overwrite existing output even if hashes match.
+        dtype: MLX output dtype — one of ``"float32"`` (default), ``"float16"``,
+               or ``"bfloat16"``. Mel-Band-RoFormer separation parity holds
+               down to bf16 for vocal stems; fp16 has marginally less dynamic
+               range. Use bf16 for HuggingFace redistribution (smaller files,
+               wider range than fp16).
         print_fn: Callable for diagnostics (defaults to builtin print).
 
     Returns:
@@ -244,9 +273,10 @@ def convert_checkpoint(
     # Content-addressed output path
     print_fn(f"Hashing input file: {input_path}")
     digest = _sha256_of_file(input_path)
-    base = _content_addressed_name(input_path, digest)
+    base = _content_addressed_name(input_path, digest, dtype)
     weights_path = output_dir / f"{base}.safetensors"
     config_path = output_dir / f"{base}.config.json"
+    print_fn(f"Output dtype: {dtype}")
 
     if weights_path.exists() and not force:
         print_fn(f"✓ Output already exists: {weights_path}")
@@ -290,6 +320,7 @@ def convert_checkpoint(
     # Convert + split QKV
     mlx_weights: Dict[str, mx.array] = {}
     qkv_splits = 0
+    mlx_dtype = _resolve_dtype(dtype)
 
     for key, tensor in filtered.items():
         if hasattr(tensor, "detach"):
@@ -301,11 +332,11 @@ def convert_checkpoint(
             qkv_splits += 1
             prefix = key[: -len("to_qkv.weight")]
             third = arr.shape[0] // 3
-            mlx_weights[f"{prefix}to_q.weight"] = mx.array(arr[:third])
-            mlx_weights[f"{prefix}to_k.weight"] = mx.array(arr[third : 2 * third])
-            mlx_weights[f"{prefix}to_v.weight"] = mx.array(arr[2 * third :])
+            mlx_weights[f"{prefix}to_q.weight"] = mx.array(arr[:third]).astype(mlx_dtype)
+            mlx_weights[f"{prefix}to_k.weight"] = mx.array(arr[third : 2 * third]).astype(mlx_dtype)
+            mlx_weights[f"{prefix}to_v.weight"] = mx.array(arr[2 * third :]).astype(mlx_dtype)
         else:
-            mlx_weights[key] = mx.array(arr)
+            mlx_weights[key] = mx.array(arr).astype(mlx_dtype)
 
     if qkv_splits > 0:
         print_fn(
@@ -326,6 +357,7 @@ def convert_checkpoint(
         config_dict = _config_to_dict(config)
         config_dict["_source_input"] = str(input_path.name)
         config_dict["_source_sha256"] = digest
+        config_dict["_dtype"] = dtype
         config_path.write_text(json.dumps(config_dict, indent=2))
         print_fn(f"✓ Wrote {config_path}")
         written_config_path = config_path
@@ -376,6 +408,17 @@ def main():
     parser.add_argument(
         "--force", action="store_true", help="Re-convert even if output exists"
     )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="float32",
+        choices=["float32", "float16", "bfloat16"],
+        help=(
+            "Output MLX dtype (default: float32). Use 'bfloat16' for "
+            "HuggingFace redistribution — smaller file, wider dynamic range "
+            "than fp16, parity-tested for vocal separation."
+        ),
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -400,7 +443,13 @@ def main():
         )
 
     try:
-        convert_checkpoint(input_path, output_dir, config=config, force=args.force)
+        convert_checkpoint(
+            input_path,
+            output_dir,
+            config=config,
+            force=args.force,
+            dtype=args.dtype,
+        )
     except Exception as e:
         print(f"Conversion failed: {e}", file=sys.stderr)
         import traceback
