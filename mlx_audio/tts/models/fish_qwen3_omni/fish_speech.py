@@ -503,7 +503,6 @@ class Model(nn.Module):
             if audio.shape[1] != 1:
                 audio = mx.mean(audio, axis=1, keepdims=True)
             indices, feature_lengths = self.codec.encode(audio)
-            mx.eval(indices, feature_lengths)
             prompt_length = int(feature_lengths[0].item())
             prompt_tokens.append(indices[0, :, :prompt_length])
             prompt_texts.append(ref_text or "")
@@ -533,7 +532,6 @@ class Model(nn.Module):
         normal = _sample_logits(
             biased_logits, temperature=temperature, top_p=top_p, top_k=top_k
         )
-        mx.eval(normal)
 
         token_value = int(normal[0].item())
         should_use_high = (
@@ -551,7 +549,6 @@ class Model(nn.Module):
             top_p=RAS_HIGH_TOP_P,
             top_k=top_k,
         )
-        mx.eval(high_temp)
         return high_temp
 
     def _sample_semantic_batch(
@@ -569,7 +566,6 @@ class Model(nn.Module):
         normal = _sample_logits(
             biased_logits, temperature=temperature, top_p=top_p, top_k=top_k
         )
-        mx.eval(normal)
 
         normal_tokens = normal.tolist()
         if not isinstance(normal_tokens, list):
@@ -597,7 +593,6 @@ class Model(nn.Module):
             top_p=RAS_HIGH_TOP_P,
             top_k=top_k,
         )
-        mx.eval(high_temp)
 
         high_tokens = high_temp.tolist()
         if not isinstance(high_tokens, list):
@@ -703,7 +698,6 @@ class Model(nn.Module):
                 top_k=top_k,
                 temperature=temperature,
             )
-            mx.eval(semantic_token)
             semantic_token_id = int(semantic_token[0].item())
             if semantic_token_id == im_end_id:
                 break
@@ -719,8 +713,6 @@ class Model(nn.Module):
             )
             previous_codebooks = semantic_code[:, None]
             fast_cache = self.model.make_fast_cache()
-            fast_prefill = self.model.fast_forward_cached(hidden_state, fast_cache)
-            mx.eval(fast_prefill)
             fast_hidden = self.model.fast_embeddings(semantic_code)
 
             for _ in range(self.model.num_codebooks - 1):
@@ -733,7 +725,6 @@ class Model(nn.Module):
                     top_p=top_p,
                     top_k=top_k,
                 )
-                mx.eval(residual_token)
                 previous_codebooks = mx.concatenate(
                     [previous_codebooks, residual_token[:, None]], axis=1
                 )
@@ -746,7 +737,6 @@ class Model(nn.Module):
             )
             next_result = self.model(next_input[:, :, None], cache=cache)
             logits = next_result.logits[:, -1]
-            hidden_state = next_result.hidden_states[:, -1]
 
         if not generated_steps:
             raise RuntimeError(
@@ -772,12 +762,11 @@ class Model(nn.Module):
             return []
 
         prompt, attention_mask = self._prepare_batched_prompt_inputs(conversations)
-        mx.eval(prompt, attention_mask)
+        mx.async_eval(prompt, attention_mask)
 
         cache = self.model.make_cache()
         result = self.model(prompt, cache=cache, attention_mask=attention_mask)
         logits = result.logits[:, -1]
-        hidden_state = result.hidden_states[:, -1]
 
         previous_semantic_tokens: list[list[int]] = [[] for _ in range(batch_size)]
         generated_steps: list[list[mx.array]] = [[] for _ in range(batch_size)]
@@ -807,7 +796,6 @@ class Model(nn.Module):
             )
             active_mask = mx.array(active, dtype=mx.bool_)
             semantic_token = mx.where(active_mask, sampled_semantic, im_end_tokens)
-            mx.eval(semantic_token)
 
             semantic_token_ids = semantic_token.tolist()
             if not isinstance(semantic_token_ids, list):
@@ -835,8 +823,6 @@ class Model(nn.Module):
             previous_codebooks = semantic_code[:, None]
 
             fast_cache = self.model.make_fast_cache()
-            fast_prefill = self.model.fast_forward_cached(hidden_state, fast_cache)
-            mx.eval(fast_prefill)
             fast_hidden = self.model.fast_embeddings(semantic_code)
 
             for _ in range(self.model.num_codebooks - 1):
@@ -852,13 +838,12 @@ class Model(nn.Module):
                 residual_token = mx.where(
                     continue_mask, residual_token, mx.zeros_like(residual_token)
                 )
-                mx.eval(residual_token)
                 previous_codebooks = mx.concatenate(
                     [previous_codebooks, residual_token[:, None]], axis=1
                 )
                 fast_hidden = self.model.fast_embeddings(residual_token)
 
-            mx.eval(previous_codebooks)
+            mx.async_eval(previous_codebooks)
             for idx, keep_generating in enumerate(should_continue):
                 if not keep_generating:
                     continue
@@ -884,8 +869,6 @@ class Model(nn.Module):
                 attention_mask=attention_mask,
             )
             logits = next_result.logits[:, -1]
-            hidden_state = next_result.hidden_states[:, -1]
-            mx.eval(logits, hidden_state)
 
             if all(finished):
                 break
@@ -936,7 +919,7 @@ class Model(nn.Module):
         batch_codes = mx.concatenate(padded_codes, axis=0)
         lengths = mx.array(feature_lengths, dtype=mx.int32)
         audio, audio_lengths = self.codec.decode(batch_codes, lengths)
-        mx.eval(audio, audio_lengths)
+        mx.async_eval(audio)
 
         decoded = []
         for idx in range(len(codes_list)):
@@ -1000,7 +983,7 @@ class Model(nn.Module):
             audio = self._decode_codes(codes)
             if abs(speed - 1.0) > 1e-6:
                 audio = _adjust_speed(audio, speed)
-            mx.eval(audio, codes)
+            mx.async_eval(audio)
 
             conversation.append(
                 Message(
@@ -1147,7 +1130,7 @@ class Model(nn.Module):
             for state, codes, audio in zip(active_states, codes_list, audio_list):
                 if abs(speed - 1.0) > 1e-6:
                     audio = _adjust_speed(audio, speed)
-                mx.eval(audio, codes)
+                mx.async_eval(audio)
 
                 state["conversation"].append(
                     Message(
