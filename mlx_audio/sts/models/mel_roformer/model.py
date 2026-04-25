@@ -77,19 +77,21 @@ class MelFilterbank:
     def _build_mel_filterbank(self) -> np.ndarray:
         """Build the ZFTurbo-style binarized mel filterbank.
 
-        Matches ZFTurbo/MSS-Training exactly: uses ``librosa.filters.mel`` to
-        build the Slaney-style triangular filterbank, force-assigns the DC bin
-        to band 0 and the Nyquist bin to the last band (librosa otherwise
-        leaves them zero, which breaks the "every freq covered" invariant),
-        then binarizes.
+        Matches ZFTurbo/MSS-Training exactly: builds the Slaney-style
+        triangular filterbank via :func:`mlx_audio.dsp.mel_filters`, force-
+        assigns the DC bin to band 0 and the Nyquist bin to the last band
+        (the underlying triangular filters otherwise leave them zero, which
+        breaks the "every freq covered" invariant), then binarizes.
         """
-        import librosa
+        from mlx_audio.dsp import mel_filters
 
         sr = self.config.sample_rate
         n_fft = self.config.n_fft
         n_mels = self.config.num_bands
 
-        fb = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels).astype(np.float32)
+        # dsp.mel_filters returns shape [n_mels, freq_bins] — same orientation
+        # as librosa.filters.mel — so this drops in place.
+        fb = np.asarray(mel_filters(sample_rate=sr, n_fft=n_fft, n_mels=n_mels, mel_scale="slaney")).astype(np.float32)
         fb[0, 0] = 1.0
         fb[-1, -1] = 1.0
         return (fb > 0).astype(np.float32)
@@ -427,6 +429,11 @@ class MaskEstimator(nn.Module):
 def stft(audio: mx.array, n_fft: int, hop_length: int, window: mx.array) -> tuple:
     """Short-time Fourier Transform.
 
+    Thin batched/multichannel adapter over :func:`mlx_audio.dsp.stft` which
+    operates on 1D input. We loop over the ``[B, channels]`` axes, call the
+    shared dsp implementation per signal, then reshape into the
+    ``[B, channels, freq_bins, frames]`` layout the BandSplit consumes.
+
     Args:
         audio: [B, channels, samples]
         n_fft: FFT size
@@ -436,40 +443,30 @@ def stft(audio: mx.array, n_fft: int, hop_length: int, window: mx.array) -> tupl
     Returns:
         (real, imag) each [B, channels, freq_bins, frames]
     """
-    B, C, N = audio.shape
-    pad = n_fft // 2
-    # Reflect-pad to match torch.stft(center=True) default pad_mode="reflect".
-    # MLX pad only supports constant/edge, so build the reflection explicitly.
-    left = audio[..., pad:0:-1]
-    right = audio[..., -2 : -pad - 2 : -1]
-    audio_padded = mx.concatenate([left, audio, right], axis=-1)
+    from mlx_audio.dsp import stft as _stft
 
-    # Extract frames
-    N_padded = audio_padded.shape[2]
-    num_frames = (N_padded - n_fft) // hop_length + 1
+    B, C, _ = audio.shape
 
-    # Reshape for frame extraction: [B*C, N_padded]
-    flat = audio_padded.reshape(B * C, -1)
+    spectra = []
+    for b in range(B):
+        for c in range(C):
+            spectra.append(
+                _stft(
+                    audio[b, c],
+                    n_fft=n_fft,
+                    hop_length=hop_length,
+                    win_length=n_fft,
+                    window=window,
+                    center=True,
+                    pad_mode="reflect",
+                )
+            )
+    # Each entry: [num_frames, freq_bins] complex.
+    stacked = mx.stack(spectra, axis=0)  # [B*C, num_frames, freq_bins]
+    num_frames = stacked.shape[1]
 
-    frames = []
-    for t in range(num_frames):
-        start = t * hop_length
-        frame = flat[:, start : start + n_fft]
-        frames.append(frame)
-
-    # Stack: [B*C, num_frames, n_fft]
-    frames = mx.stack(frames, axis=1)
-
-    # Apply window
-    frames = frames * window
-
-    # FFT (real FFT on last axis)
-    spectrum = mx.fft.rfft(frames)  # [B*C, num_frames, freq_bins] complex
-
-    # Extract real and imaginary
-    real = spectrum.real.reshape(B, C, num_frames, -1).transpose(0, 1, 3, 2)
-    imag = spectrum.imag.reshape(B, C, num_frames, -1).transpose(0, 1, 3, 2)
-
+    real = stacked.real.reshape(B, C, num_frames, -1).transpose(0, 1, 3, 2)
+    imag = stacked.imag.reshape(B, C, num_frames, -1).transpose(0, 1, 3, 2)
     return real, imag
 
 
@@ -483,6 +480,10 @@ def istft(
 ) -> mx.array:
     """Inverse Short-time Fourier Transform via overlap-add.
 
+    Thin batched/multichannel adapter over :func:`mlx_audio.dsp.istft`
+    (which operates on a single ``[freq_bins, num_frames]`` complex
+    spectrum). We loop over the ``[B, channels]`` axes and stack.
+
     Args:
         real: [B, channels, freq_bins, frames]
         imag: [B, channels, freq_bins, frames]
@@ -494,38 +495,44 @@ def istft(
     Returns:
         [B, channels, samples]
     """
-    B, C, F, T = real.shape
-    pad = n_fft // 2
+    from mlx_audio.dsp import istft as _istft
 
-    # Reconstruct complex spectrum: [B*C, T, F]
-    spectrum = (real + 1j * imag).transpose(0, 1, 3, 2).reshape(B * C, T, F)
+    B, C, _, _ = real.shape
 
-    # Inverse FFT: [B*C, T, n_fft]
-    frames = mx.fft.irfft(spectrum, n=n_fft)
+    # Reconstruct complex spectrum and split per-(batch, channel) pair.
+    complex_spectra = real + 1j * imag  # [B, C, freq_bins, frames]
 
-    # Apply window
-    frames = frames * window
+    # Note on dsp.istft args: pass ``length=None`` (not the target length)
+    # because that branch correctly strips the center-pad; passing the target
+    # length skips center-pad removal and shifts the reconstruction by
+    # ``win_length // 2``. We trim to ``length`` ourselves below. Use
+    # ``normalized=True`` for COLA-style ``window**2`` normalization, matching
+    # PyTorch's ``torch.istft`` default.
+    waveforms = []
+    for b in range(B):
+        for c in range(C):
+            recon = _istft(
+                complex_spectra[b, c],
+                hop_length=hop_length,
+                win_length=n_fft,
+                window=window,
+                center=True,
+                length=None,
+                normalized=True,
+            )
+            # dsp.istft's center-strip can leave the output a few samples
+            # short of ``length`` when the chunk size isn't an integer
+            # multiple of hop_length (e.g. ZFTurbo's 352800-sample chunks at
+            # hop=512). Pad to length with zeros — those tail samples lived
+            # in the center-pad region originally and aren't load-bearing.
+            if recon.shape[0] < length:
+                recon = mx.concatenate(
+                    [recon, mx.zeros((length - recon.shape[0],), dtype=recon.dtype)]
+                )
+            waveforms.append(recon[:length])
 
-    # Overlap-add
-    output_len = (T - 1) * hop_length + n_fft
-    output = mx.zeros((B * C, output_len))
-    window_sum = mx.zeros((1, output_len))
-
-    w2 = window * window
-    for t_idx in range(T):
-        start = t_idx * hop_length
-        output = output.at[:, start : start + n_fft].add(frames[:, t_idx, :])
-        window_sum = window_sum.at[:, start : start + n_fft].add(w2)
-
-    # Normalize by window sum
-    window_sum = mx.maximum(window_sum, 1e-8)
-    output = output / window_sum
-
-    # Remove center padding and trim
-    output = output[:, pad : pad + length]
-    output = output.reshape(B, C, -1)
-
-    return output
+    out = mx.stack(waveforms, axis=0).reshape(B, C, length)
+    return out
 
 
 # ---------- Main Model ----------

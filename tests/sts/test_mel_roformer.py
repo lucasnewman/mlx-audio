@@ -238,8 +238,13 @@ class TestContentAddressing:
         input_path = tmp_path / "my_checkpoint.ckpt"
         digest = "abc123def456" + "0" * 52  # 64-char hex
 
-        name = _content_addressed_name(input_path, digest)
-        assert name == "my_checkpoint.abc123de"
+        # Dtype is included so multi-precision conversions of the same source
+        # don't collide.
+        name = _content_addressed_name(input_path, digest, "bfloat16")
+        assert name == "my_checkpoint.abc123de.bfloat16"
+
+        name_fp32 = _content_addressed_name(input_path, digest, "float32")
+        assert name_fp32 == "my_checkpoint.abc123de.float32"
 
     def test_sha256_of_file(self, tmp_path):
         from mlx_audio.sts.models.mel_roformer.convert import _sha256_of_file
