@@ -471,5 +471,122 @@ class TestReferenceCache(unittest.TestCase):
         self.assertEqual(info["mode"], "smart_voice")
 
 
+class TestStreamingAPIContract(unittest.TestCase):
+    """``Model.generate(stream=True)`` is the framework path that must remain
+    consistent across all TTS models — verified at the signature level so the
+    streaming kwargs aren't silently swallowed by ``**kwargs``."""
+
+    def test_model_generate_exposes_streaming_kwargs(self):
+        import inspect
+
+        from mlx_audio.tts.models.higgs_audio import Model
+
+        sig = inspect.signature(Model.generate)
+        for name in ("stream", "streaming_interval", "overlap_ms"):
+            self.assertIn(
+                name,
+                sig.parameters,
+                f"{name} must be a named parameter of Model.generate",
+            )
+        # stream defaults to False so non-streaming callers see no behavior change.
+        self.assertEqual(sig.parameters["stream"].default, False)
+
+    def test_iter_overlap_add_pcm_is_public_helper(self):
+        """The overlap-add streaming algorithm must live as a module-level
+        helper so ``Model.generate(stream=True)`` and
+        ``HiggsAudioServer.generate_stream_overlap_add`` share one
+        implementation."""
+        from mlx_audio.tts.models.higgs_audio.serve import iter_overlap_add_pcm
+
+        self.assertTrue(callable(iter_overlap_add_pcm))
+
+    def test_model_generate_stream_true_requires_loaded_codec(self):
+        """Same load-guard as the non-streaming path — calling generate before
+        post_load_hook must raise, not silently produce empty chunks."""
+        from mlx_audio.tts.models.higgs_audio import Model
+
+        cfg = _tiny_config()
+        model = Model(cfg)
+        with self.assertRaises(RuntimeError):
+            next(iter(model.generate("hello", stream=True)))
+
+
+class _FakeDecodingCodec:
+    """Minimal codec stub for streaming tests: ``decode([T, K]) → mx.array``
+    with deterministic non-zero PCM so chunks are observable."""
+
+    def __init__(self, samples_per_frame: int = 96):
+        self._spf = samples_per_frame
+
+    def decode(self, codes_TK: mx.array) -> mx.array:
+        T = codes_TK.shape[0]
+        # Position-indexed ramp so successive decodes differ in the right tail
+        # — exercises the crossfade path rather than reducing it to a no-op.
+        ramp = mx.arange(T * self._spf, dtype=mx.float32) * 1e-4
+        return ramp.reshape(1, -1, 1)
+
+
+class TestStreamingIntegration(unittest.TestCase):
+    """End-to-end exercise of ``iter_overlap_add_pcm`` with tiny weights and a
+    fake codec. Verifies the streaming loop terminates with ``is_final=True``,
+    yields at least one chunk, and produces float32 1-D PCM."""
+
+    def _tiny_setup(self):
+        from mlx_audio.tts.models.higgs_audio.higgs_audio import HiggsAudioModel
+
+        cfg = _tiny_config()
+        model = HiggsAudioModel(cfg)
+        mx.eval(model.parameters())
+        codec = _FakeDecodingCodec(samples_per_frame=96)
+
+        # Minimal valid prefill inputs — content doesn't matter, only shape.
+        T_prompt = 4
+        full_embeds = mx.zeros((1, T_prompt, cfg.text_config.hidden_size))
+        audio_out_mask = mx.zeros((1, T_prompt), dtype=mx.bool_)
+        return cfg, model, codec, full_embeds, audio_out_mask
+
+    def test_streaming_terminates_with_final_chunk(self):
+        from mlx_audio.tts.models.higgs_audio.serve import iter_overlap_add_pcm
+
+        cfg, model, codec, full_embeds, audio_out_mask = self._tiny_setup()
+        chunks = list(
+            iter_overlap_add_pcm(
+                model=model,
+                codec=codec,
+                config=cfg,
+                full_embeds=full_embeds,
+                audio_out_mask=audio_out_mask,
+                max_new_frames=20,
+                temperature=0.0,
+                top_p=None,
+                top_k=None,
+                ras_win_len=None,
+                ras_max_repeat=2,
+                sampling_warmup_frames=20,  # full greedy → deterministic
+                emit_every_frames=4,
+                overlap_ms=4.0,
+                fade_in_ms=1.0,
+                fade_out_ms=1.0,
+                sample_rate=24000,
+            )
+        )
+
+        self.assertGreater(len(chunks), 0, "streaming must yield at least one chunk")
+        # Exactly one chunk should be marked final, and it must be the last.
+        finals = [i for i, (_, meta) in enumerate(chunks) if meta["is_final"]]
+        self.assertEqual(finals, [len(chunks) - 1])
+
+        for pcm, meta in chunks:
+            self.assertEqual(pcm.dtype, np.float32)
+            self.assertEqual(pcm.ndim, 1)
+            self.assertGreater(pcm.size, 0)
+            self.assertIn("frames_total", meta)
+
+        # frames_total is monotonically non-decreasing (each yield reflects
+        # cumulative generation progress).
+        totals = [m["frames_total"] for _, m in chunks]
+        self.assertEqual(totals, sorted(totals))
+
+
 if __name__ == "__main__":
     unittest.main()
