@@ -332,9 +332,15 @@ def convert_checkpoint(
             qkv_splits += 1
             prefix = key[: -len("to_qkv.weight")]
             third = arr.shape[0] // 3
-            mlx_weights[f"{prefix}to_q.weight"] = mx.array(arr[:third]).astype(mlx_dtype)
-            mlx_weights[f"{prefix}to_k.weight"] = mx.array(arr[third : 2 * third]).astype(mlx_dtype)
-            mlx_weights[f"{prefix}to_v.weight"] = mx.array(arr[2 * third :]).astype(mlx_dtype)
+            mlx_weights[f"{prefix}to_q.weight"] = mx.array(arr[:third]).astype(
+                mlx_dtype
+            )
+            mlx_weights[f"{prefix}to_k.weight"] = mx.array(
+                arr[third : 2 * third]
+            ).astype(mlx_dtype)
+            mlx_weights[f"{prefix}to_v.weight"] = mx.array(arr[2 * third :]).astype(
+                mlx_dtype
+            )
         else:
             mlx_weights[key] = mx.array(arr).astype(mlx_dtype)
 

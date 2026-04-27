@@ -91,7 +91,9 @@ class MelFilterbank:
 
         # dsp.mel_filters returns shape [n_mels, freq_bins] — same orientation
         # as librosa.filters.mel — so this drops in place.
-        fb = np.asarray(mel_filters(sample_rate=sr, n_fft=n_fft, n_mels=n_mels, mel_scale="slaney")).astype(np.float32)
+        fb = np.asarray(
+            mel_filters(sample_rate=sr, n_fft=n_fft, n_mels=n_mels, mel_scale="slaney")
+        ).astype(np.float32)
         fb[0, 0] = 1.0
         fb[-1, -1] = 1.0
         return (fb > 0).astype(np.float32)
