@@ -1754,6 +1754,15 @@ def main():
         action="store_true",
         help="Start the server for /v1/realtime usage.",
     )
+    parser.add_argument(
+        "--tts-max-batch-size",
+        type=int,
+        default=None,
+        help=(
+            "Maximum compatible TTS speech requests per continuous batch session. "
+            "Overrides $MLX_AUDIO_TTS_MAX_BATCH_SIZE."
+        ),
+    )
 
     args = parser.parse_args()
     if args.realtime_model:
@@ -1762,6 +1771,8 @@ def main():
         os.environ["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"] = str(
             args.realtime_transcription_delay_ms
         )
+    if args.tts_max_batch_size is not None:
+        os.environ["MLX_AUDIO_TTS_MAX_BATCH_SIZE"] = str(args.tts_max_batch_size)
 
     setup_cors(app, args.allowed_origins)
 
