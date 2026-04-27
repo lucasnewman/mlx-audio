@@ -73,7 +73,22 @@ class ModelExecutionAdapter(Protocol):
 
     def supports_continuous_batch(self, request: InferenceRequest) -> bool: ...
 
-    def run_continuous(self, request: InferenceRequest) -> None: ...
+    def continuous_batch_key(self, request: InferenceRequest) -> Any: ...
+
+    def create_continuous_batch_session(
+        self, request: InferenceRequest
+    ) -> "ContinuousBatchSession": ...
+
+
+class ContinuousBatchSession(Protocol):
+    @property
+    def idle(self) -> bool: ...
+
+    def submit(self, request: InferenceRequest) -> None: ...
+
+    def step(self) -> None: ...
+
+    def fail(self, error: BaseException) -> None: ...
 
 
 class BaseModelExecutionAdapter:
@@ -99,8 +114,14 @@ class BaseModelExecutionAdapter:
         del request
         return False
 
-    def run_continuous(self, request: InferenceRequest) -> None:
-        self.run_serial(request)
+    def continuous_batch_key(self, request: InferenceRequest) -> Any:
+        return self.batch_key(request)
+
+    def create_continuous_batch_session(
+        self, request: InferenceRequest
+    ) -> ContinuousBatchSession:
+        del request
+        raise NotImplementedError
 
 
 class InferenceBroker:
@@ -112,6 +133,7 @@ class InferenceBroker:
         self.idle_poll_s = idle_poll_s
         self._requests: "queue.Queue[Optional[InferenceRequest]]" = queue.Queue()
         self._adapters: dict[str, ModelExecutionAdapter] = {}
+        self._continuous_sessions: dict[Any, ContinuousBatchSession] = {}
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -170,51 +192,59 @@ class InferenceBroker:
 
     def _run(self) -> None:
         pending: list[InferenceRequest] = []
-        while not self._stop.is_set():
-            self._fill_pending(pending, block=not pending)
-            pending = [
-                request for request in pending if not request.cancel_event.is_set()
-            ]
-            if not pending:
-                continue
-
-            request = pending.pop(0)
-            adapter = self._adapters.get(request.endpoint_kind)
-            if adapter is None:
-                request.emit_error(
-                    ValueError(
-                        f"No inference adapter registered for {request.endpoint_kind!r}"
-                    )
+        try:
+            while not self._stop.is_set():
+                has_continuous_work = bool(self._continuous_sessions)
+                self._fill_pending(
+                    pending, block=not pending and not has_continuous_work
                 )
-                request.emit_done()
-                continue
+                pending = [
+                    request for request in pending if not request.cancel_event.is_set()
+                ]
 
-            requests = [request]
-            can_batch = adapter.max_batch_size > 1 and adapter.supports_batch(request)
-            if can_batch:
-                if adapter.supports_continuous_batch(request):
-                    try:
-                        adapter.run_continuous(request)
-                    except Exception as exc:
-                        traceback.print_exc()
-                        request.emit_error(exc)
-                        request.emit_done()
+                self._route_continuous_requests(pending)
+                self._step_continuous_sessions()
+
+                # Keep all GPU work serialized. Whole-request serial or fixed-window
+                # batch calls run only after active continuous sessions drain.
+                if self._continuous_sessions:
                     continue
 
-                requests.extend(
-                    self._select_batch_candidates(request, adapter, pending)
-                )
+                if not pending:
+                    continue
 
-            try:
-                if len(requests) > 1:
-                    adapter.run_batch(requests)
-                else:
-                    adapter.run_serial(request)
-            except Exception as exc:  # pragma: no cover - defensive broker guard
-                traceback.print_exc()
-                for failed_request in requests:
-                    failed_request.emit_error(exc)
-                    failed_request.emit_done()
+                request = pending.pop(0)
+                adapter = self._adapters.get(request.endpoint_kind)
+                if adapter is None:
+                    request.emit_error(
+                        ValueError(
+                            f"No inference adapter registered for "
+                            f"{request.endpoint_kind!r}"
+                        )
+                    )
+                    request.emit_done()
+                    continue
+
+                requests = [request]
+                if adapter.supports_batch(request) and adapter.max_batch_size > 1:
+                    requests.extend(
+                        self._select_batch_candidates(request, adapter, pending)
+                    )
+
+                try:
+                    if len(requests) > 1:
+                        adapter.run_batch(requests)
+                    else:
+                        adapter.run_serial(request)
+                except Exception as exc:  # pragma: no cover - defensive broker guard
+                    traceback.print_exc()
+                    for failed_request in requests:
+                        failed_request.emit_error(exc)
+                        failed_request.emit_done()
+        finally:
+            for session in list(self._continuous_sessions.values()):
+                session.fail(RuntimeError("Inference broker stopped."))
+            self._continuous_sessions.clear()
 
     def _fill_pending(self, pending: list[InferenceRequest], *, block: bool) -> None:
         try:
@@ -272,3 +302,48 @@ class InferenceBroker:
             and candidate.batch_key == request.batch_key
             and adapter.supports_batch(candidate)
         )
+
+    def _route_continuous_requests(self, pending: list[InferenceRequest]) -> None:
+        if not pending:
+            return
+
+        remaining: list[InferenceRequest] = []
+        for request in pending:
+            adapter = self._adapters.get(request.endpoint_kind)
+            if adapter is None:
+                remaining.append(request)
+                continue
+            if not adapter.supports_continuous_batch(request):
+                remaining.append(request)
+                continue
+
+            session_key = (
+                request.endpoint_kind,
+                request.model_name,
+                adapter.continuous_batch_key(request),
+            )
+            session = self._continuous_sessions.get(session_key)
+            try:
+                if session is None or session.idle:
+                    session = adapter.create_continuous_batch_session(request)
+                    self._continuous_sessions[session_key] = session
+                session.submit(request)
+            except Exception as exc:
+                traceback.print_exc()
+                request.emit_error(exc)
+                request.emit_done()
+
+        pending[:] = remaining
+
+    def _step_continuous_sessions(self) -> None:
+        for session_key, session in list(self._continuous_sessions.items()):
+            try:
+                session.step()
+            except Exception as exc:
+                traceback.print_exc()
+                session.fail(exc)
+                self._continuous_sessions.pop(session_key, None)
+                continue
+
+            if session.idle:
+                self._continuous_sessions.pop(session_key, None)

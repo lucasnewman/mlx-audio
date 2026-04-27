@@ -2,6 +2,7 @@
 
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Generator, List, Optional, Tuple, Union
 
@@ -16,6 +17,7 @@ from mlx_lm.sample_utils import (
 from tqdm import tqdm
 
 from mlx_audio.dsp import mel_filters, stft
+from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.tts.models.base import BatchGenerationResult, GenerationResult
 from mlx_audio.utils import load_audio
 
@@ -25,10 +27,20 @@ from .config import (
     Qwen3TTSTokenizerDecoderConfig,
     Qwen3TTSTokenizerEncoderConfig,
 )
-from .continuous_batching import Qwen3BatchInputs, Qwen3ContinuousBatchEngine
 from .speaker_encoder import Qwen3TTSSpeakerEncoder
 from .speech_tokenizer import Qwen3TTSSpeechTokenizer
 from .talker import Qwen3TTSTalkerForConditionalGeneration
+
+
+@dataclass
+class Qwen3BatchInputs:
+    input_embeds: mx.array
+    trailing_text_hidden: mx.array
+    tts_pad_embed: mx.array
+    attention_mask: mx.array
+    left_padding: List[int]
+    prefill_lens: List[int]
+    trailing_lens: List[int]
 
 
 def mel_spectrogram(
@@ -179,6 +191,36 @@ class Model(nn.Module):
     @property
     def model_type(self) -> str:
         return "qwen3_tts"
+
+    def supports_tts_batch(
+        self,
+        *,
+        stream: bool = False,
+        voice: Optional[str] = None,
+        instruct: Optional[str] = None,
+        ref_audio=None,
+        ref_text: Optional[str] = None,
+        speed: Optional[float] = 1.0,
+        pitch: Optional[float] = 1.0,
+        **kwargs,
+    ) -> bool:
+        del kwargs
+        if stream or ref_audio is not None or ref_text is not None:
+            return False
+        if speed not in (None, 1.0) or pitch not in (None, 1.0):
+            return False
+
+        tts_model_type = getattr(self.config, "tts_model_type", "base")
+        if tts_model_type not in {"base", "custom_voice"}:
+            return False
+        if tts_model_type == "base" and instruct:
+            return False
+        if tts_model_type == "custom_voice" and not voice:
+            return False
+        return True
+
+    def supports_tts_continuous_batch(self, **kwargs) -> bool:
+        return self.supports_tts_batch(**kwargs)
 
     def load_speech_tokenizer(self, speech_tokenizer: Qwen3TTSSpeechTokenizer):
         """Load the speech tokenizer model."""
@@ -404,14 +446,21 @@ class Model(nn.Module):
 
         return input_embeds, trailing_text_hidden, tts_pad_embed
 
-    def _prepare_batch_inputs_with_metadata(
+    def _prepare_batch_inputs(
         self,
         texts: List[str],
         language: str = "auto",
         speakers: Optional[List[Optional[str]]] = None,
         instructs: Optional[List[Optional[str]]] = None,
-    ) -> Qwen3BatchInputs:
-        """Prepare batched inputs and padding metadata for generation."""
+        return_metadata: bool = False,
+    ) -> Union[Qwen3BatchInputs, Tuple[mx.array, mx.array, mx.array, mx.array]]:
+        """Prepare batched inputs for batch generation.
+
+        Calls _prepare_generation_inputs() per sequence, then left-pads
+        input_embeds, right-pads trailing_text_hidden, and builds an attention
+        mask. Continuous batching can request the padding metadata needed to
+        extract and merge per-request KV cache state.
+        """
         batch_size = len(texts)
         per_seq_embeds = []
         per_seq_trailing = []
@@ -479,7 +528,7 @@ class Model(nn.Module):
             padded_trailing, axis=0
         )  # [batch, max_trailing, hidden]
 
-        return Qwen3BatchInputs(
+        batch_inputs = Qwen3BatchInputs(
             input_embeds=input_embeds,
             trailing_text_hidden=trailing_text_hidden,
             tts_pad_embed=shared_pad_embed,
@@ -489,36 +538,9 @@ class Model(nn.Module):
             trailing_lens=trailing_lens,
         )
 
-    def _prepare_batch_inputs(
-        self,
-        texts: List[str],
-        language: str = "auto",
-        speakers: Optional[List[Optional[str]]] = None,
-        instructs: Optional[List[Optional[str]]] = None,
-    ) -> Tuple[mx.array, mx.array, mx.array, mx.array]:
-        """Prepare batched inputs for batch generation.
+        if return_metadata:
+            return batch_inputs
 
-        Calls _prepare_generation_inputs() per sequence, then left-pads input_embeds,
-        right-pads trailing_text_hidden, and builds an attention mask.
-
-        Args:
-            texts: List of texts to synthesize
-            language: Language code
-            speakers: Optional list of speaker names (one per text)
-            instructs: Optional list of instruct strings (one per text)
-
-        Returns:
-            input_embeds: [batch, max_prefill_len, hidden_size] left-padded
-            trailing_text_hidden: [batch, max_trailing_len, hidden_size] right-padded with pad_embed
-            tts_pad_embed: [1, 1, hidden_size] shared pad embedding
-            attention_mask: [batch, max_prefill_len] binary (1=valid, 0=padding)
-        """
-        batch_inputs = self._prepare_batch_inputs_with_metadata(
-            texts,
-            language=language,
-            speakers=speakers,
-            instructs=instructs,
-        )
         return (
             batch_inputs.input_embeds,
             batch_inputs.trailing_text_hidden,
@@ -856,6 +878,96 @@ class Model(nn.Module):
         tokens = categorical_sampling(logits, temperature)  # [batch]
         return tokens[:, None]  # [batch, 1]
 
+    def _suppress_codec_tokens(self, eos_token_id: int) -> List[int]:
+        config = self.config.talker_config
+        return [
+            i
+            for i in range(config.vocab_size - 1024, config.vocab_size)
+            if i != eos_token_id
+        ]
+
+    def _reset_code_cache(self, code_cache) -> None:
+        for cache in code_cache:
+            cache.keys = None
+            cache.values = None
+            cache.offset = 0
+
+    def _predict_code_tokens(
+        self,
+        first_token: mx.array,
+        hidden: mx.array,
+        *,
+        temperature: float,
+        top_k: int,
+        top_p: float,
+        code_cache=None,
+    ) -> Tuple[List[mx.array], mx.array]:
+        if code_cache is None:
+            code_cache = self.talker.code_predictor.make_cache()
+        else:
+            self._reset_code_cache(code_cache)
+
+        code_tokens = [first_token]
+        code_hidden = hidden[:, -1:, :]
+        config = self.config.talker_config
+
+        for code_idx in range(config.num_code_groups - 1):
+            if code_idx == 0:
+                code_0_embed = self.talker.get_input_embeddings()(first_token)
+                code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
+            else:
+                code_input = self.talker.code_predictor.codec_embedding[code_idx - 1](
+                    code_tokens[-1]
+                )
+
+            code_logits, code_cache, _ = self.talker.code_predictor(
+                code_input,
+                cache=code_cache,
+                generation_step=code_idx,
+            )
+            next_code = self._sample_token_batch(
+                code_logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
+            code_tokens.append(next_code)
+
+        all_codes = mx.concatenate(code_tokens, axis=1)
+        return code_tokens, all_codes
+
+    def _codec_embeds_for_tokens(self, code_tokens: List[mx.array]) -> mx.array:
+        codec_embed = self.talker.get_input_embeddings()(code_tokens[0])
+        for index, code in enumerate(code_tokens[1:]):
+            codec_embed = codec_embed + self.talker.code_predictor.codec_embedding[
+                index
+            ](code)
+        return codec_embed
+
+    def _next_batch_input_embeds(
+        self,
+        trailing_text_hidden: mx.array,
+        tts_pad_embed: mx.array,
+        trailing_indices: mx.array,
+        code_tokens: List[mx.array],
+        *,
+        pad_when_index_clamped: bool = False,
+    ) -> mx.array:
+        batch_size = trailing_text_hidden.shape[0]
+        max_trailing_len = trailing_text_hidden.shape[1]
+        batch_arange = mx.arange(batch_size)
+        clamped_indices = mx.minimum(trailing_indices[:, 0], max_trailing_len - 1)
+        text_embeds = trailing_text_hidden[batch_arange, clamped_indices, :][:, None, :]
+
+        if pad_when_index_clamped:
+            exhausted = clamped_indices >= max_trailing_len - 1
+        else:
+            exhausted = trailing_indices[:, 0] >= max_trailing_len
+
+        pad_broadcast = mx.broadcast_to(tts_pad_embed, text_embeds.shape)
+        text_embeds = mx.where(exhausted[:, None, None], pad_broadcast, text_embeds)
+        return text_embeds + self._codec_embeds_for_tokens(code_tokens)
+
     def _decode_chunk(self, codes: mx.array, chunk_tokens: int = 300) -> mx.array:
         """Decode a chunk of codes to audio using the vocoder.
 
@@ -896,18 +1008,18 @@ class Model(nn.Module):
         decode_chunk: int = 15,
         decode_ctx: int = 5,
     ) -> mx.array:
-        """Decode a generated code list to a waveform."""
+        """Decode generated codec tokens with bounded decoder memory."""
         if not generated_codes:
             return mx.zeros((0,), dtype=mx.float32)
 
         upsample = self.speech_tokenizer.decoder.total_upsample
-        codes = mx.stack(generated_codes, axis=1)  # [1, seq_len, num_code_groups]
-        transposed = mx.transpose(codes, (0, 2, 1))  # [1, groups, time]
+        codes = mx.stack(generated_codes, axis=1)
+        transposed = mx.transpose(codes, (0, 2, 1))
         del codes
 
-        num_tokens = transposed.shape[-1]
         audio_parts = []
         start = 0
+        num_tokens = transposed.shape[-1]
         while start < num_tokens:
             end = min(start + decode_chunk, num_tokens)
             ctx = decode_ctx if start > decode_ctx else start
@@ -915,36 +1027,22 @@ class Model(nn.Module):
             wav = self.speech_tokenizer.decoder(chunk).squeeze(1)[0]
             if ctx > 0:
                 wav = wav[ctx * upsample :]
-            mx.eval(wav)
+            mx.async_eval(wav)
             audio_parts.append(wav)
             start = end
 
         del transposed
-        return mx.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
+        audio = mx.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
+        mx.async_eval(audio)
+        return audio
 
-    def create_continuous_batch_engine(
+    def create_tts_batch_session(
         self,
-        *,
-        temperature: float = 0.9,
-        lang_code: str = "auto",
-        max_tokens: int = 4096,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        repetition_penalty: float = 1.05,
-        max_batch_size: int = 8,
-        verbose: bool = False,
-    ) -> Qwen3ContinuousBatchEngine:
-        return Qwen3ContinuousBatchEngine(
-            self,
-            temperature=temperature,
-            lang_code=lang_code,
-            max_tokens=max_tokens,
-            top_k=top_k,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            max_batch_size=max_batch_size,
-            verbose=verbose,
-        )
+        options: TTSBatchOptions,
+    ):
+        from .continuous_batching import Qwen3TTSBatchSession
+
+        return Qwen3TTSBatchSession(self, options)
 
     def generate(
         self,
@@ -1441,11 +1539,69 @@ class Model(nn.Module):
             raise ValueError(
                 f"voices length ({len(voices)}) must match texts length ({batch_size})"
             )
-        if instructs is not None and len(instructs) != batch_size:
+        if instructs is None:
+            instructs = [None] * batch_size
+        elif len(instructs) != batch_size:
             raise ValueError(
-                "instructs length "
-                f"({len(instructs)}) must match texts length ({batch_size})"
+                f"instructs length ({len(instructs)}) must match texts length ({batch_size})"
             )
+
+        if not stream:
+            options = TTSBatchOptions(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                max_tokens=max_tokens,
+                lang_code=lang_code,
+                stream=False,
+                streaming_interval=streaming_interval,
+                max_batch_size=batch_size,
+                verbose=verbose,
+            )
+            session = self.create_tts_batch_session(options)
+            session.add(
+                [
+                    TTSBatchItem(
+                        sequence_id=index,
+                        text=text,
+                        voice=voices[index],
+                        instruct=instructs[index],
+                    )
+                    for index, text in enumerate(texts)
+                ]
+            )
+
+            start_time = time.time()
+            while not session.idle:
+                for event in session.step():
+                    if event.error is not None:
+                        raise event.error
+                    if event.audio is None or event.samples <= 0:
+                        continue
+
+                    yield BatchGenerationResult(
+                        audio=event.audio,
+                        sequence_idx=event.sequence_id,
+                        samples=event.samples,
+                        sample_rate=event.sample_rate,
+                        token_count=event.token_count,
+                        audio_duration=event.metadata.get(
+                            "audio_duration",
+                            format_duration(event.samples / self.sample_rate),
+                        ),
+                        processing_time_seconds=event.metadata.get(
+                            "processing_time_seconds",
+                            time.time() - start_time,
+                        ),
+                        peak_memory_usage=event.metadata.get(
+                            "peak_memory_usage",
+                            mx.get_peak_memory() / 1e9,
+                        ),
+                        is_streaming_chunk=event.is_streaming_chunk,
+                        is_final_chunk=event.is_final_chunk,
+                    )
+            return
 
         start_time = time.time()
         config = self.config.talker_config
@@ -1477,16 +1633,9 @@ class Model(nn.Module):
 
         # Vectorized state
         trailing_indices = mx.zeros((batch_size, 1), dtype=mx.int32)
-        batch_arange = mx.arange(batch_size)
-        max_trailing_len = trailing_text_hidden.shape[1]
         eos_fill = mx.full((batch_size, 1), eos_token_id, dtype=mx.int32)
 
-        # Suppress special tokens
-        suppress_tokens = [
-            i
-            for i in range(config.vocab_size - 1024, config.vocab_size)
-            if i != eos_token_id
-        ]
+        suppress_tokens = self._suppress_codec_tokens(eos_token_id)
 
         # Streaming state
         streaming_chunk_size = max(1, int(streaming_interval * 12.5))
@@ -1534,75 +1683,26 @@ class Model(nn.Module):
             newly_finished = next_token_batch[:, 0] == eos_token_id
             finished = finished | newly_finished
 
-            # Generate remaining codebook tokens with code predictor (batched)
-            code_tokens = [next_token_batch]  # each is [batch, 1]
-            code_hidden = hidden[:, -1:, :]  # [batch, 1, hidden]
-            # Reset code_cache in-place (avoid make_cache() allocation each step)
-            for c in code_cache:
-                c.keys = None
-                c.values = None
-                c.offset = 0
-
-            for code_idx in range(config.num_code_groups - 1):
-                if code_idx == 0:
-                    code_0_embed = self.talker.get_input_embeddings()(
-                        next_token_batch
-                    )  # [batch, 1, hidden]
-                    code_input = mx.concatenate(
-                        [code_hidden, code_0_embed], axis=1
-                    )  # [batch, 2, hidden]
-                else:
-                    code_embed = self.talker.code_predictor.codec_embedding[
-                        code_idx - 1
-                    ](
-                        code_tokens[-1]
-                    )  # [batch, 1, hidden]
-                    code_input = code_embed
-
-                code_logits, code_cache, _ = self.talker.code_predictor(
-                    code_input,
-                    cache=code_cache,
-                    generation_step=code_idx,
-                )
-
-                next_code = self._sample_token_batch(
-                    code_logits,
-                    temperature=temperature,
-                    top_k=top_k,
-                    top_p=top_p,
-                )  # [batch, 1]
-                code_tokens.append(next_code)
-
-            # Stack all codebook tokens: [batch, num_code_groups]
-            all_codes = mx.concatenate(code_tokens, axis=1)
-
-            # Vectorized trailing text gather
-            clamped_indices = mx.minimum(
-                trailing_indices[:, 0], max_trailing_len - 1
-            )  # [batch]
-            text_embeds = trailing_text_hidden[batch_arange, clamped_indices, :][
-                :, None, :
-            ]  # [batch, 1, hidden]
-
-            # Replace exhausted positions with pad embed (unconditional, no sync)
-            exhausted = trailing_indices[:, 0] >= max_trailing_len  # [batch]
-            pad_broadcast = mx.broadcast_to(tts_pad_embed, text_embeds.shape)
-            text_embeds = mx.where(exhausted[:, None, None], pad_broadcast, text_embeds)
+            code_tokens, all_codes = self._predict_code_tokens(
+                next_token_batch,
+                hidden,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                code_cache=code_cache,
+            )
 
             # Advance trailing indices for non-finished sequences (vectorized)
             advance = (~finished).astype(mx.int32)[:, None]
+
+            input_embeds = self._next_batch_input_embeds(
+                trailing_text_hidden,
+                tts_pad_embed,
+                trailing_indices,
+                code_tokens,
+                pad_when_index_clamped=True,
+            )
             trailing_indices = trailing_indices + advance
-
-            # Codec embedding: batched
-            codec_embed = self.talker.get_input_embeddings()(
-                next_token_batch
-            )  # [batch, 1, hidden]
-            for j, code in enumerate(code_tokens[1:]):
-                codec_embed = codec_embed + self.talker.code_predictor.codec_embedding[
-                    j
-                ](code)
-
-            input_embeds = text_embeds + codec_embed  # [batch, 1, hidden]
 
             # SINGLE SYNC per step: eval codes, next input, and finished together
             mx.eval(all_codes, input_embeds, finished)
@@ -1724,11 +1824,39 @@ class Model(nn.Module):
         del tts_pad_embed, trailing_indices, finished, eos_fill
         mx.clear_cache()
 
+        upsample = self.speech_tokenizer.decoder.total_upsample
+        decode_chunk = 15  # Balance decode speed vs memory
+        decode_ctx = 5
+
         for b in range(batch_size):
             if not generated_codes[b]:
                 continue
-            audio = self._decode_generated_codes(generated_codes[b])
+            codes = mx.stack(
+                generated_codes[b], axis=1
+            )  # [1, seq_len, num_code_groups]
             generated_codes[b] = []  # free per-seq code list
+            transposed = mx.transpose(codes, (0, 2, 1))  # [1, groups, time]
+            del codes
+            num_tokens = transposed.shape[-1]
+
+            # Decode in chunks with per-chunk eval (no clear_cache overhead)
+            audio_parts = []
+            start = 0
+            while start < num_tokens:
+                end = min(start + decode_chunk, num_tokens)
+                ctx = decode_ctx if start > decode_ctx else start
+                chunk = transposed[..., start - ctx : end]
+                wav = self.speech_tokenizer.decoder(chunk).squeeze(1)[0]
+                if ctx > 0:
+                    wav = wav[ctx * upsample :]
+                mx.eval(wav)
+                audio_parts.append(wav)
+                start = end
+
+            del transposed
+            audio = (
+                mx.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
+            )
 
             duration_seconds = audio.shape[0] / self.sample_rate
             yield BatchGenerationResult(
@@ -1741,7 +1869,7 @@ class Model(nn.Module):
                 processing_time_seconds=elapsed_time,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
-            del audio
+            del audio_parts, audio
             mx.clear_cache()
 
     def generate_custom_voice(
