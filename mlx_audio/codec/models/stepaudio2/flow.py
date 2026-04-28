@@ -80,9 +80,13 @@ class CausalMaskedDiffWithXvec(nn.Module):
         n_timesteps: int = 10,
     ) -> mx.array:
         if token.shape[0] != 1:
-            raise ValueError("StepAudio2 flow inference currently supports batch size 1")
+            raise ValueError(
+                "StepAudio2 flow inference currently supports batch size 1"
+            )
 
-        embedding = embedding / (mx.linalg.norm(embedding, axis=1, keepdims=True) + 1e-8)
+        embedding = embedding / (
+            mx.linalg.norm(embedding, axis=1, keepdims=True) + 1e-8
+        )
         embedding = self.spk_embed_affine_layer(embedding)
 
         token = mx.concatenate([prompt_token, token], axis=1)
@@ -118,5 +122,7 @@ class CausalMaskedDiffWithXvec(nn.Module):
         )
         feat = feat[:, :, mel_len1:]
         if feat.shape[2] != mel_len2:
-            raise RuntimeError(f"Unexpected generated mel length: {feat.shape[2]} != {mel_len2}")
+            raise RuntimeError(
+                f"Unexpected generated mel length: {feat.shape[2]} != {mel_len2}"
+            )
         return feat

@@ -6,9 +6,7 @@ import mlx.nn as nn
 
 
 def _approx_gelu(x: mx.array) -> mx.array:
-    return 0.5 * x * (
-        1.0 + mx.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * x**3))
-    )
+    return 0.5 * x * (1.0 + mx.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * x**3)))
 
 
 def modulate(x: mx.array, shift: mx.array, scale: mx.array) -> mx.array:
@@ -93,9 +91,7 @@ class TimestepEmbedder(nn.Module):
         self.scale = 1000
 
     @staticmethod
-    def timestep_embedding(
-        t: mx.array, dim: int, max_period: int = 10000
-    ) -> mx.array:
+    def timestep_embedding(t: mx.array, dim: int, max_period: int = 10000) -> mx.array:
         half = dim // 2
         freqs = mx.exp(
             -math.log(max_period) * mx.arange(0, half, dtype=mx.float32) / half
@@ -202,9 +198,7 @@ class DiTBlock(nn.Module):
         x = x + gate_msa * self.attn(
             modulate(self.norm1(x), shift_msa, scale_msa), attn_mask
         )
-        x = x + gate_conv * self.conv(
-            modulate(self.norm3(x), shift_conv, scale_conv)
-        )
+        x = x + gate_conv * self.conv(modulate(self.norm3(x), shift_conv, scale_conv))
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 

@@ -16,7 +16,6 @@ from .convert import load_flow_weights, load_hift_weights
 from .flow import CausalMaskedDiffWithXvec
 from .hift import StepAudio2HiFTGenerator
 
-
 STEPAUDIO2_SAMPLE_RATE = 24_000
 S3_SAMPLE_RATE = 16_000
 

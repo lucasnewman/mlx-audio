@@ -38,9 +38,8 @@ class CausalConditionalCFM(nn.Module):
             dphi_dt = self.estimator(x_in, mask_in, mu_in, t_in, spks_in, cond_in)
             dphi_dt, cfg_dphi_dt = mx.split(dphi_dt, 2, axis=0)
             dphi_dt = (
-                (1.0 + self.inference_cfg_rate) * dphi_dt
-                - self.inference_cfg_rate * cfg_dphi_dt
-            )
+                1.0 + self.inference_cfg_rate
+            ) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt
             x = x + dt * dphi_dt
             t = t + dt
             if step < len(t_span) - 1:

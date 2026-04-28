@@ -1,5 +1,5 @@
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Dict
 
 import mlx.core as mx
@@ -120,9 +120,13 @@ def convert_stepaudio2_assets(input_dir: str | Path, output_dir: str | Path) -> 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     flow = CausalMaskedDiffWithXvec()
-    flow_weights = sanitize_flow_weights(flow, load_torch_weights(input_dir / "flow.pt"))
+    flow_weights = sanitize_flow_weights(
+        flow, load_torch_weights(input_dir / "flow.pt")
+    )
     mx.save_safetensors(str(output_dir / "flow.safetensors"), flow_weights)
 
     hift = StepAudio2HiFTGenerator()
-    hift_weights = sanitize_hift_weights(hift, load_torch_weights(input_dir / "hift.pt"))
+    hift_weights = sanitize_hift_weights(
+        hift, load_torch_weights(input_dir / "hift.pt")
+    )
     mx.save_safetensors(str(output_dir / "hift.safetensors"), hift_weights)

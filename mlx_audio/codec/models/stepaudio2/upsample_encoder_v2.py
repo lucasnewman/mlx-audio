@@ -34,9 +34,13 @@ class Upsample1D(nn.Module):
         self.channels = channels
         self.out_channels = out_channels
         self.stride = stride
-        self.scale_factor = float(stride) if scale_factor is None else float(scale_factor)
+        self.scale_factor = (
+            float(stride) if scale_factor is None else float(scale_factor)
+        )
         if self.scale_factor != float(stride):
-            raise ValueError("StepAudio2 MLX upsampling currently requires integer scale")
+            raise ValueError(
+                "StepAudio2 MLX upsampling currently requires integer scale"
+            )
         self.conv = nn.Conv1d(channels, out_channels, stride * 2 + 1)
 
     def __call__(
