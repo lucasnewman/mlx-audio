@@ -184,6 +184,8 @@ class Model(nn.Module):
                 if "dialect" not in lang_id:
                     self.supported_languages.append(lang_id)
 
+        self._icl_cache = {}
+
     @property
     def sample_rate(self) -> int:
         return self._sample_rate
@@ -579,22 +581,35 @@ class Model(nn.Module):
 
         config = self.config.talker_config
 
+        ref_codes = None
+        ref_text_ids = None
+        ref_audio_fingerprint = (ref_audio.size, float(ref_audio.sum()))
+        cache_key = (ref_text, ref_audio_fingerprint)
+        if cache_key in self._icl_cache:
+            ref_codes, ref_text_ids = self._icl_cache[cache_key]
+
         # 1. Encode reference audio -> ref_codes [1, 16, ref_time]
         audio_for_spk = ref_audio  # Save original shape for speaker embedding
-        if ref_audio.ndim == 1:
-            ref_audio = ref_audio[None, None, :]  # [1, 1, samples]
-        elif ref_audio.ndim == 2:
-            ref_audio = ref_audio[None, :]  # [1, 1, samples]
-        ref_codes = self.speech_tokenizer.encode(ref_audio)  # [1, 16, ref_time]
-        mx.eval(ref_codes)
+        if ref_codes is None:
+            if ref_audio.ndim == 1:
+                ref_audio = ref_audio[None, None, :]  # [1, 1, samples]
+            elif ref_audio.ndim == 2:
+                ref_audio = ref_audio[None, :]  # [1, 1, samples]
+            ref_codes = self.speech_tokenizer.encode(ref_audio)  # [1, 16, ref_time]
+            mx.eval(ref_codes)
         ref_time = ref_codes.shape[2]
 
         # 2. Tokenize ref_text and target_text separately
         # ref_text format: <|im_start|>assistant\n{ref_text}<|im_end|>\n
-        ref_chat = f"<|im_start|>assistant\n{ref_text}<|im_end|>\n"
-        ref_ids = mx.array(self.tokenizer.encode(ref_chat))[None, :]
-        # Pure ref text tokens: skip first 3 (role) and last 2 (<|im_end|>\n)
-        ref_text_ids = ref_ids[:, 3:-2]
+        if ref_text_ids is None:
+            ref_chat = f"<|im_start|>assistant\n{ref_text}<|im_end|>\n"
+            ref_ids = mx.array(self.tokenizer.encode(ref_chat))[None, :]
+            # Pure ref text tokens: skip first 3 (role) and last 2 (<|im_end|>\n)
+            ref_text_ids = ref_ids[:, 3:-2]
+
+        if cache_key not in self._icl_cache:
+            mx.eval(ref_text_ids)
+            self._icl_cache[cache_key] = (ref_codes, ref_text_ids)
 
         # target_text format: <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n
         target_chat = (
