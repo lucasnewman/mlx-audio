@@ -3173,6 +3173,83 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
 
         mock_icl.assert_not_called()
 
+    def test_batch_supports_shared_ref_but_not_continuous(self):
+        """Shared ref cloning can use batch_generate but not continuous batching."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        self.assertTrue(
+            model.supports_tts_batch(ref_audio=ref_audio, ref_text="Reference")
+        )
+        self.assertFalse(
+            model.supports_tts_continuous_batch(
+                ref_audio=ref_audio,
+                ref_text="Reference",
+            )
+        )
+        self.assertFalse(model.supports_tts_batch(ref_audio=ref_audio))
+
+    def test_batch_generate_shared_ref_uses_icl_manual_path(self):
+        """Shared ref batches avoid continuous batching and decode with ref context."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+        eos_id = model.config.talker_config.codec_eos_token_id
+        num_code_groups = model.config.talker_config.num_code_groups
+        sample_calls = {"count": 0}
+
+        def sample_batch(logits, **kwargs):
+            del kwargs
+            sample_calls["count"] += 1
+            token = 5 if sample_calls["count"] == 1 else eos_id
+            return mx.full((logits.shape[0], 1), token, dtype=mx.int32)
+
+        def predict_codes(first_token, hidden, **kwargs):
+            del hidden, kwargs
+            batch = first_token.shape[0]
+            all_codes = mx.ones((batch, num_code_groups), dtype=mx.int32)
+            code_tokens = [
+                all_codes[:, index : index + 1] for index in range(num_code_groups)
+            ]
+            return code_tokens, all_codes
+
+        with (
+            patch.object(
+                model,
+                "create_tts_batch_session",
+                side_effect=AssertionError("continuous batching should not run"),
+            ),
+            patch.object(model, "_sample_token_batch", side_effect=sample_batch),
+            patch.object(model, "_predict_code_tokens", side_effect=predict_codes),
+        ):
+            results = list(
+                model.batch_generate(
+                    ["first", "second"],
+                    ref_audios=[ref_audio, ref_audio],
+                    ref_texts=["Reference", "Reference"],
+                    max_tokens=3,
+                    stream=False,
+                )
+            )
+
+        self.assertEqual([result.sequence_idx for result in results], [0, 1])
+        self.assertEqual([result.token_count for result in results], [1, 1])
+        self.assertEqual(model.speech_tokenizer.decode.call_count, 2)
+        decoded_codes = model.speech_tokenizer.decode.call_args_list[0][0][0]
+        self.assertEqual(decoded_codes.shape[1], 6)  # ref_time(5) + generated(1)
+
+    def test_batch_generate_rejects_mixed_refs(self):
+        """Qwen3 batch ICL currently accepts only one shared reference pair."""
+        model = self._make_icl_model()
+
+        with self.assertRaisesRegex(ValueError, "one shared ref_audio"):
+            list(
+                model.batch_generate(
+                    ["first", "second"],
+                    ref_audios=["a.wav", "b.wav"],
+                    ref_texts=["Reference", "Reference"],
+                )
+            )
+
 
 class TestQwen3TTSStreamingDecode(unittest.TestCase):
     """Tests for streaming vs non-streaming decode behavior."""

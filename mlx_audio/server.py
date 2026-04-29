@@ -514,6 +514,8 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             speech_request.top_k,
             speech_request.repetition_penalty,
             speech_request.max_tokens,
+            speech_request.ref_audio,
+            speech_request.ref_text,
             speech_request.streaming_interval if speech_request.stream else None,
             speech_request.verbose,
         )
