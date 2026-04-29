@@ -9,7 +9,7 @@ import numpy as np
 from mlx_audio.audio_io import write as audio_write
 from mlx_audio.codec.models.s3 import S3TokenizerV2, log_mel_spectrogram
 from mlx_audio.tts.models.chatterbox.s3gen.mel import mel_spectrogram
-from mlx_audio.utils import load_audio
+from mlx_audio.utils import get_model_path, load_audio
 
 from .convert import load_campplus_weights, load_flow_weights, load_hift_weights
 from .flow import CausalMaskedDiffWithXvec
@@ -38,12 +38,19 @@ class StepAudio2Token2Wav(nn.Module):
     @classmethod
     def from_pretrained(
         cls,
-        model_path: str | Path,
+        model_path: str | Path = "mlx-community/Step-Audio-2-token2wav",
         *,
         load_speech_tokenizer: bool = True,
         load_speaker_encoder: bool = True,
+        revision: Optional[str] = None,
+        force_download: bool = False,
     ) -> "StepAudio2Token2Wav":
-        model_path = Path(model_path)
+        model_path = get_model_path(
+            str(model_path),
+            revision=revision,
+            force_download=force_download,
+            allow_patterns=["*.safetensors", "*.yaml"],
+        )
         model = cls()
         flow_path = _first_existing(model_path, "flow.safetensors", "flow.pt")
         hift_path = _first_existing(model_path, "hift.safetensors", "hift.pt")
