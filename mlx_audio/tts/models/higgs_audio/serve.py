@@ -32,7 +32,11 @@ import numpy as np
 
 from ....codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
 from .config import HiggsAudioConfig
-from .generation import build_delay_pattern_mask, lookup_audio_embedding
+from .generation import (
+    build_delay_pattern_mask,
+    lookup_audio_embedding,
+    revert_delay_pattern,
+)
 from .higgs_audio import HiggsAudioModel
 
 
@@ -526,3 +530,258 @@ class HiggsAudioServer:
         pcm = result.pcm
         for i in range(0, pcm.size, samples_per_chunk):
             yield pcm[i : i + samples_per_chunk]
+
+    def generate_stream_overlap_add(
+        self,
+        target_text: str,
+        *,
+        reference_audio_path: Optional[str] = None,
+        reference_text: Optional[str] = None,
+        max_new_frames: int = 900,
+        temperature: float = 0.7,
+        top_p: Optional[float] = 0.95,
+        top_k: Optional[int] = None,
+        ras_win_len: Optional[int] = 7,
+        ras_max_repeat: int = 2,
+        sampling_warmup_frames: int = 0,
+        emit_every_frames: int = 16,
+        overlap_ms: float = 40.0,
+        fade_in_ms: float = 5.0,
+        fade_out_ms: float = 5.0,
+    ) -> Iterator[np.ndarray]:
+        """Mid-generation streaming via overlap-add. Yields PCM chunks.
+
+        Thin wrapper around :func:`iter_overlap_add_pcm` that builds the prompt
+        from the server's tokenizer/codec/cache state and strips the per-chunk
+        meta. See the helper for the algorithm rationale.
+        """
+        full_embeds, audio_out_mask, _info = self._build_prompt(
+            target_text, reference_text, reference_audio_path
+        )
+        for chunk, _meta in iter_overlap_add_pcm(
+            model=self.model,
+            codec=self.codec,
+            config=self.config,
+            full_embeds=full_embeds,
+            audio_out_mask=audio_out_mask,
+            max_new_frames=max_new_frames,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            ras_win_len=ras_win_len,
+            ras_max_repeat=ras_max_repeat,
+            sampling_warmup_frames=sampling_warmup_frames,
+            emit_every_frames=emit_every_frames,
+            overlap_ms=overlap_ms,
+            fade_in_ms=fade_in_ms,
+            fade_out_ms=fade_out_ms,
+        ):
+            yield chunk
+
+
+# ----------------------------------------------------------------------
+# Streaming helper
+# ----------------------------------------------------------------------
+#
+# Shared between :meth:`HiggsAudioServer.generate_stream_overlap_add` (rich
+# kwarg-style API yielding raw PCM) and the framework-conforming
+# :class:`mlx_audio.tts.models.higgs_audio.model.Model.generate` (yields
+# ``GenerationResult`` when ``stream=True``). Both call this helper; the
+# overlap-add algorithm lives in exactly one place.
+
+
+def iter_overlap_add_pcm(
+    *,
+    model,  # HiggsAudioModel — exposes _generate_raw_frames
+    codec,  # HiggsAudioTokenizer — decodes [K, T] codes → PCM
+    config: HiggsAudioConfig,
+    full_embeds: mx.array,
+    audio_out_mask: mx.array,
+    max_new_frames: int = 900,
+    temperature: float = 0.7,
+    top_p: Optional[float] = 0.95,
+    top_k: Optional[int] = None,
+    ras_win_len: Optional[int] = 7,
+    ras_max_repeat: int = 2,
+    sampling_warmup_frames: int = 0,
+    emit_every_frames: int = 16,
+    overlap_ms: float = 40.0,
+    fade_in_ms: float = 5.0,
+    fade_out_ms: float = 5.0,
+    sample_rate: int = 24000,
+) -> Iterator[Tuple[np.ndarray, dict]]:
+    """Mid-generation overlap-add streaming. Yields ``(pcm_chunk, meta)``.
+
+    ``meta`` contains:
+
+    - ``is_final`` (bool): True iff this is the last chunk of the stream.
+    - ``frames_total`` (int): cumulative raw codec frames generated so far.
+
+    Re-decodes the accumulated codec sequence every ``emit_every_frames``
+    codec frames. The neural vocoder's output at a given sample depends on
+    full-sequence context — re-decoding at length ``N`` vs length ``N+K``
+    produces slightly different PCM near the right edge of the shorter
+    decode. Strategy: hold the last ``overlap_ms`` of each decode as a
+    buffer. On the next decode, linearly crossfade the buffered tail with
+    the new decode's same-position samples and emit the smoothed region.
+    This replaces the edge-affected tail of each decode with the
+    full-context version from the next decode.
+
+    Cost: ``O(T² / emit_every_frames)`` decode work — at
+    ``emit_every_frames=16`` (~640 ms) this is a few percent of generation
+    cost. TTFB shrinks from full-generation wall time to
+    ``~(emit_every_frames / 25) s``.
+    """
+    overlap_samples = int(overlap_ms * sample_rate / 1000.0)
+    K = config.audio_num_codebooks
+    audio_codebook_size = config.audio_codebook_size
+
+    n_fade_in = int(fade_in_ms * sample_rate / 1000.0)
+    n_fade_out = int(fade_out_ms * sample_rate / 1000.0)
+
+    frames_raw: list[mx.array] = []
+    overlap_tail: Optional[np.ndarray] = None
+    emitted_samples = 0
+    raw_frames_at_last_emit = 0
+    is_first_chunk = True
+    done_via_eos = False
+
+    def _decode_current() -> Optional[np.ndarray]:
+        sequence = mx.stack(frames_raw, axis=1).astype(mx.int32)
+        aligned = revert_delay_pattern(sequence)
+        if aligned.shape[1] < 2:
+            return None
+        aligned = aligned[:, 1:-1]
+        if aligned.shape[1] == 0:
+            return None
+        aligned = mx.clip(aligned, 0, audio_codebook_size - 1)
+        pcm = codec.decode(aligned.T)
+        mx.eval(pcm)
+        return np.array(pcm).astype(np.float32).reshape(-1)
+
+    for tok, meta in model._generate_raw_frames(
+        full_embeds,
+        audio_out_mask,
+        max_new_frames=max_new_frames,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        ras_win_len=ras_win_len,
+        ras_max_repeat=ras_max_repeat,
+        sampling_warmup_frames=sampling_warmup_frames,
+    ):
+        frames_raw.append(tok)
+
+        done_via_eos = (
+            meta.get("num_remaining_delays") is not None
+            and meta["num_remaining_delays"] <= 0
+        )
+
+        have_enough = len(frames_raw) > K + 1
+        frames_since_last = len(frames_raw) - raw_frames_at_last_emit
+        should_emit = have_enough and (
+            done_via_eos or frames_since_last >= emit_every_frames
+        )
+        if not should_emit:
+            continue
+        raw_frames_at_last_emit = len(frames_raw)
+
+        pcm_np = _decode_current()
+        if pcm_np is None:
+            continue
+
+        if is_first_chunk:
+            if n_fade_in > 0 and pcm_np.size > n_fade_in:
+                pcm_np[:n_fade_in] *= np.linspace(0.0, 1.0, n_fade_in, dtype=np.float32)
+            if done_via_eos:
+                if n_fade_out > 0 and pcm_np.size > n_fade_out:
+                    pcm_np[-n_fade_out:] *= np.linspace(
+                        1.0, 0.0, n_fade_out, dtype=np.float32
+                    )
+                yield pcm_np.copy(), {
+                    "is_final": True,
+                    "frames_total": len(frames_raw),
+                }
+                return
+            if pcm_np.size > overlap_samples:
+                yield pcm_np[:-overlap_samples].copy(), {
+                    "is_final": False,
+                    "frames_total": len(frames_raw),
+                }
+                overlap_tail = pcm_np[-overlap_samples:].copy()
+                emitted_samples = pcm_np.size - overlap_samples
+            else:
+                overlap_tail = pcm_np.copy()
+                emitted_samples = 0
+            is_first_chunk = False
+            continue
+
+        # Subsequent chunk: crossfade overlap_tail with new decode's
+        # same-position samples, then emit middle region.
+        if overlap_tail is None or pcm_np.size < emitted_samples + overlap_samples:
+            continue
+        new_overlap_region = pcm_np[emitted_samples : emitted_samples + overlap_samples]
+        fade_out = np.linspace(1.0, 0.0, overlap_samples, dtype=np.float32)
+        fade_in = np.linspace(0.0, 1.0, overlap_samples, dtype=np.float32)
+        crossfaded = overlap_tail * fade_out + new_overlap_region * fade_in
+
+        if done_via_eos:
+            tail_pcm = pcm_np[emitted_samples + overlap_samples :].copy()
+            if n_fade_out > 0 and tail_pcm.size > n_fade_out:
+                tail_pcm[-n_fade_out:] *= np.linspace(
+                    1.0, 0.0, n_fade_out, dtype=np.float32
+                )
+            yield np.concatenate([crossfaded, tail_pcm]), {
+                "is_final": True,
+                "frames_total": len(frames_raw),
+            }
+            return
+
+        new_middle_start = emitted_samples + overlap_samples
+        new_middle_end = pcm_np.size - overlap_samples
+        if new_middle_end > new_middle_start:
+            middle = pcm_np[new_middle_start:new_middle_end].copy()
+            yield np.concatenate([crossfaded, middle]), {
+                "is_final": False,
+                "frames_total": len(frames_raw),
+            }
+            overlap_tail = pcm_np[-overlap_samples:].copy()
+            emitted_samples = new_middle_end
+        else:
+            yield crossfaded.copy(), {
+                "is_final": False,
+                "frames_total": len(frames_raw),
+            }
+            overlap_tail = pcm_np[-overlap_samples:].copy()
+            emitted_samples = pcm_np.size - overlap_samples
+
+    # Post-loop flush: generator exited without EOS (hit max_new_frames).
+    # Emit remaining frames as a "final" chunk with fade-out.
+    if done_via_eos or raw_frames_at_last_emit >= len(frames_raw):
+        return
+    pcm_np = _decode_current()
+    if pcm_np is None:
+        return
+
+    if is_first_chunk:
+        # Nothing yet emitted — full utterance fits in one final chunk.
+        if n_fade_in > 0 and pcm_np.size > n_fade_in:
+            pcm_np[:n_fade_in] *= np.linspace(0.0, 1.0, n_fade_in, dtype=np.float32)
+        if n_fade_out > 0 and pcm_np.size > n_fade_out:
+            pcm_np[-n_fade_out:] *= np.linspace(1.0, 0.0, n_fade_out, dtype=np.float32)
+        yield pcm_np.copy(), {"is_final": True, "frames_total": len(frames_raw)}
+        return
+
+    if overlap_tail is None or pcm_np.size < emitted_samples + overlap_samples:
+        return
+    new_overlap_region = pcm_np[emitted_samples : emitted_samples + overlap_samples]
+    fade_out = np.linspace(1.0, 0.0, overlap_samples, dtype=np.float32)
+    fade_in = np.linspace(0.0, 1.0, overlap_samples, dtype=np.float32)
+    crossfaded = overlap_tail * fade_out + new_overlap_region * fade_in
+    tail_pcm = pcm_np[emitted_samples + overlap_samples :].copy()
+    if n_fade_out > 0 and tail_pcm.size > n_fade_out:
+        tail_pcm[-n_fade_out:] *= np.linspace(1.0, 0.0, n_fade_out, dtype=np.float32)
+    yield np.concatenate([crossfaded, tail_pcm]), {
+        "is_final": True,
+        "frames_total": len(frames_raw),
+    }

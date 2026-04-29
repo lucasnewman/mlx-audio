@@ -26,7 +26,12 @@ import numpy as np
 from ..base import GenerationResult
 from .config import HiggsAudioConfig
 from .higgs_audio import HiggsAudioModel
-from .serve import build_prompt
+from .serve import build_prompt, iter_overlap_add_pcm
+
+# Higgs v2 codec emits one frame per ~40 ms (24 kHz × 8× upsample × 240
+# patch). Used to convert the framework-level ``streaming_interval``
+# (seconds) into ``emit_every_frames`` for the overlap-add helper.
+_HIGGS_CODEC_FRAME_S = 0.04
 
 # Framework loader reads `module.ModelConfig.from_dict(config_json)`; aliasing
 # HiggsAudioConfig keeps a single source of truth.
@@ -129,23 +134,35 @@ class Model(HiggsAudioModel):
         fade_in_ms: float = 30.0,
         fade_out_ms: float = 15.0,
         verbose: bool = False,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
+        overlap_ms: float = 40.0,
         **kwargs,  # absorb framework kwargs we don't use (speed, lang_code, ...)
     ) -> Iterator[GenerationResult]:
-        """Synthesize `text` and yield a single `GenerationResult`.
+        """Synthesize ``text`` and yield ``GenerationResult``(s).
 
-        Voice cloning: pass `ref_audio` (mono 24 kHz mx.array or numpy array,
-        loaded by the top-level CLI from `--ref_audio`) together with
-        `ref_text` (its transcript). Without `ref_audio`, runs smart-voice
-        mode — works but less reliable; recommended to always supply a
-        reference for production use.
+        When ``stream=False`` (default): yields a single ``GenerationResult``
+        containing the full utterance — identical to the pre-streaming path.
+
+        When ``stream=True``: yields intermediate chunks via overlap-add
+        mid-generation streaming, with ``is_streaming_chunk=True`` on every
+        yield and ``is_final_chunk=True`` on the last. ``streaming_interval``
+        (seconds) controls chunk granularity — a Higgs codec frame is ~40 ms,
+        so the framework default of 2.0 s ≈ 50 frames per chunk. Lower
+        interval means lower TTFB at the cost of more re-decode overhead;
+        ~0.6 s is a reasonable conversational-voice setting.
+
+        Voice cloning: pass ``ref_audio`` (mono 24 kHz ``mx.array`` or
+        ``numpy.ndarray``, loaded by the top-level CLI from ``--ref_audio``)
+        together with ``ref_text`` (its transcript). Without ``ref_audio``,
+        runs smart-voice mode — works but less reliable; recommended to
+        always supply a reference for production use.
         """
         if self._tokenizer is None or self._codec is None:
             raise RuntimeError(
                 "Model not fully loaded — tokenizer/codec missing. Load via "
                 "mlx_audio.tts.utils.load(...) so post_load_hook runs."
             )
-
-        start = time.perf_counter()
 
         ref_audio_24k = None
         if ref_audio is not None:
@@ -161,6 +178,57 @@ class Model(HiggsAudioModel):
             embed_tokens=self.embed_tokens,
             audio_codebook_embeddings=self.audio_codebook_embeddings,
         )
+
+        if stream:
+            yield from self._generate_streaming(
+                full_embeds=full_embeds,
+                audio_out_mask=audio_out_mask,
+                max_new_frames=max_new_frames,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                ras_win_len=ras_win_len,
+                ras_max_repeat=ras_max_repeat,
+                sampling_warmup_frames=sampling_warmup_frames,
+                streaming_interval=streaming_interval,
+                overlap_ms=overlap_ms,
+                fade_in_ms=fade_in_ms,
+                fade_out_ms=fade_out_ms,
+            )
+        else:
+            yield from self._generate_oneshot(
+                full_embeds=full_embeds,
+                audio_out_mask=audio_out_mask,
+                max_new_frames=max_new_frames,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                ras_win_len=ras_win_len,
+                ras_max_repeat=ras_max_repeat,
+                sampling_warmup_frames=sampling_warmup_frames,
+                fade_in_ms=fade_in_ms,
+                fade_out_ms=fade_out_ms,
+            )
+
+    # --- generation backends -------------------------------------------
+
+    def _generate_oneshot(
+        self,
+        *,
+        full_embeds: mx.array,
+        audio_out_mask: mx.array,
+        max_new_frames: int,
+        temperature: float,
+        top_p: Optional[float],
+        top_k: Optional[int],
+        ras_win_len: Optional[int],
+        ras_max_repeat: int,
+        sampling_warmup_frames: int,
+        fade_in_ms: float,
+        fade_out_ms: float,
+    ) -> Iterator[GenerationResult]:
+        """Non-streaming path — generate all frames, decode once, yield one result."""
+        start = time.perf_counter()
 
         # Call the inherited HiggsAudioModel.generate (delay-pattern state machine).
         aligned, gen_info = HiggsAudioModel.generate(
@@ -215,3 +283,87 @@ class Model(HiggsAudioModel):
             processing_time_seconds=elapsed,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
         )
+
+    def _generate_streaming(
+        self,
+        *,
+        full_embeds: mx.array,
+        audio_out_mask: mx.array,
+        max_new_frames: int,
+        temperature: float,
+        top_p: Optional[float],
+        top_k: Optional[int],
+        ras_win_len: Optional[int],
+        ras_max_repeat: int,
+        sampling_warmup_frames: int,
+        streaming_interval: float,
+        overlap_ms: float,
+        fade_in_ms: float,
+        fade_out_ms: float,
+    ) -> Iterator[GenerationResult]:
+        """Streaming path — overlap-add mid-generation, one ``GenerationResult`` per chunk."""
+        sr = self._sample_rate
+        emit_every_frames = max(1, int(streaming_interval / _HIGGS_CODEC_FRAME_S))
+
+        chunks_iter = iter_overlap_add_pcm(
+            model=self,
+            codec=self._codec,
+            config=self._config,
+            full_embeds=full_embeds,
+            audio_out_mask=audio_out_mask,
+            max_new_frames=max_new_frames,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            ras_win_len=ras_win_len,
+            ras_max_repeat=ras_max_repeat,
+            sampling_warmup_frames=sampling_warmup_frames,
+            emit_every_frames=emit_every_frames,
+            overlap_ms=overlap_ms,
+            fade_in_ms=fade_in_ms,
+            fade_out_ms=fade_out_ms,
+            sample_rate=sr,
+        )
+
+        chunk_idx = 0
+        prev_frames_total = 0
+        chunk_start = time.perf_counter()
+        for pcm_chunk, meta in chunks_iter:
+            elapsed = time.perf_counter() - chunk_start
+            chunk_samples = int(pcm_chunk.size)
+            chunk_duration = chunk_samples / sr if sr > 0 else 0.0
+            frames_total = int(meta.get("frames_total", 0))
+            chunk_tokens = max(0, frames_total - prev_frames_total)
+            is_final = bool(meta.get("is_final"))
+
+            yield GenerationResult(
+                audio=mx.array(pcm_chunk),
+                samples=chunk_samples,
+                sample_rate=sr,
+                segment_idx=chunk_idx,
+                token_count=chunk_tokens,
+                audio_duration=_format_duration(chunk_duration),
+                real_time_factor=(
+                    round(chunk_duration / elapsed, 3) if elapsed > 0 else 0.0
+                ),
+                prompt={
+                    "tokens": chunk_tokens,
+                    "tokens-per-sec": (
+                        round(chunk_tokens / elapsed, 2) if elapsed > 0 else 0.0
+                    ),
+                },
+                audio_samples={
+                    "samples": chunk_samples,
+                    "samples-per-sec": (
+                        round(chunk_samples / elapsed, 2) if elapsed > 0 else 0.0
+                    ),
+                },
+                processing_time_seconds=elapsed,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+                is_streaming_chunk=True,
+                is_final_chunk=is_final,
+            )
+
+            chunk_idx += 1
+            prev_frames_total = frames_total
+            chunk_start = time.perf_counter()
