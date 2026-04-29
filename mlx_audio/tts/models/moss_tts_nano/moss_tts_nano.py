@@ -90,9 +90,9 @@ class Model(nn.Module):
         source: str | None = None,
     ):
         if self.audio_tokenizer is None:
-            from .audio_tokenizer import MLXMossAudioTokenizer
+            from mlx_audio.codec import MossAudioTokenizer
 
-            self.audio_tokenizer = MLXMossAudioTokenizer.from_model_dir(
+            self.audio_tokenizer = MossAudioTokenizer.from_model_dir(
                 self.config.model_path,
                 fallback_source=source
                 or self.config.audio_tokenizer_pretrained_name_or_path,

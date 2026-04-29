@@ -39,6 +39,8 @@ MODEL_REMAPPING = {
     "omnivoice": "omnivoice",
     "melotts": "melotts",
     "moss_tts_nano": "moss_tts_nano",
+    "moss_tts_delay": "moss_tts",
+    "moss-tts": "moss_tts",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
