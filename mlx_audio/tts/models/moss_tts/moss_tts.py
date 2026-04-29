@@ -12,10 +12,183 @@ from mlx_lm.models.qwen3 import Qwen3Model
 from mlx_audio.tts.models.base import GenerationResult
 
 from .config import DEFAULT_AUDIO_TOKENIZER_REPO, ModelConfig
-from .processor import MossTTSDelayProcessor, apply_de_delay_pattern
+from .processor import (
+    MossTTSDelayProcessor,
+    MossTTSLocalProcessor,
+    apply_de_delay_pattern,
+)
 from .sampling import sample_token
 
 _INT64_MAX = 9223372036854775807
+
+
+class MossTTSRMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.weight = mx.ones((int(dim),))
+        self.eps = float(eps)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        return (
+            self.weight
+            * mx.rsqrt(mx.mean(mx.square(x), axis=-1, keepdims=True) + self.eps)
+            * x
+        )
+
+
+class MossTTSMLP(nn.Module):
+    def __init__(self, input_size: int, ffn_hidden_size: int, output_size: int):
+        super().__init__()
+        self.gate_proj = nn.Linear(input_size, ffn_hidden_size, bias=False)
+        self.up_proj = nn.Linear(input_size, ffn_hidden_size, bias=False)
+        self.down_proj = nn.Linear(ffn_hidden_size, output_size, bias=False)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
+
+
+def _causal_mask(length: int, dtype: mx.Dtype) -> mx.array:
+    positions = mx.arange(int(length), dtype=mx.int32)
+    allowed = positions[None, None, :, None] >= positions[None, None, None, :]
+    return mx.where(allowed, 0.0, mx.finfo(dtype).min).astype(dtype)
+
+
+class MossTTSLocalAttention(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        dim = int(args.hidden_size)
+        self.n_heads = int(args.num_attention_heads)
+        self.n_kv_heads = int(args.num_key_value_heads)
+        self.head_dim = int(args.head_dim)
+        self.scale = self.head_dim**-0.5
+        self.q_proj = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.n_heads * self.head_dim, dim, bias=False)
+        self.q_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
+        self.k_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
+
+    def __call__(self, x: mx.array, mask: mx.array | None = None) -> mx.array:
+        batch, length, _ = x.shape
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+        q = self.q_norm(q.reshape(batch, length, self.n_heads, self.head_dim))
+        k = self.k_norm(k.reshape(batch, length, self.n_kv_heads, self.head_dim))
+        q = q.transpose(0, 2, 1, 3)
+        k = k.transpose(0, 2, 1, 3)
+        v = v.reshape(batch, length, self.n_kv_heads, self.head_dim).transpose(
+            0, 2, 1, 3
+        )
+        out = mx.fast.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale=self.scale,
+            mask=mask,
+        )
+        out = out.transpose(0, 2, 1, 3).reshape(batch, length, -1)
+        return self.o_proj(out)
+
+
+class MossTTSLocalTransformerBlock(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.self_attn = MossTTSLocalAttention(args)
+        self.mlp = MossTTSMLP(
+            int(args.hidden_size),
+            int(args.intermediate_size),
+            int(args.hidden_size),
+        )
+        self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+        self.post_attention_layernorm = nn.RMSNorm(
+            args.hidden_size, eps=args.rms_norm_eps
+        )
+
+    def __call__(self, x: mx.array, mask: mx.array | None = None) -> mx.array:
+        h = x + self.self_attn(self.input_layernorm(x), mask=mask)
+        return h + self.mlp(self.post_attention_layernorm(h))
+
+
+class MossTTSLocalTransformer(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        self.layers = [
+            MossTTSLocalTransformerBlock(args)
+            for _ in range(int(args.num_hidden_layers))
+        ]
+        self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+
+    def __call__(self, inputs_embeds: mx.array) -> mx.array:
+        mask = _causal_mask(inputs_embeds.shape[1], inputs_embeds.dtype)
+        hidden_states = inputs_embeds
+        for layer in self.layers:
+            hidden_states = layer(hidden_states, mask=mask)
+        return self.norm(hidden_states)
+
+
+class MosiTTSModel(nn.Module):
+    def __init__(self, config: ModelConfig):
+        super().__init__()
+        self.config = config
+        self.embedding_list = [
+            nn.Embedding(config.vocab_size, config.hidden_size),
+        ]
+        self.embedding_list.extend(
+            [
+                nn.Embedding(config.audio_vocab_size + 1, config.hidden_size)
+                for _ in range(config.n_vq)
+            ]
+        )
+        self.language_model = Qwen3Model(config.language_config)
+
+    def _prepare_multi_modal_inputs(
+        self,
+        input_ids: mx.array,
+        *,
+        n_vq_for_inference: int | None = None,
+    ) -> mx.array:
+        if input_ids.ndim != 3 or input_ids.shape[-1] != self.config.n_vq + 1:
+            raise ValueError(
+                "Expected input_ids shape "
+                f"[batch, seq, {self.config.n_vq + 1}], got {input_ids.shape}"
+            )
+        channels = min(
+            input_ids.shape[-1],
+            1 + int(n_vq_for_inference or self.config.n_vq),
+        )
+        inputs_embeds = mx.zeros(
+            (*input_ids.shape[:2], self.config.hidden_size),
+            dtype=self.embedding_list[0].weight.dtype,
+        )
+        for channel_index in range(channels):
+            inputs_embeds = inputs_embeds + self.embedding_list[channel_index](
+                input_ids[..., channel_index]
+            )
+        return inputs_embeds
+
+    def __call__(
+        self,
+        input_ids: mx.array | None = None,
+        *,
+        inputs_embeds: mx.array | None = None,
+        cache=None,
+        n_vq_for_inference: int | None = None,
+    ) -> mx.array:
+        if inputs_embeds is None:
+            if input_ids is None:
+                raise ValueError("input_ids or inputs_embeds are required")
+            inputs_embeds = self._prepare_multi_modal_inputs(
+                input_ids,
+                n_vq_for_inference=n_vq_for_inference,
+            )
+        dummy_inputs = mx.zeros(inputs_embeds.shape[:2], dtype=mx.int32)
+        return self.language_model(
+            dummy_inputs,
+            cache=cache,
+            input_embeddings=inputs_embeds,
+        )
 
 
 class Model(nn.Module):
@@ -26,22 +199,61 @@ class Model(nn.Module):
         if config.language_config is None:
             raise ValueError("MOSS-TTS requires language_config")
         self.config = config
-        self.language_model = Qwen3Model(config.language_config)
-        self.emb_ext = [
-            nn.Embedding(config.audio_vocab_size + 1, config.hidden_size)
-            for _ in range(config.n_vq)
-        ]
-        self.lm_heads = [nn.Linear(config.hidden_size, config.vocab_size, bias=False)]
-        self.lm_heads.extend(
-            [
-                nn.Linear(
-                    config.hidden_size,
-                    config.audio_vocab_size + 1,
-                    bias=False,
+        if config.is_local_transformer:
+            self.model = MosiTTSModel(config)
+            self.channels = 1 + config.n_vq
+            self.local_transformer_config = config.local_transformer_config()
+            self.local_transformer = MossTTSLocalTransformer(
+                self.local_transformer_config
+            )
+            self.speech_embedding_to_local_mlp = MossTTSMLP(
+                input_size=config.hidden_size,
+                ffn_hidden_size=int(config.additional_mlp_ffn_hidden_size),
+                output_size=int(config.local_hidden_size),
+            )
+            self.local_to_speech_embedding_mlps = [
+                MossTTSMLP(
+                    input_size=int(config.local_hidden_size),
+                    ffn_hidden_size=int(config.additional_mlp_ffn_hidden_size),
+                    output_size=config.hidden_size,
                 )
+                for _ in range(self.channels)
+            ]
+            self.layer_norm_before_lm_heads = [
+                MossTTSRMSNorm(config.hidden_size) for _ in range(self.channels)
+            ]
+            self.lm_heads = [
+                nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+            ]
+            self.lm_heads.extend(
+                [
+                    nn.Linear(
+                        config.hidden_size,
+                        config.audio_vocab_size + 1,
+                        bias=False,
+                    )
+                    for _ in range(config.n_vq)
+                ]
+            )
+        else:
+            self.language_model = Qwen3Model(config.language_config)
+            self.emb_ext = [
+                nn.Embedding(config.audio_vocab_size + 1, config.hidden_size)
                 for _ in range(config.n_vq)
             ]
-        )
+            self.lm_heads = [
+                nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+            ]
+            self.lm_heads.extend(
+                [
+                    nn.Linear(
+                        config.hidden_size,
+                        config.audio_vocab_size + 1,
+                        bias=False,
+                    )
+                    for _ in range(config.n_vq)
+                ]
+            )
         self.tokenizer = None
         self.audio_tokenizer = None
 
@@ -55,6 +267,8 @@ class Model(nn.Module):
 
     @property
     def layers(self):
+        if self.config.is_local_transformer:
+            return self.model.language_model.layers
         return self.language_model.layers
 
     @classmethod
@@ -72,13 +286,13 @@ class Model(nn.Module):
 
     def model_quant_predicate(self, path: str, module) -> bool:
         del module
-        skip_prefixes = ("emb_ext", "audio_tokenizer")
+        skip_prefixes = ("emb_ext", "model.embedding_list", "audio_tokenizer")
         return not any(path.startswith(prefix) for prefix in skip_prefixes)
 
     def sanitize(self, weights: dict[str, mx.array]) -> dict[str, mx.array]:
         sanitized = {}
         for key, value in weights.items():
-            if key.startswith("model."):
+            if key.startswith("model.") and not self.config.is_local_transformer:
                 key = key[len("model.") :]
             sanitized[key] = value
         return sanitized
@@ -128,6 +342,8 @@ class Model(nn.Module):
         )
 
     def _build_inputs_embeds(self, input_ids: mx.array) -> mx.array:
+        if self.config.is_local_transformer:
+            return self.model._prepare_multi_modal_inputs(input_ids)
         if input_ids.ndim != 3 or input_ids.shape[-1] != self.config.n_vq + 1:
             raise ValueError(
                 "Expected input_ids shape "
@@ -152,7 +368,18 @@ class Model(nn.Module):
         inputs_embeds: mx.array | None = None,
         cache=None,
         head_indices: Sequence[int] | None = None,
+        labels: mx.array | None = None,
+        n_vq_for_inference: int | None = None,
     ) -> list[mx.array]:
+        if self.config.is_local_transformer:
+            return self._local_forward(
+                input_ids=input_ids,
+                inputs_embeds=inputs_embeds,
+                cache=cache,
+                labels=labels,
+                head_indices=head_indices,
+                n_vq_for_inference=n_vq_for_inference,
+            )
         if inputs_embeds is None:
             if input_ids is None:
                 raise ValueError("input_ids or inputs_embeds are required")
@@ -168,7 +395,73 @@ class Model(nn.Module):
         return [self._head_logits(hidden_states, int(index)) for index in head_indices]
 
     def make_cache(self):
+        if self.config.is_local_transformer:
+            return make_prompt_cache(self.model.language_model)
         return make_prompt_cache(self.language_model)
+
+    def _masked_embedding(
+        self, embedding: nn.Embedding, input_ids: mx.array
+    ) -> mx.array:
+        mask = input_ids != -100
+        safe_ids = mx.where(mask, input_ids, 0).astype(mx.int32)
+        return mx.where(mask[..., None], embedding(safe_ids), 0.0)
+
+    def _local_forward(
+        self,
+        input_ids: mx.array | None = None,
+        *,
+        inputs_embeds: mx.array | None = None,
+        cache=None,
+        labels: mx.array | None = None,
+        head_indices: Sequence[int] | None = None,
+        n_vq_for_inference: int | None = None,
+    ) -> list[mx.array]:
+        if inputs_embeds is None and input_ids is None:
+            raise ValueError("input_ids or inputs_embeds are required")
+        global_hidden_states = self.model(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            cache=cache,
+            n_vq_for_inference=n_vq_for_inference,
+        )
+        if labels is None:
+            if input_ids is None:
+                raise ValueError("labels are required when inputs_embeds are provided")
+            labels = input_ids
+        if labels.ndim != 3 or labels.shape[-1] != self.channels:
+            raise ValueError(
+                f"Expected labels shape [batch, seq, {self.channels}], got {labels.shape}"
+            )
+
+        local_inputs = [global_hidden_states]
+        for channel_index in range(self.channels - 1):
+            local_inputs.append(
+                self._masked_embedding(
+                    self.model.embedding_list[channel_index],
+                    labels[..., channel_index],
+                )
+            )
+        local_inputs = mx.stack(local_inputs, axis=0)
+        local_inputs = self.speech_embedding_to_local_mlp(local_inputs)
+        channels, batch, seq_len, local_dim = local_inputs.shape
+        local_inputs = local_inputs.transpose(1, 2, 0, 3).reshape(
+            batch * seq_len,
+            channels,
+            local_dim,
+        )
+        local_outputs = self.local_transformer(local_inputs)
+
+        if head_indices is None:
+            head_indices = range(self.channels)
+        logits = []
+        for head_index in head_indices:
+            head_index = int(head_index)
+            head_hidden = local_outputs[:, head_index, :]
+            head_hidden = self.local_to_speech_embedding_mlps[head_index](head_hidden)
+            head_hidden = self.layer_norm_before_lm_heads[head_index](head_hidden)
+            head_hidden = head_hidden.reshape(batch, seq_len, self.config.hidden_size)
+            logits.append(self.lm_heads[head_index](head_hidden))
+        return logits
 
     @staticmethod
     def _find_last_equal(values: mx.array, target: int) -> int:
@@ -369,6 +662,128 @@ class Model(nn.Module):
         start_length = int(seq_len - start_idx)
         return [(start_length, generation_ids[0, start_idx:])]
 
+    def generate_local_ids(
+        self,
+        input_ids: mx.array,
+        *,
+        max_new_tokens: int = 4096,
+        text_temperature: float = 1.5,
+        text_top_p: float = 1.0,
+        text_top_k: int = 50,
+        text_repetition_penalty: float = 1.0,
+        audio_temperature: float = 1.0,
+        audio_top_p: float = 0.95,
+        audio_top_k: int = 50,
+        audio_repetition_penalty: float = 1.1,
+        n_vq_for_inference: int | None = None,
+    ) -> list[tuple[int, mx.array]]:
+        if input_ids.ndim != 3:
+            raise ValueError(f"Expected input_ids rank 3, got {input_ids.shape}")
+        if input_ids.shape[0] != 1:
+            raise NotImplementedError("MOSS-TTS batch generation is not implemented.")
+
+        if text_temperature > 0:
+            text_do_sample = True
+        else:
+            text_temperature = 1.0
+            text_do_sample = False
+        if audio_temperature > 0:
+            audio_do_sample = True
+        else:
+            audio_temperature = 1.0
+            audio_do_sample = False
+
+        batch_size, seq_len, channels = input_ids.shape
+        if channels != self.channels:
+            raise ValueError(f"Expected {self.channels} channels, got {channels}")
+        n_vq = max(
+            1,
+            min(
+                self.channels - 1,
+                int(n_vq_for_inference or self.channels - 1),
+            ),
+        )
+        active_channels = 1 + n_vq
+
+        cache = self.make_cache()
+        current_input_ids = input_ids
+        generation_ids = input_ids
+
+        for _ in range(int(max_new_tokens)):
+            global_hidden_states = self.model(
+                current_input_ids,
+                cache=cache,
+                n_vq_for_inference=n_vq,
+            )
+            current_local_input = self.speech_embedding_to_local_mlp(
+                global_hidden_states[:, -1, :]
+            )
+            local_inputs = mx.zeros(
+                (batch_size, 0, int(self.config.local_hidden_size)),
+                dtype=current_local_input.dtype,
+            )
+            next_tokens = []
+
+            for channel_index in range(active_channels):
+                local_inputs = mx.concatenate(
+                    [local_inputs, current_local_input[:, None, :]],
+                    axis=1,
+                )
+                local_outputs = self.local_transformer(local_inputs)
+                head_hidden = local_outputs[:, -1, :]
+                head_hidden = self.local_to_speech_embedding_mlps[channel_index](
+                    head_hidden
+                )
+                head_hidden = self.layer_norm_before_lm_heads[channel_index](
+                    head_hidden
+                )
+                logits = self.lm_heads[channel_index](head_hidden)
+                if channel_index != 0:
+                    logits = self._set_logits_to_neg_inf(
+                        logits,
+                        [self.config.audio_pad_code],
+                    )
+
+                is_text = channel_index == 0
+                repetition_penalty = (
+                    text_repetition_penalty if is_text else audio_repetition_penalty
+                )
+                if not (text_do_sample if is_text else audio_do_sample):
+                    repetition_penalty = 1.0
+                token = sample_token(
+                    logits / float(text_temperature if is_text else audio_temperature),
+                    prev_tokens=generation_ids[:, :, channel_index],
+                    repetition_penalty=repetition_penalty,
+                    top_p=text_top_p if is_text else audio_top_p,
+                    top_k=text_top_k if is_text else audio_top_k,
+                    do_sample=text_do_sample if is_text else audio_do_sample,
+                )
+                mx.eval(token)
+                next_tokens.append(token)
+
+                current_local_input = self.model.embedding_list[channel_index](token)
+                current_local_input = self.speech_embedding_to_local_mlp(
+                    current_local_input
+                )
+
+            for _channel_index in range(active_channels, channels):
+                next_tokens.append(mx.zeros((batch_size,), dtype=mx.int32))
+            next_tokens = mx.stack(next_tokens, axis=-1).astype(mx.int32)
+
+            current_input_ids = next_tokens[:, None, :]
+            generation_ids = mx.concatenate([generation_ids, current_input_ids], axis=1)
+            mx.eval(current_input_ids)
+
+            if int(next_tokens[0, 0].item()) == self.config.audio_end_token_id:
+                break
+
+        audio_start_idx = self._find_last_equal(
+            input_ids[0, :, 0], self.config.audio_start_token_id
+        )
+        start_idx = audio_start_idx if audio_start_idx != -1 else int(seq_len)
+        start_length = int(seq_len - start_idx - 1) if audio_start_idx != -1 else 0
+        return [(start_length, generation_ids[0, start_idx:])]
+
     def _decode_generated_audio(
         self,
         outputs: list[tuple[int, mx.array]],
@@ -378,7 +793,9 @@ class Model(nn.Module):
         audio_segments = []
         token_count = 0
         for start_length, generation_ids in outputs:
-            audio_codes = apply_de_delay_pattern(generation_ids[:, 1:].astype(mx.int32))
+            audio_codes = generation_ids[:, 1:].astype(mx.int32)
+            if not self.config.is_local_transformer:
+                audio_codes = apply_de_delay_pattern(audio_codes)
             is_pad = mx.all(audio_codes == self.config.audio_pad_code, axis=1)
             non_pad_indices = [
                 idx for idx, value in enumerate(is_pad.tolist()) if not bool(value)
@@ -470,7 +887,11 @@ class Model(nn.Module):
             raise ValueError("Tokenizer is not initialized.")
 
         started_at = time.perf_counter()
-        processor = MossTTSDelayProcessor(self.tokenizer, self.config)
+        processor = (
+            MossTTSLocalProcessor(self.tokenizer, self.config)
+            if self.config.is_local_transformer
+            else MossTTSDelayProcessor(self.tokenizer, self.config)
+        )
 
         if prompt_audio_codes is None and ref_audio is not None:
             prompt_audio_codes = self.encode_reference_audio(
@@ -519,17 +940,38 @@ class Model(nn.Module):
             ]
 
         batch = processor([conversations], mode=normalized_mode)
-        outputs = self.generate_delay_pattern_ids(
-            batch["input_ids"],
-            max_new_tokens=int(max_tokens),
-            text_temperature=float(kwargs.get("text_temperature", 1.5)),
-            text_top_p=float(kwargs.get("text_top_p", 1.0)),
-            text_top_k=int(kwargs.get("text_top_k", 50)),
-            audio_temperature=float(kwargs.get("audio_temperature", 1.7)),
-            audio_top_p=float(kwargs.get("audio_top_p", 0.8)),
-            audio_top_k=int(kwargs.get("audio_top_k", 25)),
-            audio_repetition_penalty=float(kwargs.get("audio_repetition_penalty", 1.0)),
-        )
+        if self.config.is_local_transformer:
+            outputs = self.generate_local_ids(
+                batch["input_ids"],
+                max_new_tokens=int(max_tokens),
+                text_temperature=float(kwargs.get("text_temperature", 1.5)),
+                text_top_p=float(kwargs.get("text_top_p", 1.0)),
+                text_top_k=int(kwargs.get("text_top_k", 50)),
+                text_repetition_penalty=float(
+                    kwargs.get("text_repetition_penalty", 1.0)
+                ),
+                audio_temperature=float(kwargs.get("audio_temperature", 1.0)),
+                audio_top_p=float(kwargs.get("audio_top_p", 0.95)),
+                audio_top_k=int(kwargs.get("audio_top_k", 50)),
+                audio_repetition_penalty=float(
+                    kwargs.get("audio_repetition_penalty", 1.1)
+                ),
+                n_vq_for_inference=kwargs.get("n_vq_for_inference"),
+            )
+        else:
+            outputs = self.generate_delay_pattern_ids(
+                batch["input_ids"],
+                max_new_tokens=int(max_tokens),
+                text_temperature=float(kwargs.get("text_temperature", 1.5)),
+                text_top_p=float(kwargs.get("text_top_p", 1.0)),
+                text_top_k=int(kwargs.get("text_top_k", 50)),
+                audio_temperature=float(kwargs.get("audio_temperature", 1.7)),
+                audio_top_p=float(kwargs.get("audio_top_p", 0.8)),
+                audio_top_k=int(kwargs.get("audio_top_k", 25)),
+                audio_repetition_penalty=float(
+                    kwargs.get("audio_repetition_penalty", 1.0)
+                ),
+            )
         audio, token_count = self._decode_generated_audio(
             outputs,
             source=kwargs.get("audio_tokenizer_source"),

@@ -140,9 +140,18 @@ def apply_de_delay_pattern(delay_codes: mx.array) -> mx.array:
 
 
 class MossTTSDelayProcessor:
-    def __init__(self, tokenizer, model_config: ModelConfig):
+    def __init__(
+        self,
+        tokenizer,
+        model_config: ModelConfig,
+        *,
+        use_delay_pattern: bool = True,
+        append_audio_start_for_generation: bool = False,
+    ):
         self.tokenizer = tokenizer
         self.model_config = model_config
+        self.use_delay_pattern = bool(use_delay_pattern)
+        self.append_audio_start_for_generation = bool(append_audio_start_for_generation)
         self.audio_user_slot_token = self._id_to_token(
             model_config.audio_user_slot_token_id
         )
@@ -245,12 +254,14 @@ class MossTTSDelayProcessor:
                 raise ValueError(f"length must be >= 0, got {length}")
             if length == 0:
                 return f"{audio_start_token}{audio_end_token}"
-            return (
-                f"{audio_start_token}"
-                f"{gen_slot_token * length}"
-                f"{delay_slot_token * (n_vq - 1)}"
-                f"{audio_end_token}"
-            )
+            if delay_slot_token:
+                return (
+                    f"{audio_start_token}"
+                    f"{gen_slot_token * length}"
+                    f"{delay_slot_token * (n_vq - 1)}"
+                    f"{audio_end_token}"
+                )
+            return f"{audio_start_token}{gen_slot_token * length}{audio_end_token}"
 
         lengths_iter = iter(lengths)
         return re.sub(
@@ -327,7 +338,7 @@ class MossTTSDelayProcessor:
             lengths=[int(audio_codes.shape[0]) for audio_codes in audio_codes_list],
             n_vq=n_vq,
             gen_slot_token=audio_gen_slot_token,
-            delay_slot_token=audio_delay_slot_token,
+            delay_slot_token=(audio_delay_slot_token if self.use_delay_pattern else ""),
             audio_start_token=self.audio_start_token,
             audio_end_token=self.audio_end_token,
         )
@@ -363,19 +374,21 @@ class MossTTSDelayProcessor:
             for audio_start_idx, audio_end_idx, audio_codes in zip(
                 audio_start_indices, audio_end_indices, audio_codes_list
             ):
-                delayed = apply_delay_pattern(
-                    audio_codes.astype(mx.int32), self.model_config.audio_pad_code
-                )
+                audio_codes = audio_codes.astype(mx.int32)
+                if self.use_delay_pattern:
+                    audio_codes = apply_delay_pattern(
+                        audio_codes, self.model_config.audio_pad_code
+                    )
                 pad_codes = mx.full(
                     (audio_start_idx - prefix_idx + 1, n_vq),
                     self.model_config.audio_pad_code,
                     dtype=mx.int32,
                 )
-                sections.extend([pad_codes, delayed])
+                sections.extend([pad_codes, audio_codes])
                 prefix_idx = audio_end_idx
-            if truncation:
+            if truncation and self.use_delay_pattern:
                 sections[-1] = sections[-1][: -(n_vq - 1), :]
-            else:
+            elif not truncation:
                 sections.append(
                     mx.full(
                         (len(text_list) - audio_end_indices[-1], n_vq),
@@ -437,7 +450,16 @@ class MossTTSDelayProcessor:
                         message["role"], content, audio_codes_list, truncation
                     )
                 )
-            input_ids_list.append(mx.concatenate(unified_codes, axis=0))
+            input_ids = mx.concatenate(unified_codes, axis=0)
+            if self.append_audio_start_for_generation and mode == "generation":
+                audio_start_row = mx.full(
+                    (1, input_ids.shape[-1]),
+                    self.model_config.audio_pad_code,
+                    dtype=mx.int32,
+                )
+                audio_start_row[:, 0] = self.model_config.audio_start_token_id
+                input_ids = mx.concatenate([input_ids, audio_start_row], axis=0)
+            input_ids_list.append(input_ids)
 
         return self._pad(input_ids_list)
 
@@ -467,3 +489,13 @@ class MossTTSDelayProcessor:
             "input_ids": mx.stack(padded_ids, axis=0),
             "attention_mask": mx.stack(masks, axis=0),
         }
+
+
+class MossTTSLocalProcessor(MossTTSDelayProcessor):
+    def __init__(self, tokenizer, model_config: ModelConfig):
+        super().__init__(
+            tokenizer,
+            model_config,
+            use_delay_pattern=False,
+            append_audio_start_for_generation=True,
+        )

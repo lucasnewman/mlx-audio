@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from mlx_lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
@@ -29,6 +29,10 @@ class ModelConfig(BaseModelArgs):
     im_end_token_id: int = 151645
     sampling_rate: int = 24000
     audio_tokenizer_pretrained_name_or_path: str | None = None
+    additional_mlp_ffn_hidden_size: int | None = None
+    local_ffn_hidden_size: int | None = None
+    local_hidden_size: int | None = None
+    local_num_layers: int | None = None
 
     @property
     def hidden_size(self) -> int:
@@ -41,6 +45,27 @@ class ModelConfig(BaseModelArgs):
         if self.language_config is None:
             raise ValueError("language_config is not initialized")
         return int(self.language_config.vocab_size)
+
+    @property
+    def is_local_transformer(self) -> bool:
+        return (
+            self.additional_mlp_ffn_hidden_size is not None
+            and self.local_ffn_hidden_size is not None
+            and self.local_hidden_size is not None
+            and self.local_num_layers is not None
+        )
+
+    def local_transformer_config(self) -> Qwen3ModelConfig:
+        if self.language_config is None:
+            raise ValueError("language_config is not initialized")
+        if not self.is_local_transformer:
+            raise ValueError("local transformer configuration is not initialized")
+        return replace(
+            self.language_config,
+            hidden_size=int(self.local_hidden_size),
+            intermediate_size=int(self.local_ffn_hidden_size),
+            num_hidden_layers=int(self.local_num_layers),
+        )
 
     @classmethod
     def from_dict(cls, params: dict[str, Any]) -> "ModelConfig":
@@ -85,5 +110,25 @@ class ModelConfig(BaseModelArgs):
             audio_tokenizer_pretrained_name_or_path=params.get(
                 "audio_tokenizer_pretrained_name_or_path",
                 DEFAULT_AUDIO_TOKENIZER_REPO,
+            ),
+            additional_mlp_ffn_hidden_size=(
+                int(params["additional_mlp_ffn_hidden_size"])
+                if "additional_mlp_ffn_hidden_size" in params
+                else None
+            ),
+            local_ffn_hidden_size=(
+                int(params["local_ffn_hidden_size"])
+                if "local_ffn_hidden_size" in params
+                else None
+            ),
+            local_hidden_size=(
+                int(params["local_hidden_size"])
+                if "local_hidden_size" in params
+                else None
+            ),
+            local_num_layers=(
+                int(params["local_num_layers"])
+                if "local_num_layers" in params
+                else None
             ),
         )

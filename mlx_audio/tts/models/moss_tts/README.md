@@ -1,11 +1,11 @@
 # MOSS-TTS
 
-MOSS-TTS is the 8B `MossTTSDelay` model from OpenMOSS. It uses a Qwen3 backbone with delay-pattern multi-codebook audio generation and the full MOSS Audio Tokenizer.
+MOSS-TTS covers the 8B `MossTTSDelay` model and the 1.7B local-transformer variant from OpenMOSS. It uses a Qwen3 backbone with the matching multi-codebook audio generation path and the full MOSS Audio Tokenizer.
 
 ## Supported Models
 
 - `OpenMOSS-Team/MOSS-TTS`
-- Audio tokenizer: `OpenMOSS-Team/MOSS-Audio-Tokenizer`
+- `OpenMOSS-Team/MOSS-TTS-Local-Transformer`
 
 ## Usage
 
@@ -34,8 +34,3 @@ result = next(model.generate(
 ))
 audio_write("cloned.wav", result.audio, result.sample_rate)
 ```
-
-Current limitations:
-
-- Batch generation is not implemented.
-- Streaming is not implemented.

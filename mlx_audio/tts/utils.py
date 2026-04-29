@@ -40,6 +40,7 @@ MODEL_REMAPPING = {
     "melotts": "melotts",
     "moss_tts_nano": "moss_tts_nano",
     "moss_tts_delay": "moss_tts",
+    "moss_tts_local": "moss_tts",
     "moss-tts": "moss_tts",
 }
 MAX_FILE_SIZE_GB = 5
