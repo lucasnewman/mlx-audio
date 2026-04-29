@@ -220,8 +220,7 @@ def sanitize_campplus_onnx_weights(model, onnx_path: str | Path) -> Dict[str, mx
     missing = [key for key in curr if key not in sanitized]
     if missing:
         raise ValueError(
-            "Missing CAMPPlus parameters after ONNX conversion: "
-            f"{missing[:10]}"
+            "Missing CAMPPlus parameters after ONNX conversion: " f"{missing[:10]}"
         )
     return sanitized
 
