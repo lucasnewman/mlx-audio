@@ -41,6 +41,19 @@ class TestGenerateArgs(unittest.TestCase):
         self.assertTrue(args.stream)
         self.assertTrue(args.save)
 
+    def test_max_tokens_defaults_to_none_for_model_defaults(self):
+        test_args = [
+            "--model",
+            "dummy-model",
+            "--text",
+            "hello",
+        ]
+
+        with patch.object(sys, "argv", ["generate.py"] + test_args):
+            args = parse_args()
+
+        self.assertIsNone(args.max_tokens)
+
 
 class TestGenerateAudio(unittest.TestCase):
     @staticmethod
@@ -203,3 +216,20 @@ class TestGenerateAudio(unittest.TestCase):
         player.queue_audio.assert_called_once()
         player.wait_for_drain.assert_called_once()
         player.stop.assert_called_once()
+
+    @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
+    def test_generate_audio_omits_none_max_tokens(self, mock_audio_write, _mock_print):
+        model = MagicMock()
+        model.sample_rate = 24000
+        model.generate.return_value = [self._result([0.1, 0.2])]
+
+        generate_audio(
+            text="hello",
+            model=model,
+            max_tokens=None,
+            verbose=False,
+        )
+
+        self.assertNotIn("max_tokens", model.generate.call_args.kwargs)
+        mock_audio_write.assert_called_once()

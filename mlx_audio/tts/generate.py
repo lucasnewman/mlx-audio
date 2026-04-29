@@ -122,7 +122,7 @@ def write_joined_audio(
 def generate_audio(
     text: str,
     model: Optional[Union[str, nn.Module]] = None,
-    max_tokens: int = 1200,
+    max_tokens: Optional[int] = 1200,
     voice: str = "af_heart",
     prompt: Optional[str] = None,
     instruct: Optional[str] = None,
@@ -245,7 +245,6 @@ def generate_audio(
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
             temperature=temperature,
-            max_tokens=max_tokens,
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
@@ -253,6 +252,8 @@ def generate_audio(
             use_zero_spk_emb=use_zero_spk_emb,
             **kwargs,
         )
+        if max_tokens is not None:
+            gen_kwargs["max_tokens"] = max_tokens
         if prompt is not None:
             gen_kwargs["prompt"] = prompt
         if sigma is not None:
@@ -375,7 +376,7 @@ def parse_args():
     parser.add_argument(
         "--max_tokens",
         type=int,
-        default=1200,
+        default=None,
         help="Maximum number of tokens to generate",
     )
     parser.add_argument(
