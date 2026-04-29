@@ -1,6 +1,6 @@
 import io
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -9,12 +9,12 @@ import numpy as np
 from mlx_audio.audio_io import write as audio_write
 from mlx_audio.codec.models.s3 import S3TokenizerV2, log_mel_spectrogram
 from mlx_audio.tts.models.chatterbox.s3gen.mel import mel_spectrogram
-from mlx_audio.tts.models.chatterbox.s3gen.xvector import kaldi_fbank
 from mlx_audio.utils import load_audio
 
-from .convert import load_flow_weights, load_hift_weights
+from .convert import load_campplus_weights, load_flow_weights, load_hift_weights
 from .flow import CausalMaskedDiffWithXvec
 from .hift import StepAudio2HiFTGenerator
+from .speaker import StepAudio2CAMPPlus
 
 STEPAUDIO2_SAMPLE_RATE = 24_000
 S3_SAMPLE_RATE = 16_000
@@ -26,13 +26,13 @@ class StepAudio2Token2Wav(nn.Module):
         flow: Optional[CausalMaskedDiffWithXvec] = None,
         hift: Optional[StepAudio2HiFTGenerator] = None,
         speech_tokenizer: Optional[S3TokenizerV2] = None,
-        speaker_session: Optional[Any] = None,
+        speaker_encoder: Optional[StepAudio2CAMPPlus] = None,
     ):
         super().__init__()
         self.flow = flow or CausalMaskedDiffWithXvec()
         self.hift = hift or StepAudio2HiFTGenerator()
         self.speech_tokenizer = speech_tokenizer
-        self.speaker_session = speaker_session
+        self.speaker_encoder = speaker_encoder
         self._prompt_cache: Optional[Dict[str, mx.array]] = None
 
     @classmethod
@@ -41,7 +41,7 @@ class StepAudio2Token2Wav(nn.Module):
         model_path: str | Path,
         *,
         load_speech_tokenizer: bool = True,
-        use_onnx_speaker: bool = True,
+        load_speaker_encoder: bool = True,
     ) -> "StepAudio2Token2Wav":
         model_path = Path(model_path)
         model = cls()
@@ -54,8 +54,13 @@ class StepAudio2Token2Wav(nn.Module):
             model.speech_tokenizer = S3TokenizerV2.from_pretrained(
                 "speech_tokenizer_v2_25hz"
             )
-        if use_onnx_speaker and (model_path / "campplus.onnx").exists():
-            model.speaker_session = _load_onnx_session(model_path / "campplus.onnx")
+        if load_speaker_encoder:
+            speaker_path = _first_existing_optional(
+                model_path, "campplus.safetensors", "campplus.onnx"
+            )
+            if speaker_path is not None:
+                model.speaker_encoder = StepAudio2CAMPPlus()
+                load_campplus_weights(model.speaker_encoder, speaker_path, strict=True)
         model.eval()
         mx.eval(model.parameters())
         return model
@@ -88,12 +93,12 @@ class StepAudio2Token2Wav(nn.Module):
             prompt_token_lens = mx.array([prompt_tokens.shape[1]], dtype=mx.int32)
 
         if speaker_embedding is None:
-            if self.speaker_session is None:
+            if self.speaker_encoder is None:
                 raise ValueError(
-                    "speaker_embedding is required unless an ONNX CAMPPlus "
-                    "speaker_session is available"
+                    "speaker_embedding is required unless a CAMPPlus speaker_encoder "
+                    "is loaded"
                 )
-            speaker_embedding = self._speaker_embedding_from_onnx(audio_16k)
+            speaker_embedding = self.speaker_encoder.inference(audio_16k)
         elif speaker_embedding.ndim == 1:
             speaker_embedding = mx.expand_dims(speaker_embedding, 0)
 
@@ -120,16 +125,6 @@ class StepAudio2Token2Wav(nn.Module):
             "prompt_feat_len": prompt_mels_lens,
             "embedding": speaker_embedding,
         }
-
-    def _speaker_embedding_from_onnx(self, audio_16k: mx.array) -> mx.array:
-        if self.speaker_session is None:
-            raise ValueError("No speaker ONNX session configured")
-        feat = kaldi_fbank(audio_16k, sample_rate=S3_SAMPLE_RATE, num_mel_bins=80)
-        feat = feat - mx.mean(feat, axis=0, keepdims=True)
-        feat_np = np.asarray(mx.expand_dims(feat, 0), dtype=np.float32)
-        input_name = self.speaker_session.get_inputs()[0].name
-        embedding = self.speaker_session.run(None, {input_name: feat_np})[0]
-        return mx.array(embedding, dtype=mx.float32)
 
     def decode(
         self,
@@ -184,22 +179,17 @@ class StepAudio2Token2Wav(nn.Module):
         return output.getvalue()
 
 
-def _load_onnx_session(path: Path):
-    import onnxruntime
-
-    options = onnxruntime.SessionOptions()
-    options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-    options.intra_op_num_threads = 1
-    return onnxruntime.InferenceSession(
-        str(path),
-        sess_options=options,
-        providers=["CPUExecutionProvider"],
-    )
-
-
 def _first_existing(root: Path, *names: str) -> Path:
     for name in names:
         path = root / name
         if path.exists():
             return path
     raise FileNotFoundError(f"None of {names} exist under {root}")
+
+
+def _first_existing_optional(root: Path, *names: str) -> Path | None:
+    for name in names:
+        path = root / name
+        if path.exists():
+            return path
+    return None

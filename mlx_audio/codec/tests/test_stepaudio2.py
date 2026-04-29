@@ -4,8 +4,13 @@ from pathlib import Path
 
 import mlx.core as mx
 
-from mlx_audio.codec.models.stepaudio2 import DiT, StepAudio2HiFTGenerator
+from mlx_audio.codec.models.stepaudio2 import (
+    DiT,
+    StepAudio2CAMPPlus,
+    StepAudio2HiFTGenerator,
+)
 from mlx_audio.codec.models.stepaudio2.convert import (
+    load_campplus_weights,
     load_torch_weights,
     sanitize_flow_weights,
     sanitize_hift_weights,
@@ -52,4 +57,7 @@ class TestStepAudio2Codec(unittest.TestCase):
         )
         hift.load_weights(list(hift_weights.items()), strict=True)
 
-        mx.eval(flow.parameters(), hift.parameters())
+        speaker = StepAudio2CAMPPlus()
+        load_campplus_weights(speaker, assets / "campplus.onnx", strict=True)
+
+        mx.eval(flow.parameters(), hift.parameters(), speaker.parameters())
