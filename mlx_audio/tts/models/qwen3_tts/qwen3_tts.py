@@ -2231,12 +2231,9 @@ class Model(nn.Module):
             )
         )
 
-        # Cap max_tokens based on target text length to prevent runaway generation
-        # when reference audio is long and EOS logit is suppressed by top-k.
-        # At 12.5 Hz codec rate, ~3-5 codec tokens per text token is typical speech.
-        # Factor of 6 gives ~50% margin for slow speech / pauses.
-        target_token_count = len(self.tokenizer.encode(text))
-        effective_max_tokens = min(max_tokens, max(75, target_token_count * 6))
+        # Honor the caller-provided max_tokens; matches the base generation path.
+        # A text-length-derived cap could clip slow or expressive utterances.
+        effective_max_tokens = max_tokens
 
         # Initialize cache
         cache = self.talker.make_cache()
@@ -2546,12 +2543,9 @@ class Model(nn.Module):
             )
         )
 
-        # Cap max_tokens based on target text length to prevent runaway generation
-        # when EOS logit doesn't become dominant (seen especially with 0.6B model).
-        # At 12.5 Hz codec rate, ~3-5 codec tokens per text token is typical speech.
-        # Factor of 6 gives ~50% margin for slow speech / pauses.
-        target_token_count = len(self.tokenizer.encode(text))
-        effective_max_tokens = min(max_tokens, max(75, target_token_count * 6))
+        # Honor the caller-provided max_tokens; matches the base generation path.
+        # A text-length-derived cap could clip slow or expressive utterances.
+        effective_max_tokens = max_tokens
 
         # Initialize cache
         cache = self.talker.make_cache()
