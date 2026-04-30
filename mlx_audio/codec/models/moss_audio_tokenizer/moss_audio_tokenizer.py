@@ -39,7 +39,7 @@ class AudioTokenizerConfig:
             causal_transformer_context_duration=float(
                 data.get("causal_transformer_context_duration", 10.0)
             ),
-            number_channels=int(data.get("number_channels", 2)),
+            number_channels=int(data.get("number_channels", 1)),
             enable_channel_interleave=bool(data.get("enable_channel_interleave", True)),
             encoder_kwargs=list(data.get("encoder_kwargs", [])),
             decoder_kwargs=list(data.get("decoder_kwargs", [])),
@@ -102,6 +102,19 @@ def _is_audio_tokenizer_dir(path: Path) -> bool:
     except json.JSONDecodeError:
         return False
     return "encoder_kwargs" in config and "decoder_kwargs" in config
+
+
+def _sanitize_audio_tokenizer_weights(
+    weights: dict[str, mx.array],
+) -> dict[str, mx.array]:
+    sanitized: dict[str, mx.array] = {}
+    for key, value in weights.items():
+        key = key.replace(".linear1.weight", ".ffn.0.weight")
+        key = key.replace(".linear2.weight", ".ffn.2.weight")
+        key = key.replace(".self_attn.in_projs.0.weight", ".self_attn.in_proj.weight")
+        key = key.replace(".self_attn.out_projs.0.weight", ".self_attn.out_proj.weight")
+        sanitized[key] = value
+    return sanitized
 
 
 def _resolve_audio_tokenizer_dir(source: str | Path) -> Path:
@@ -384,9 +397,17 @@ class ProjectedTransformer(nn.Module):
         super().__init__()
         del conv_layout, module_type
         self.downsample_ratio = 1
-        self.input_proj = nn.Linear(input_dimension, d_model, bias=False)
+        self.input_proj = (
+            nn.Linear(input_dimension, d_model, bias=False)
+            if int(input_dimension) != int(d_model)
+            else Identity()
+        )
         self.transformer = Transformer(d_model=d_model, context=context, **kwargs)
-        self.output_proj = nn.Linear(d_model, output_dimension, bias=False)
+        self.output_proj = (
+            nn.Linear(d_model, output_dimension, bias=False)
+            if int(output_dimension) != int(d_model)
+            else Identity()
+        )
 
     def __call__(self, x: mx.array, input_lengths: mx.array):
         x = self.input_proj(x.transpose(0, 2, 1))
@@ -525,7 +546,7 @@ class ResidualLFQ(nn.Module):
         return self.output_proj(emb).astype(mx.float32)
 
 
-class MLXMossAudioTokenizer(nn.Module):
+class MossAudioTokenizer(nn.Module):
     def __init__(self, config: AudioTokenizerConfig):
         super().__init__()
         self.config = config
@@ -596,11 +617,11 @@ class MLXMossAudioTokenizer(nn.Module):
             current_frame_rate *= self.decoder[-1].downsample_ratio
 
     @classmethod
-    def from_pretrained(cls, source: str | Path) -> "MLXMossAudioTokenizer":
+    def from_pretrained(cls, source: str | Path) -> "MossAudioTokenizer":
         model_dir = _resolve_audio_tokenizer_dir(source)
         config = AudioTokenizerConfig.from_file(model_dir / "config.json")
         model = cls(config)
-        weights = _load_weights_from_dir(model_dir)
+        weights = _sanitize_audio_tokenizer_weights(_load_weights_from_dir(model_dir))
         model.load_weights(list(weights.items()), strict=True)
         model.eval()
         return model
@@ -612,7 +633,7 @@ class MLXMossAudioTokenizer(nn.Module):
         *,
         fallback_source: str | None = None,
         **kwargs,
-    ) -> "MLXMossAudioTokenizer":
+    ) -> "MossAudioTokenizer":
         del kwargs
         if model_dir is not None:
             root = Path(model_dir).expanduser()

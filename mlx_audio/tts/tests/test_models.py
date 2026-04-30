@@ -7084,9 +7084,7 @@ class TestMossTTSNanoModel(unittest.TestCase):
         )
 
     def test_audio_tokenizer_loader_skips_tts_model_root(self):
-        from mlx_audio.tts.models.moss_tts_nano.audio_tokenizer import (
-            MLXMossAudioTokenizer,
-        )
+        from mlx_audio.codec.models.moss_audio_tokenizer import MossAudioTokenizer
 
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -7096,7 +7094,7 @@ class TestMossTTSNanoModel(unittest.TestCase):
             (root / "model.safetensors").write_bytes(b"")
 
             calls = []
-            original_from_pretrained = MLXMossAudioTokenizer.from_pretrained
+            original_from_pretrained = MossAudioTokenizer.from_pretrained
 
             def fake_from_pretrained(cls, source):
                 del cls
@@ -7104,18 +7102,332 @@ class TestMossTTSNanoModel(unittest.TestCase):
                 return "audio-tokenizer"
 
             try:
-                MLXMossAudioTokenizer.from_pretrained = classmethod(
-                    fake_from_pretrained
-                )
-                tokenizer = MLXMossAudioTokenizer.from_model_dir(
+                MossAudioTokenizer.from_pretrained = classmethod(fake_from_pretrained)
+                tokenizer = MossAudioTokenizer.from_model_dir(
                     root,
                     fallback_source="codec/repo",
                 )
             finally:
-                MLXMossAudioTokenizer.from_pretrained = original_from_pretrained
+                MossAudioTokenizer.from_pretrained = original_from_pretrained
 
             self.assertEqual(tokenizer, "audio-tokenizer")
             self.assertEqual(calls, ["codec/repo"])
+
+    def test_audio_tokenizer_parent_config_defaults_to_mono(self):
+        from mlx_audio.codec.models.moss_audio_tokenizer import AudioTokenizerConfig
+
+        config = AudioTokenizerConfig.from_dict(
+            {
+                "sampling_rate": 24000,
+                "downsample_rate": 1920,
+                "encoder_kwargs": [],
+                "decoder_kwargs": [],
+                "quantizer_kwargs": {"num_quantizers": 32},
+            }
+        )
+
+        self.assertEqual(config.number_channels, 1)
+        self.assertEqual(config.sampling_rate, 24000)
+
+
+class MossDelayFakeTokenizer:
+    def __init__(self):
+        self.id_to_token = {
+            0: "<|endoftext|>",
+            1: "<|im_start|>",
+            2: "<|im_end|>",
+            3: "<|audio_start|>",
+            4: "<|audio_end|>",
+            5: "<|audio_user_slot|>",
+            6: "<|audio_assistant_gen_slot|>",
+            7: "<|audio_assistant_delay_slot|>",
+        }
+        self.token_to_id = {v: k for k, v in self.id_to_token.items()}
+        self._special_tokens = sorted(self.token_to_id, key=len, reverse=True)
+
+    def convert_ids_to_tokens(self, token_id):
+        return self.id_to_token[int(token_id)]
+
+    def encode(self, text, *args, **kwargs):
+        del args, kwargs
+        tokens = []
+        index = 0
+        while index < len(text):
+            for special in self._special_tokens:
+                if text.startswith(special, index):
+                    tokens.append(self.token_to_id[special])
+                    index += len(special)
+                    break
+            else:
+                tokens.append(16 + (ord(text[index]) % 32))
+                index += 1
+        return tokens
+
+    def decode(self, token_ids, *args, **kwargs):
+        del args, kwargs
+        parts = []
+        for token_id in token_ids:
+            token_id = int(token_id)
+            parts.append(self.id_to_token.get(token_id, chr((token_id - 16) % 32 + 64)))
+        return "".join(parts)
+
+
+def moss_delay_tiny_config(**overrides):
+    from mlx_audio.tts.models.moss_tts import ModelConfig
+
+    config = {
+        "model_type": "moss_tts_delay",
+        "n_vq": 2,
+        "audio_vocab_size": 8,
+        "audio_pad_code": 8,
+        "pad_token_id": 0,
+        "im_start_token_id": 1,
+        "im_end_token_id": 2,
+        "audio_start_token_id": 3,
+        "audio_end_token_id": 4,
+        "audio_user_slot_token_id": 5,
+        "audio_assistant_gen_slot_token_id": 6,
+        "audio_assistant_delay_slot_token_id": 7,
+        "sampling_rate": 24000,
+        "language_config": {
+            "model_type": "qwen3",
+            "vocab_size": 64,
+            "hidden_size": 16,
+            "num_hidden_layers": 1,
+            "intermediate_size": 32,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 4,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 64,
+            "rope_theta": 10000.0,
+            "tie_word_embeddings": False,
+        },
+    }
+    config.update(overrides)
+    return ModelConfig.from_dict(config)
+
+
+def moss_local_tiny_config(**overrides):
+    config = {
+        "additional_mlp_ffn_hidden_size": 20,
+        "local_ffn_hidden_size": 24,
+        "local_hidden_size": 12,
+        "local_num_layers": 1,
+    }
+    config.update(overrides)
+    return moss_delay_tiny_config(**config)
+
+
+class TestMossTTSDelayConfig(unittest.TestCase):
+    def test_config_parses_upstream_shape(self):
+        from mlx_audio.tts.models.moss_tts import ModelConfig
+
+        config = ModelConfig.from_dict(
+            {
+                "model_type": "moss_tts_delay",
+                "n_vq": 32,
+                "audio_vocab_size": 1024,
+                "audio_pad_code": 1024,
+                "sampling_rate": 24000,
+                "language_config": {
+                    "model_type": "qwen3",
+                    "vocab_size": 155648,
+                    "hidden_size": 4096,
+                    "num_hidden_layers": 36,
+                    "intermediate_size": 12288,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "rms_norm_eps": 1e-6,
+                    "max_position_embeddings": 40960,
+                    "rope_theta": 1000000,
+                },
+            }
+        )
+
+        self.assertEqual(config.model_type, "moss_tts_delay")
+        self.assertEqual(config.n_vq, 32)
+        self.assertEqual(config.hidden_size, 4096)
+        self.assertFalse(config.language_config.tie_word_embeddings)
+        self.assertEqual(config.sampling_rate, 24000)
+
+    def test_config_parses_local_transformer_shape(self):
+        from mlx_audio.tts.models.moss_tts import ModelConfig
+
+        config = ModelConfig.from_dict(
+            {
+                "model_type": "moss_tts_delay",
+                "n_vq": 32,
+                "audio_vocab_size": 1024,
+                "audio_pad_code": 1024,
+                "sampling_rate": 24000,
+                "additional_mlp_ffn_hidden_size": 2048,
+                "local_ffn_hidden_size": 8960,
+                "local_hidden_size": 1536,
+                "local_num_layers": 4,
+                "language_config": {
+                    "model_type": "qwen3",
+                    "vocab_size": 155648,
+                    "hidden_size": 2048,
+                    "num_hidden_layers": 28,
+                    "intermediate_size": 6144,
+                    "num_attention_heads": 16,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "rms_norm_eps": 1e-6,
+                    "max_position_embeddings": 40960,
+                    "rope_theta": 1000000,
+                },
+            }
+        )
+
+        self.assertTrue(config.is_local_transformer)
+        self.assertEqual(config.hidden_size, 2048)
+        self.assertEqual(config.local_hidden_size, 1536)
+        self.assertEqual(config.local_transformer_config().hidden_size, 1536)
+        self.assertEqual(config.local_transformer_config().num_hidden_layers, 4)
+
+
+class TestMossTTSDelayProcessor(unittest.TestCase):
+    def test_delay_pattern_round_trip(self):
+        from mlx_audio.tts.models.moss_tts.processor import (
+            apply_de_delay_pattern,
+            apply_delay_pattern,
+        )
+
+        codes = mx.array([[1, 2], [3, 4], [5, 6]], dtype=mx.int32)
+        delayed = apply_delay_pattern(codes, pad_code=8)
+        restored = apply_de_delay_pattern(delayed)
+
+        np.testing.assert_array_equal(np.array(restored), np.array(codes))
+
+    def test_generation_prompt_includes_reference_delay_codes(self):
+        from mlx_audio.tts.models.moss_tts.processor import MossTTSDelayProcessor
+
+        config = moss_delay_tiny_config()
+        processor = MossTTSDelayProcessor(MossDelayFakeTokenizer(), config)
+        reference_codes = mx.array([[1, 2], [3, 4]], dtype=mx.int32)
+
+        batch = processor(
+            [processor.build_user_message(text="hello", reference=[reference_codes])],
+            mode="generation",
+        )
+
+        rows = np.array(batch["input_ids"][0])
+        non_pad_audio_rows = rows[~np.all(rows[:, 1:] == config.audio_pad_code, axis=1)]
+        np.testing.assert_array_equal(
+            non_pad_audio_rows[:, 1:],
+            np.array([[1, 8], [3, 2], [8, 4]]),
+        )
+        self.assertTrue(
+            np.all(non_pad_audio_rows[:, 0] == config.audio_user_slot_token_id)
+        )
+
+    def test_local_generation_prompt_uses_undelayed_reference_and_audio_start(self):
+        from mlx_audio.tts.models.moss_tts.processor import MossTTSLocalProcessor
+
+        config = moss_local_tiny_config()
+        processor = MossTTSLocalProcessor(MossDelayFakeTokenizer(), config)
+        reference_codes = mx.array([[1, 2], [3, 4]], dtype=mx.int32)
+
+        batch = processor(
+            [processor.build_user_message(text="hello", reference=[reference_codes])],
+            mode="generation",
+        )
+
+        rows = np.array(batch["input_ids"][0])
+        non_pad_audio_rows = rows[~np.all(rows[:, 1:] == config.audio_pad_code, axis=1)]
+        np.testing.assert_array_equal(
+            non_pad_audio_rows[:, 1:],
+            np.array([[1, 2], [3, 4]]),
+        )
+        self.assertTrue(
+            np.all(non_pad_audio_rows[:, 0] == config.audio_user_slot_token_id)
+        )
+        np.testing.assert_array_equal(
+            rows[-1],
+            np.array(
+                [
+                    config.audio_start_token_id,
+                    config.audio_pad_code,
+                    config.audio_pad_code,
+                ]
+            ),
+        )
+
+
+class TestMossTTSDelayModel(unittest.TestCase):
+    def test_build_inputs_embeds_shape(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_delay_tiny_config())
+        input_ids = mx.array([[[1, 8, 8], [2, 3, 4]]], dtype=mx.int32)
+
+        embeds = model._build_inputs_embeds(input_ids)
+
+        self.assertEqual(embeds.shape, (1, 2, 16))
+
+    def test_forward_head_shapes(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_delay_tiny_config())
+        input_ids = mx.array([[[1, 8, 8], [2, 3, 4]]], dtype=mx.int32)
+
+        text_logits, audio_logits = model(input_ids, head_indices=[0, 1])
+
+        self.assertEqual(text_logits.shape, (1, 2, 64))
+        self.assertEqual(audio_logits.shape, (1, 2, 9))
+        self.assertTrue(np.isneginf(np.array(audio_logits)[0, 0, -1]))
+
+    def test_sanitize_strips_optional_model_prefix(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_delay_tiny_config())
+        x = mx.zeros((1,))
+        sanitized = model.sanitize(
+            {
+                "model.language_model.embed_tokens.weight": x,
+                "emb_ext.0.weight": x,
+                "lm_heads.0.weight": x,
+            }
+        )
+
+        self.assertIn("language_model.embed_tokens.weight", sanitized)
+        self.assertIn("emb_ext.0.weight", sanitized)
+        self.assertIn("lm_heads.0.weight", sanitized)
+
+    def test_local_forward_head_shapes(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_local_tiny_config())
+        input_ids = mx.array([[[1, 8, 8], [3, 8, 8], [6, 1, 2]]], dtype=mx.int32)
+
+        text_logits, audio_0_logits, audio_1_logits = model(
+            input_ids,
+            head_indices=[0, 1, 2],
+        )
+
+        self.assertEqual(text_logits.shape, (1, 3, 64))
+        self.assertEqual(audio_0_logits.shape, (1, 3, 9))
+        self.assertEqual(audio_1_logits.shape, (1, 3, 9))
+
+    def test_local_sanitize_keeps_model_prefix(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_local_tiny_config())
+        x = mx.zeros((1,))
+        sanitized = model.sanitize(
+            {
+                "model.embedding_list.0.weight": x,
+                "model.language_model.embed_tokens.weight": x,
+                "local_transformer.layers.0.input_layernorm.weight": x,
+            }
+        )
+
+        self.assertIn("model.embedding_list.0.weight", sanitized)
+        self.assertIn("model.language_model.embed_tokens.weight", sanitized)
+        self.assertIn("local_transformer.layers.0.input_layernorm.weight", sanitized)
 
 
 if __name__ == "__main__":
