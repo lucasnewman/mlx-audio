@@ -23,6 +23,7 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 | [Echo TTS](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/echo_tts/README.md) | -- | EN | Yes | -- | Diffusion-based, fast voice cloning |
 | [Irodori TTS](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/irodori_tts/README.md) | 500M | JA | Yes | -- | Japanese-only, DiT + DACVAE |
 | [Fish Speech](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/fish_qwen3_omni/README.md) | -- | EN | Yes | -- | Inline control tags, multi-speaker, long-form batching |
+| [VoxCPM2](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/voxcpm2/README.md) | 2B | 30 languages | Yes | -- | 48kHz, voice design, voice cloning, continuation |
 
 ## Quick Start
 
