@@ -28,31 +28,9 @@ class UserMessage(Message):
     ambient_sound: Optional[str] = None
     language: Optional[str] = None
     scene: Optional[str] = None
-    include_scene: bool = False
-    force_tokens_none: bool = False
-    preserve_empty_references: bool = False
 
     def __post_init__(self):
         template = """<user_inst>
-- Reference(s):
-{reference}
-- Instruction:
-{instruction}
-- Tokens:
-{tokens}
-- Quality:
-{quality}
-- Sound Event:
-{sound_event}
-- Ambient Sound:
-{ambient_sound}
-- Language:
-{language}
-- Text:
-{text}
-</user_inst>"""
-        if self.include_scene:
-            template = """<user_inst>
 - Reference(s):
 {reference}
 - Instruction:
@@ -80,8 +58,7 @@ class UserMessage(Message):
             reference_parts = []
             for speaker_idx, speaker_reference in enumerate(self.reference):
                 if speaker_reference is None:
-                    if self.preserve_empty_references:
-                        reference_parts.append(f"[S{speaker_idx + 1}]: None")
+                    reference_parts.append(f"[S{speaker_idx + 1}]: None")
                 else:
                     reference_parts.append(
                         f"[S{speaker_idx + 1}]:\n{AUDIO_PLACEHOLDER}"
@@ -94,10 +71,7 @@ class UserMessage(Message):
         self._content = (
             template.replace("{reference}", str(reference))
             .replace("{instruction}", str(self.instruction))
-            .replace(
-                "{tokens}",
-                "None" if self.force_tokens_none else str(self.tokens),
-            )
+            .replace("{tokens}", str(self.tokens))
             .replace("{quality}", str(self.quality))
             .replace("{sound_event}", str(self.sound_event))
             .replace("{ambient_sound}", str(self.ambient_sound))
@@ -180,17 +154,11 @@ class MossTTSDelayProcessor:
         *,
         use_delay_pattern: bool = True,
         append_audio_start_for_generation: bool = False,
-        include_scene: bool = False,
-        force_tokens_none: bool = False,
-        preserve_empty_references: bool = False,
     ):
         self.tokenizer = tokenizer
         self.model_config = model_config
         self.use_delay_pattern = bool(use_delay_pattern)
         self.append_audio_start_for_generation = bool(append_audio_start_for_generation)
-        self.include_scene = bool(include_scene)
-        self.force_tokens_none = bool(force_tokens_none)
-        self.preserve_empty_references = bool(preserve_empty_references)
         self.audio_user_slot_token = self._id_to_token(
             model_config.audio_user_slot_token_id
         )
@@ -233,9 +201,6 @@ class MossTTSDelayProcessor:
             ambient_sound=ambient_sound,
             language=language,
             scene=scene,
-            include_scene=self.include_scene,
-            force_tokens_none=self.force_tokens_none,
-            preserve_empty_references=self.preserve_empty_references,
         ).to_dict()
 
     @staticmethod
@@ -560,15 +525,4 @@ class MossTTSLocalProcessor(MossTTSDelayProcessor):
             model_config,
             use_delay_pattern=False,
             append_audio_start_for_generation=True,
-        )
-
-
-class MossTTSDProcessor(MossTTSDelayProcessor):
-    def __init__(self, tokenizer, model_config: ModelConfig):
-        super().__init__(
-            tokenizer,
-            model_config,
-            include_scene=True,
-            force_tokens_none=True,
-            preserve_empty_references=True,
         )

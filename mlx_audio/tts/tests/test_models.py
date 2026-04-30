@@ -4818,18 +4818,26 @@ class TestOmniVoiceRegistration(unittest.TestCase):
 
 
 class TestMossTTSRegistration(unittest.TestCase):
-    def test_delay_config_model_type_uses_registered_architecture(self):
+    def test_config_model_types_load_shared_architecture(self):
+        from mlx_audio.tts.models.moss_tts import Model as SharedModel
         from mlx_audio.tts.utils import MODEL_REMAPPING
         from mlx_audio.utils import get_model_class
 
-        _arch, model_type = get_model_class(
-            model_type="moss_tts_delay",
-            model_name=["OpenMOSS-Team", "MOSS-TTSD-v1.0"],
-            category="tts",
-            model_remapping=MODEL_REMAPPING,
-        )
+        cases = [
+            ("moss_tts_delay", ["OpenMOSS-Team", "MOSS-TTSD-v1.0"]),
+            ("moss_tts_local", ["OpenMOSS-Team", "MOSS-TTS"]),
+        ]
 
-        self.assertEqual(model_type, "moss_tts")
+        for expected_model_type, model_name in cases:
+            arch, model_type = get_model_class(
+                model_type=expected_model_type,
+                model_name=model_name,
+                category="tts",
+                model_remapping=MODEL_REMAPPING,
+            )
+
+            self.assertEqual(model_type, expected_model_type)
+            self.assertIs(arch.Model, SharedModel)
 
 
 class TestOmniVoiceBackbone(unittest.TestCase):
@@ -7017,11 +7025,11 @@ class TestMossTTSDelayProcessor(unittest.TestCase):
                 mode="generation",
             )
 
-    def test_ttsd_user_message_preserves_empty_references_and_scene(self):
-        from mlx_audio.tts.models.moss_tts.processor import MossTTSDProcessor
+    def test_user_message_preserves_empty_references_and_scene(self):
+        from mlx_audio.tts.models.moss_tts.processor import MossTTSDelayProcessor
 
         config = moss_delay_tiny_config()
-        processor = MossTTSDProcessor(MossDelayFakeTokenizer(), config)
+        processor = MossTTSDelayProcessor(MossDelayFakeTokenizer(), config)
         reference_codes = mx.array([[1, 2]], dtype=mx.int32)
 
         message = processor.build_user_message(
@@ -7033,7 +7041,7 @@ class TestMossTTSDelayProcessor(unittest.TestCase):
 
         self.assertIn("[S1]: None", message["content"])
         self.assertIn("[S2]:\n<|audio|>", message["content"])
-        self.assertIn("- Tokens:\nNone", message["content"])
+        self.assertIn("- Tokens:\n123", message["content"])
         self.assertIn("- Scene:\nstudio", message["content"])
         self.assertEqual(len(message["audio_codes_list"]), 1)
 
@@ -7218,6 +7226,51 @@ class TestMossTTSDelayModel(unittest.TestCase):
         self.assertEqual(calls["audio_top_p"], 0.7)
         self.assertEqual(calls["audio_top_k"], 10)
         self.assertEqual(calls["audio_repetition_penalty"], 1.3)
+
+    def test_delay_generation_accepts_reference_audio_list(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_delay_tiny_config())
+        model.tokenizer = MossDelayFakeTokenizer()
+        encoded_refs = []
+        calls = {}
+
+        def fake_encode_reference_audio(ref_audio, **kwargs):
+            del kwargs
+            encoded_refs.append(ref_audio)
+            if len(encoded_refs) == 1:
+                return mx.array([[1, 2]], dtype=mx.int32)
+            return mx.array([[3, 4]], dtype=mx.int32)
+
+        def fake_generate_delay_pattern_ids(input_ids, **kwargs):
+            del kwargs
+            calls["input_ids"] = input_ids
+            return []
+
+        model.encode_reference_audio = fake_encode_reference_audio
+        model.generate_delay_pattern_ids = fake_generate_delay_pattern_ids
+        model._decode_generated_audio = lambda outputs, source=None: (
+            mx.zeros((0, 1), dtype=mx.float32),
+            0,
+        )
+
+        next(
+            model.generate(
+                text="[S1] hello [S2] hi",
+                ref_audio=["speaker-one", "speaker-two"],
+                max_tokens=1,
+            )
+        )
+
+        self.assertEqual(encoded_refs, ["speaker-one", "speaker-two"])
+        rows = np.array(calls["input_ids"][0])
+        non_pad_audio_rows = rows[
+            ~np.all(rows[:, 1:] == model.config.audio_pad_code, axis=1)
+        ]
+        np.testing.assert_array_equal(
+            non_pad_audio_rows[:, 1:],
+            np.array([[1, 8], [8, 2], [3, 8], [8, 4]]),
+        )
 
 
 if __name__ == "__main__":

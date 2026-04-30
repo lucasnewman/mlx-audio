@@ -15,13 +15,28 @@ from mlx_audio.tts.models.base import GenerationResult
 from .config import DEFAULT_AUDIO_TOKENIZER_REPO, ModelConfig
 from .processor import (
     MossTTSDelayProcessor,
-    MossTTSDProcessor,
     MossTTSLocalProcessor,
     apply_de_delay_pattern,
 )
 from .sampling import sample_token
 
 _INT64_MAX = 9223372036854775807
+
+
+def _as_reference_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _collapse_reference_list(values: list):
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    return values
 
 
 class MossTTSRMSNorm(nn.Module):
@@ -304,22 +319,9 @@ class Model(nn.Module):
         value = self.generation_config.get(key, default)
         return default if value is None else value
 
-    def _uses_ttsd_processor(self) -> bool:
-        if self.config.is_local_transformer:
-            return False
-        model_path = str(self.config.model_path or "").lower()
-        if "ttsd" in model_path:
-            return True
-        return (
-            self.config.n_vq == 16
-            and int(self.generation_config.get("max_new_tokens", 0) or 0) == 8192
-        )
-
     def _processor(self):
         if self.config.is_local_transformer:
             return MossTTSLocalProcessor(self.tokenizer, self.config)
-        if self._uses_ttsd_processor():
-            return MossTTSDProcessor(self.tokenizer, self.config)
         return MossTTSDelayProcessor(self.tokenizer, self.config)
 
     def model_quant_predicate(self, path: str, module) -> bool:
@@ -912,8 +914,8 @@ class Model(nn.Module):
         self,
         text: str,
         ref_audio=None,
-        ref_text: str | None = None,
-        prompt_audio_codes: mx.array | None = None,
+        ref_text: str | list[str] | None = None,
+        prompt_audio_codes: mx.array | list[mx.array] | None = None,
         mode: str = "generation",
         stream: bool = False,
         max_tokens: int | None = None,
@@ -928,26 +930,47 @@ class Model(nn.Module):
         processor = self._processor()
 
         if prompt_audio_codes is None and ref_audio is not None:
-            prompt_audio_codes = self.encode_reference_audio(
-                ref_audio,
-                sample_rate=kwargs.get("ref_audio_sample_rate"),
-                num_quantizers=self.config.n_vq,
-                source=kwargs.get("audio_tokenizer_source"),
-            )
-        elif prompt_audio_codes is not None and not isinstance(
-            prompt_audio_codes, mx.array
-        ):
-            prompt_audio_codes = mx.array(prompt_audio_codes, dtype=mx.int32)
+            encoded_audio_codes = [
+                self.encode_reference_audio(
+                    ref_audio_item,
+                    sample_rate=kwargs.get("ref_audio_sample_rate"),
+                    num_quantizers=self.config.n_vq,
+                    source=kwargs.get("audio_tokenizer_source"),
+                )
+                for ref_audio_item in _as_reference_list(ref_audio)
+            ]
+            prompt_audio_codes = _collapse_reference_list(encoded_audio_codes)
+        elif prompt_audio_codes is not None:
+            if isinstance(prompt_audio_codes, (list, tuple)):
+                prompt_audio_codes = [
+                    (
+                        item
+                        if isinstance(item, mx.array)
+                        else mx.array(item, dtype=mx.int32)
+                    )
+                    for item in prompt_audio_codes
+                ]
+            elif not isinstance(prompt_audio_codes, mx.array):
+                prompt_audio_codes = mx.array(prompt_audio_codes, dtype=mx.int32)
 
         normalized_mode = str(mode or "generation").strip().lower()
         if normalized_mode in {"voice_clone", "direct"}:
             normalized_mode = "generation"
         if normalized_mode not in {"generation", "continuation"}:
             raise ValueError("mode must be generation or continuation")
+        ref_text_values = _as_reference_list(ref_text)
+        if normalized_mode == "continuation" and len(ref_text_values) > 1:
+            raise ValueError("MOSS-TTS continuation mode accepts one ref_text value.")
+        prompt_audio_codes_list = _as_reference_list(prompt_audio_codes)
+        if normalized_mode == "continuation" and len(prompt_audio_codes_list) > 1:
+            raise ValueError(
+                "MOSS-TTS continuation mode accepts one reference audio segment."
+            )
+        ref_text_value = ref_text_values[0] if ref_text_values else ""
 
         user_kwargs = {
             "text": (
-                text if normalized_mode == "generation" else (ref_text or "") + text
+                text if normalized_mode == "generation" else ref_text_value + text
             ),
             "tokens": kwargs.get("tokens"),
             "instruction": kwargs.get("instruction"),
@@ -958,7 +981,7 @@ class Model(nn.Module):
             "scene": kwargs.get("scene"),
         }
         if normalized_mode == "generation" and prompt_audio_codes is not None:
-            user_kwargs["reference"] = [prompt_audio_codes]
+            user_kwargs["reference"] = prompt_audio_codes_list
 
         if normalized_mode == "generation":
             conversations = [processor.build_user_message(**user_kwargs)]
@@ -970,7 +993,7 @@ class Model(nn.Module):
             conversations = [
                 processor.build_user_message(**user_kwargs),
                 processor.build_assistant_message(
-                    audio_codes_list=[prompt_audio_codes]
+                    audio_codes_list=prompt_audio_codes_list
                 ),
             ]
 
