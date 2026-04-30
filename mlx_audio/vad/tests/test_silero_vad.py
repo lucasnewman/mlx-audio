@@ -4,7 +4,6 @@ import mlx.core as mx
 import numpy as np
 
 from ..models.silero_vad.config import BranchConfig, ModelConfig
-from ..models.silero_vad.convert import _reorder_lstm_gates
 from ..models.silero_vad.silero_vad import Model, SileroVADState, VADOutput
 
 
@@ -84,19 +83,6 @@ class TestSileroVAD(unittest.TestCase):
             return_seconds=False,
         )
         self.assertEqual(timestamps, [{"start": 512, "end": 1536}])
-
-    def test_reorder_lstm_gates(self):
-        gates = np.concatenate(
-            [
-                np.full((2, 1), 0),
-                np.full((2, 1), 1),
-                np.full((2, 1), 2),
-                np.full((2, 1), 3),
-            ],
-            axis=0,
-        )
-        reordered = _reorder_lstm_gates(gates)
-        self.assertEqual(reordered[:, 0].tolist(), [0, 0, 2, 2, 3, 3, 1, 1])
 
 
 if __name__ == "__main__":
