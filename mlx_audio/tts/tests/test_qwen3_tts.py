@@ -380,9 +380,7 @@ def _make_generation_test_model(text_token_count: int = 10):
     )
     model.talker = _FakeTalker(hidden_size=hidden_size, vocab_size=vocab_size)
     model.speech_tokenizer = _FakeSpeechTokenizer()
-    model.tokenizer = SimpleNamespace(
-        encode=lambda text: list(range(text_token_count))
-    )
+    model.tokenizer = SimpleNamespace(encode=lambda text: list(range(text_token_count)))
     model._prepare_generation_inputs = lambda **kwargs: (
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
