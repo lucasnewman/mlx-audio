@@ -2933,36 +2933,6 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             # token_count should be <= 2
             self.assertLessEqual(results[0].token_count, 2)
 
-    def test_generate_icl_text_based_max_tokens_cap(self):
-        """Test that effective_max_tokens is capped based on text length."""
-        model = self._make_icl_model()
-        ref_audio = mx.random.normal((24000,))
-
-        # tokenizer.encode returns 10 tokens for the text
-        # target_token_count = 10
-        # effective_max_tokens = min(200, max(75, 10 * 6)) = min(200, 75) = 75
-        # Without the cap, it would generate up to 200 tokens
-
-        # Mock _sample_token to never return EOS (forces hitting the cap)
-        def non_eos_sample(*args, **kwargs):
-            return mx.array([[5]])  # Always non-EOS (eos=30)
-
-        with patch.object(model, "_sample_token", side_effect=non_eos_sample):
-            results = list(
-                model._generate_icl(
-                    text="Hi",
-                    ref_audio=ref_audio,
-                    ref_text="Ref",
-                    max_tokens=200,  # Higher than text-based cap
-                    repetition_penalty=1.5,
-                )
-            )
-
-        self.assertEqual(len(results), 1)
-        # With text-based cap: effective = min(200, max(75, 10*6)) = 75
-        # Token count should be exactly 75 (hit the cap, not 200)
-        self.assertEqual(results[0].token_count, 75)
-
     def test_generate_icl_repetition_penalty_applied(self):
         """Test that repetition penalty is applied during generation."""
         model = self._make_icl_model()

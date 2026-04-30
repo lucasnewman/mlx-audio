@@ -1,11 +1,12 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import unittest
+from types import SimpleNamespace
 
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.tts.models.qwen3_tts.qwen3_tts import mel_spectrogram
+from mlx_audio.tts.models.qwen3_tts.qwen3_tts import Model, mel_spectrogram
 from mlx_audio.tts.models.qwen3_tts.speaker_encoder import (
     TimeDelayNetBlock,
     reflect_pad_1d,
@@ -328,6 +329,117 @@ class TestMelSpectrogram(unittest.TestCase):
             err_msg="mel_spectrogram output std should be ~0.37 with correct params. "
             f"Got std={mel_np.std():.4f}.",
         )
+
+
+class _FakeCodePredictor:
+    def __init__(self):
+        self.codec_embedding = []
+
+    def make_cache(self):
+        return []
+
+
+class _FakeTalker:
+    def __init__(self, hidden_size: int, vocab_size: int):
+        self.hidden_size = hidden_size
+        self.vocab_size = vocab_size
+        self.code_predictor = _FakeCodePredictor()
+
+    def make_cache(self):
+        return []
+
+    def get_input_embeddings(self):
+        return lambda token: mx.zeros((1, 1, self.hidden_size), dtype=mx.float32)
+
+    def __call__(self, input_embeds, cache=None):
+        logits = mx.zeros((1, 1, self.vocab_size), dtype=mx.float32)
+        hidden = mx.zeros((1, 1, self.hidden_size), dtype=mx.float32)
+        return logits, hidden
+
+
+class _FakeSpeechTokenizer:
+    def __init__(self):
+        self.decoder = SimpleNamespace(reset_streaming_state=lambda: None)
+
+    def decode(self, codes):
+        return mx.zeros((1, 16), dtype=mx.float32), mx.array([16], dtype=mx.int32)
+
+
+def _make_generation_test_model(text_token_count: int = 10):
+    hidden_size = 4
+    vocab_size = 1100
+
+    model = Model.__new__(Model)
+    model._sample_rate = 24000
+    model.config = SimpleNamespace(
+        talker_config=SimpleNamespace(
+            vocab_size=vocab_size,
+            codec_eos_token_id=vocab_size - 1,
+            num_code_groups=1,
+        )
+    )
+    model.talker = _FakeTalker(hidden_size=hidden_size, vocab_size=vocab_size)
+    model.speech_tokenizer = _FakeSpeechTokenizer()
+    model.tokenizer = SimpleNamespace(
+        encode=lambda text: list(range(text_token_count))
+    )
+    model._prepare_generation_inputs = lambda **kwargs: (
+        mx.zeros((1, 1, hidden_size), dtype=mx.float32),
+        mx.zeros((1, 1, hidden_size), dtype=mx.float32),
+        mx.zeros((1, 1, hidden_size), dtype=mx.float32),
+    )
+    model._prepare_icl_generation_inputs = lambda **kwargs: (
+        mx.zeros((1, 1, hidden_size), dtype=mx.float32),
+        mx.zeros((1, 1, hidden_size), dtype=mx.float32),
+        mx.zeros((1, 1, hidden_size), dtype=mx.float32),
+        mx.zeros((1, 1, 1), dtype=mx.int32),
+    )
+    model._sample_token = lambda *args, **kwargs: mx.array([[1]], dtype=mx.int32)
+    return model
+
+
+class TestQwen3TTSMaxTokens(unittest.TestCase):
+    def test_generate_with_instruct_honors_explicit_max_tokens(self):
+        model = _make_generation_test_model(text_token_count=10)
+
+        results = list(
+            Model._generate_with_instruct(
+                model,
+                text="slow emotional speech",
+                speaker="vivian",
+                language="English",
+                instruct="Speak in a sad, low, subdued, and slow tone.",
+                temperature=0.9,
+                max_tokens=120,
+                top_k=50,
+                top_p=1.0,
+                repetition_penalty=1.05,
+                verbose=False,
+            )
+        )
+
+        self.assertEqual(results[-1].token_count, 120)
+
+    def test_generate_icl_honors_explicit_max_tokens(self):
+        model = _make_generation_test_model(text_token_count=10)
+
+        results = list(
+            Model._generate_icl(
+                model,
+                text="slow cloned speech",
+                ref_audio=mx.zeros((24000,), dtype=mx.float32),
+                ref_text="This is the reference transcript.",
+                language="English",
+                temperature=0.9,
+                max_tokens=120,
+                top_k=50,
+                top_p=1.0,
+                repetition_penalty=1.5,
+                verbose=False,
+            )
+        )
+
+        self.assertEqual(results[-1].token_count, 120)
 
 
 if __name__ == "__main__":
