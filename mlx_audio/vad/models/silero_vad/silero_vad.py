@@ -1,13 +1,12 @@
-import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from scipy import signal
 
 from mlx_audio.audio_io import read as audio_read
+from mlx_audio.utils import resample_audio
 
 from .config import BranchConfig, ModelConfig
 
@@ -204,8 +203,8 @@ class Model(nn.Module):
         audio: Union[str, np.ndarray, mx.array],
         sample_rate: Optional[int] = None,
     ) -> mx.array:
-        audio_np, sr = self._prepare_audio_array(audio, sample_rate=sample_rate)
-        return self._predict_proba_array(audio_np, sr)
+        audio_array, sr = self._prepare_audio_array(audio, sample_rate=sample_rate)
+        return self._predict_proba_array(audio_array, sr)
 
     def get_speech_timestamps(
         self,
@@ -217,12 +216,12 @@ class Model(nn.Module):
         speech_pad_ms: Optional[int] = None,
         return_seconds: bool = False,
     ) -> List[dict]:
-        audio_np, sr = self._prepare_audio_array(audio, sample_rate=sample_rate)
-        probabilities = self._predict_proba_array(audio_np, sr)
+        audio_array, sr = self._prepare_audio_array(audio, sample_rate=sample_rate)
+        probabilities = self._predict_proba_array(audio_array, sr)
         mx.eval(probabilities)
         return self._probs_to_timestamps(
-            np.asarray(probabilities),
-            audio_len=audio_np.shape[-1],
+            probabilities,
+            audio_len=audio_array.shape[-1],
             sample_rate=sr,
             threshold=self.config.threshold if threshold is None else threshold,
             min_speech_duration_ms=(
@@ -242,12 +241,12 @@ class Model(nn.Module):
         )
 
     def generate(self, audio, sample_rate: Optional[int] = None, **kwargs) -> VADOutput:
-        audio_np, sr = self._prepare_audio_array(audio, sample_rate=sample_rate)
-        probabilities = self._predict_proba_array(audio_np, sr)
+        audio_array, sr = self._prepare_audio_array(audio, sample_rate=sample_rate)
+        probabilities = self._predict_proba_array(audio_array, sr)
         mx.async_eval(probabilities)
         timestamps = self._probs_to_timestamps(
-            np.asarray(probabilities),
-            audio_len=audio_np.shape[-1],
+            probabilities,
+            audio_len=audio_array.shape[-1],
             sample_rate=sr,
             threshold=kwargs.pop("threshold", self.config.threshold),
             min_speech_duration_ms=kwargs.pop(
@@ -266,37 +265,55 @@ class Model(nn.Module):
             timestamps=timestamps, probabilities=probabilities, sample_rate=sr
         )
 
-    def _predict_proba_array(self, audio_np: np.ndarray, sample_rate: int) -> mx.array:
+    def _predict_proba_array(
+        self,
+        audio_array: Union[np.ndarray, mx.array],
+        sample_rate: int,
+        eval_every: int = 16,
+    ) -> mx.array:
+        if eval_every < 1:
+            raise ValueError(f"eval_every must be >= 1, got {eval_every}")
+
         branch = self._branch(sample_rate)
         chunk_size = branch.config.chunk_size
         context_size = branch.config.context_size
-        original_ndim = audio_np.ndim
+        audio_mx = (
+            audio_array.astype(self.dtype)
+            if isinstance(audio_array, mx.array)
+            else mx.array(audio_array, dtype=self.dtype)
+        )
+        original_ndim = audio_mx.ndim
 
         if original_ndim == 1:
-            audio_np = audio_np[None, :]
+            audio_mx = audio_mx[None, :]
 
-        if audio_np.shape[-1] == 0:
+        if audio_mx.shape[-1] == 0:
             return (
                 mx.zeros((0,), dtype=self.dtype)
                 if original_ndim == 1
-                else mx.zeros((audio_np.shape[0], 0), dtype=self.dtype)
+                else mx.zeros((audio_mx.shape[0], 0), dtype=self.dtype)
             )
 
-        pad = (chunk_size - audio_np.shape[-1] % chunk_size) % chunk_size
+        pad = (chunk_size - audio_mx.shape[-1] % chunk_size) % chunk_size
         if pad:
-            audio_np = np.pad(audio_np, [(0, 0), (0, pad)], mode="constant")
+            audio_mx = mx.pad(audio_mx, [(0, 0), (0, pad)])
 
-        audio_mx = mx.array(audio_np, dtype=self.dtype)
         context = mx.zeros((audio_mx.shape[0], context_size), dtype=self.dtype)
         audio_mx = mx.concatenate([context, audio_mx], axis=-1)
 
         outputs = []
         state = None
-        for pos in range(context_size, audio_mx.shape[-1], chunk_size):
+        for step, pos in enumerate(
+            range(context_size, audio_mx.shape[-1], chunk_size), start=1
+        ):
             window = audio_mx[:, pos - context_size : pos + chunk_size]
             out, state = self(window, state=state, sample_rate=sample_rate)
-            mx.async_eval(out, state)
             outputs.append(out)
+            if step % eval_every == 0:
+                mx.async_eval(out, state)
+
+        if outputs and len(outputs) % eval_every:
+            mx.async_eval(outputs[-1], state)
 
         probabilities = mx.concatenate(outputs, axis=1)
         if original_ndim == 1:
@@ -307,42 +324,31 @@ class Model(nn.Module):
         self,
         audio: Union[str, np.ndarray, mx.array],
         sample_rate: Optional[int] = None,
-    ) -> Tuple[np.ndarray, int]:
+    ) -> Tuple[mx.array, int]:
         if isinstance(audio, str):
             waveform, sr = audio_read(audio, dtype="float32")
-            audio_np = np.asarray(waveform, dtype=np.float32)
+            audio_array = mx.array(waveform, dtype=mx.float32)
         elif isinstance(audio, mx.array):
-            audio_np = np.asarray(audio, dtype=np.float32)
+            audio_array = audio.astype(mx.float32)
             sr = 16000 if sample_rate is None else int(sample_rate)
         else:
-            audio_np = np.asarray(audio, dtype=np.float32)
+            audio_array = mx.array(audio, dtype=mx.float32)
             sr = 16000 if sample_rate is None else int(sample_rate)
 
-        if audio_np.ndim == 2 and audio_np.shape[-1] <= 8 < audio_np.shape[0]:
-            audio_np = np.mean(audio_np, axis=-1)
-        if audio_np.ndim not in (1, 2):
+        if audio_array.ndim == 2 and audio_array.shape[-1] <= 8 < audio_array.shape[0]:
+            audio_array = mx.mean(audio_array, axis=-1)
+        if audio_array.ndim not in (1, 2):
             raise ValueError(
-                f"Expected mono or batched audio, got shape {audio_np.shape}"
+                f"Expected mono or batched audio, got shape {audio_array.shape}"
             )
 
         target_sr = sr if sr in (8000, 16000) else 16000
         if sr != target_sr:
-            audio_np = self._resample(audio_np, sr, target_sr)
+            if audio_array.size:
+                audio_array = resample_audio(audio_array, sr, target_sr, axis=-1)
             sr = target_sr
 
-        return audio_np.astype(np.float32, copy=False), sr
-
-    @staticmethod
-    def _resample(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-        if orig_sr == target_sr or audio.size == 0:
-            return audio.astype(np.float32, copy=False)
-
-        gcd = math.gcd(int(orig_sr), int(target_sr))
-        up = target_sr // gcd
-        down = orig_sr // gcd
-        return signal.resample_poly(audio, up, down, axis=-1, padtype="edge").astype(
-            np.float32, copy=False
-        )
+        return audio_array.astype(mx.float32), sr
 
     def _branch(self, sample_rate: int) -> SileroVADBranch:
         if int(sample_rate) == 16000:
@@ -353,7 +359,7 @@ class Model(nn.Module):
 
     @staticmethod
     def _probs_to_timestamps(
-        probabilities: np.ndarray,
+        probabilities: Union[np.ndarray, mx.array],
         audio_len: int,
         sample_rate: int,
         threshold: float,
