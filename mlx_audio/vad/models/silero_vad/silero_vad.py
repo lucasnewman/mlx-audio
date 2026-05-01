@@ -244,7 +244,7 @@ class Model(nn.Module):
     def generate(self, audio, sample_rate: Optional[int] = None, **kwargs) -> VADOutput:
         audio_np, sr = self._prepare_audio_array(audio, sample_rate=sample_rate)
         probabilities = self._predict_proba_array(audio_np, sr)
-        mx.eval(probabilities)
+        mx.async_eval(probabilities)
         timestamps = self._probs_to_timestamps(
             np.asarray(probabilities),
             audio_len=audio_np.shape[-1],
@@ -295,7 +295,7 @@ class Model(nn.Module):
         for pos in range(context_size, audio_mx.shape[-1], chunk_size):
             window = audio_mx[:, pos - context_size : pos + chunk_size]
             out, state = self(window, state=state, sample_rate=sample_rate)
-            mx.eval(out, state)
+            mx.async_eval(out, state)
             outputs.append(out)
 
         probabilities = mx.concatenate(outputs, axis=1)
