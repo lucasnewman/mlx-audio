@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import mlx.core as mx
 import numpy as np
 
+from mlx_audio.sts.audio_player import AudioPlayer
 from mlx_audio.sts.voice_pipeline import (
     EndpointDecision,
     MLXWorkScheduler,
@@ -17,7 +18,6 @@ from mlx_audio.sts.voice_pipeline import (
     VoicePipelineConfig,
     VoxtralRealtimeTranscriber,
 )
-from mlx_audio.sts.audio_player import AudioPlayer
 
 
 class FakeVADModel:
