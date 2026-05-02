@@ -17,7 +17,7 @@ from mlx_audio.sts.voice_pipeline import (
     VoicePipelineConfig,
     VoxtralRealtimeTranscriber,
 )
-from mlx_audio.tts.audio_player import AudioPlayer
+from mlx_audio.sts.audio_player import AudioPlayer
 
 
 class FakeVADModel:
