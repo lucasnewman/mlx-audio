@@ -97,7 +97,11 @@ def _safe_attention_mask(
     x = mx.where(has_any[:, None, None], x, mx.zeros_like(x))
     # Set first position valid for batches with no valid positions
     fallback = ~has_any
-    mask = mx.where(fallback[:, None], mx.concatenate([mx.ones((x.shape[0], 1), dtype=mx.bool_), mask[:, 1:]], axis=1), mask)
+    mask = mx.where(
+        fallback[:, None],
+        mx.concatenate([mx.ones((x.shape[0], 1), dtype=mx.bool_), mask[:, 1:]], axis=1),
+        mask,
+    )
     return x, mask
 
 
@@ -585,7 +589,9 @@ class AttentionPooling(nn.Module):
 
     def __call__(self, x: mx.array, mask: mx.array) -> mx.array:
         if x.ndim != 3 or x.shape[-1] != self.dim:
-            raise ValueError(f"x must have shape (B, S, {self.dim}), got {tuple(x.shape)}")
+            raise ValueError(
+                f"x must have shape (B, S, {self.dim}), got {tuple(x.shape)}"
+            )
         x, mask = _safe_attention_mask(x, mask)
         bsz, seq_len, _ = x.shape
         q = mx.broadcast_to(self.query.astype(x.dtype), (bsz, 1, self.dim))
@@ -646,7 +652,9 @@ class CrossAttentionPooling(nn.Module):
         bsz, seq_len, _ = context.shape
         q = query[:, None, :]
         q = self.wq(self.q_norm(q)).reshape(bsz, 1, self.heads, self.head_dim)
-        k = self.wk(self.k_norm(context)).reshape(bsz, seq_len, self.heads, self.head_dim)
+        k = self.wk(self.k_norm(context)).reshape(
+            bsz, seq_len, self.heads, self.head_dim
+        )
         v = self.wv(context).reshape(bsz, seq_len, self.heads, self.head_dim)
         attn_mask = _bool_to_additive_mask(context_mask)
         y = mx.fast.scaled_dot_product_attention(
@@ -735,7 +743,9 @@ class DurationPredictor(nn.Module):
             self.token_out_proj = nn.Linear(hidden_dim, 1)
             self.token_out_proj.weight = self.token_out_proj.weight * 0.0
             bias_init = math.log(math.expm1(token_init_frames))
-            self.token_out_proj.bias = mx.full(self.token_out_proj.bias.shape, bias_init)
+            self.token_out_proj.bias = mx.full(
+                self.token_out_proj.bias.shape, bias_init
+            )
             return
 
         # Pooled architecture
@@ -775,7 +785,9 @@ class DurationPredictor(nn.Module):
                     norm_eps=norm_eps,
                 )
             else:
-                raise ValueError(f"Unsupported duration speaker fusion: {speaker_fusion!r}")
+                raise ValueError(
+                    f"Unsupported duration speaker fusion: {speaker_fusion!r}"
+                )
         else:
             input_dim = text_dim + aux_dim
 
@@ -802,7 +814,9 @@ class DurationPredictor(nn.Module):
     ) -> mx.array:
         if self.null_speaker is None or self.speaker_dim is None:
             raise RuntimeError("Duration speaker modules are missing.")
-        null_vec = mx.broadcast_to(self.null_speaker.astype(dtype)[None, :], (batch_size, self.speaker_dim))
+        null_vec = mx.broadcast_to(
+            self.null_speaker.astype(dtype)[None, :], (batch_size, self.speaker_dim)
+        )
         if speaker_state is None:
             return null_vec
         speaker_vec = speaker_state[:, 0].astype(dtype)
@@ -831,9 +845,13 @@ class DurationPredictor(nn.Module):
         # Token-sum architecture
         if self.duration_architecture == "token_sum_adarn_zero_no_aux":
             if self.speaker_dim is None:
-                raise RuntimeError("Token-sum duration architecture requires speaker modules.")
+                raise RuntimeError(
+                    "Token-sum duration architecture requires speaker modules."
+                )
             if has_speaker is None:
-                raise ValueError("has_speaker is required for speaker-conditioned duration prediction.")
+                raise ValueError(
+                    "has_speaker is required for speaker-conditioned duration prediction."
+                )
             has_speaker = has_speaker.astype(mx.bool_)
             speaker_vec = self._speaker_vec(
                 batch_size=text_state.shape[0],
@@ -847,7 +865,9 @@ class DurationPredictor(nn.Module):
             token_logits = self.token_out_proj(self.token_out_norm(h)).squeeze(-1)
             # NOTE: MLX lacks mx.softplus; equivalent to log(1 + exp(x))
             token_frames = mx.log(1.0 + mx.exp(token_logits.astype(mx.float32)))
-            total_frames = mx.sum(token_frames * text_mask.astype(token_frames.dtype), axis=1)
+            total_frames = mx.sum(
+                token_frames * text_mask.astype(token_frames.dtype), axis=1
+            )
             return mx.log1p(mx.maximum(total_frames, 0.0))
 
         # Pooled architecture
@@ -863,7 +883,9 @@ class DurationPredictor(nn.Module):
             return self.out_proj(self.out_norm(h)).squeeze(-1)
 
         if has_speaker is None:
-            raise ValueError("has_speaker is required for speaker-conditioned duration prediction.")
+            raise ValueError(
+                "has_speaker is required for speaker-conditioned duration prediction."
+            )
         has_speaker = has_speaker.astype(mx.bool_)
         speaker_vec = self._speaker_vec(
             batch_size=text_vec.shape[0],
@@ -913,7 +935,9 @@ class DurationPredictor(nn.Module):
             x = mx.concatenate([context_vec, speaker_vec, aux_features], axis=-1)
             cond = None
         else:
-            raise RuntimeError(f"Unsupported duration speaker fusion: {self.speaker_fusion!r}")
+            raise RuntimeError(
+                f"Unsupported duration speaker fusion: {self.speaker_fusion!r}"
+            )
 
         h = self.input_proj(x)
         for block in self.blocks:
@@ -946,10 +970,10 @@ class DurationPredictor(nn.Module):
             )
         speaker_state = speaker_state.astype(dtype)
         if speaker_mask is None:
-            speaker_mask = mx.ones(
-                (batch_size, speaker_state.shape[1]), dtype=mx.bool_
-            )
-        elif speaker_mask.ndim != 2 or speaker_mask.shape[:2] != speaker_state.shape[:2]:
+            speaker_mask = mx.ones((batch_size, speaker_state.shape[1]), dtype=mx.bool_)
+        elif (
+            speaker_mask.ndim != 2 or speaker_mask.shape[:2] != speaker_state.shape[:2]
+        ):
             raise ValueError(
                 "speaker_mask must have shape matching speaker_state (B, S), "
                 f"got speaker_state={tuple(speaker_state.shape)} mask={tuple(speaker_mask.shape)}"
@@ -1114,7 +1138,14 @@ class IrodoriDiT(nn.Module):
         ref_mask: Optional[mx.array] = None,
         caption_input_ids: Optional[mx.array] = None,
         caption_mask: Optional[mx.array] = None,
-    ) -> Tuple[mx.array, mx.array, Optional[mx.array], Optional[mx.array], Optional[mx.array], Optional[mx.array]]:
+    ) -> Tuple[
+        mx.array,
+        mx.array,
+        Optional[mx.array],
+        Optional[mx.array],
+        Optional[mx.array],
+        Optional[mx.array],
+    ]:
         """
         Encode all conditions including both speaker and caption states.
         Returns (text_state, text_mask, speaker_state, speaker_mask, caption_state, caption_mask).
@@ -1152,7 +1183,14 @@ class IrodoriDiT(nn.Module):
                 )
                 caption_mask = caption_mask
 
-        return text_state, text_mask, speaker_state, speaker_mask, caption_state, caption_mask
+        return (
+            text_state,
+            text_mask,
+            speaker_state,
+            speaker_mask,
+            caption_state,
+            caption_mask,
+        )
 
     def build_kv_cache(
         self,

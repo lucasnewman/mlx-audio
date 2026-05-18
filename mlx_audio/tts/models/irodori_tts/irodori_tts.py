@@ -249,7 +249,9 @@ class Model(nn.Module):
             # Manual duration
             clamped_seconds = min(max_seconds, max(min_seconds, float(seconds)))
             target_samples = int(clamped_seconds * self.config.sample_rate)
-            latent_steps = math.ceil(target_samples / self.config.audio_downsample_factor)
+            latent_steps = math.ceil(
+                target_samples / self.config.audio_downsample_factor
+            )
         elif self.config.dit.use_duration_predictor:
             # Predict duration using the integrated predictor
             text_for_features = normalize_text(text)
@@ -286,8 +288,22 @@ class Model(nn.Module):
             )
             pred_frames = float(mx.expm1(pred_log_frames[0]).item())
             scaled_frames = pred_frames * duration_scale
-            min_frames = max(1, math.ceil(min_seconds * self.config.sample_rate / self.config.audio_downsample_factor))
-            max_frames = max(1, math.floor(max_seconds * self.config.sample_rate / self.config.audio_downsample_factor))
+            min_frames = max(
+                1,
+                math.ceil(
+                    min_seconds
+                    * self.config.sample_rate
+                    / self.config.audio_downsample_factor
+                ),
+            )
+            max_frames = max(
+                1,
+                math.floor(
+                    max_seconds
+                    * self.config.sample_rate
+                    / self.config.audio_downsample_factor
+                ),
+            )
             latent_steps = int(round(scaled_frames))
             latent_steps = max(min_frames, min(max_frames, latent_steps))
         else:
@@ -371,9 +387,24 @@ class Model(nn.Module):
             rng_seed=int(kwargs.get("rng_seed", 0)),
             seconds=kwargs.get("seconds"),
             duration_scale=float(kwargs.get("duration_scale", 1.0)),
-            min_seconds=float(kwargs.get("min_seconds", self.config.sampler.min_seconds)),
-            max_seconds=float(kwargs.get("max_seconds", self.config.sampler.max_seconds)),
-            **{k: v for k, v in kwargs.items() if k not in ("rng_seed", "seconds", "duration_scale", "min_seconds", "max_seconds")},
+            min_seconds=float(
+                kwargs.get("min_seconds", self.config.sampler.min_seconds)
+            ),
+            max_seconds=float(
+                kwargs.get("max_seconds", self.config.sampler.max_seconds)
+            ),
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k
+                not in (
+                    "rng_seed",
+                    "seconds",
+                    "duration_scale",
+                    "min_seconds",
+                    "max_seconds",
+                )
+            },
         )
 
         # Decode latent → waveform

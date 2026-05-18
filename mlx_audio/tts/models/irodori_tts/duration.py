@@ -8,16 +8,68 @@ import mlx.core as mx
 import numpy as np
 
 ALLOWED_ANNOTATION_EMOJIS: tuple[str, ...] = (
-    "⏩", "⏱️", "⏸️", "🌬️", "🍭", "🎛️", "🎭", "🎵", "🐢", "🐱",
-    "👂", "👃", "👅", "👌", "👏", "💋", "💥", "💦", "💪", "📄",
-    "📞", "📢", "📣", "😆", "😊", "😌", "😎", "😏", "😒", "😖",
-    "😟", "😠", "😪", "😭", "😮", "😮\u200d💨", "😰", "😱", "😲",
-    "😴", "🙄", "🙏", "🤐", "🤔", "🤢", "🤧", "🤭", "🥤", "🥱",
-    "🥴", "🥵", "🥹", "🥺", "🫣", "🫶", "📖",
+    "⏩",
+    "⏱️",
+    "⏸️",
+    "🌬️",
+    "🍭",
+    "🎛️",
+    "🎭",
+    "🎵",
+    "🐢",
+    "🐱",
+    "👂",
+    "👃",
+    "👅",
+    "👌",
+    "👏",
+    "💋",
+    "💥",
+    "💦",
+    "💪",
+    "📄",
+    "📞",
+    "📢",
+    "📣",
+    "😆",
+    "😊",
+    "😌",
+    "😎",
+    "😏",
+    "😒",
+    "😖",
+    "😟",
+    "😠",
+    "😪",
+    "😭",
+    "😮",
+    "😮\u200d💨",
+    "😰",
+    "😱",
+    "😲",
+    "😴",
+    "🙄",
+    "🙏",
+    "🤐",
+    "🤔",
+    "🤢",
+    "🤧",
+    "🤭",
+    "🥤",
+    "🥱",
+    "🥴",
+    "🥵",
+    "🥹",
+    "🥺",
+    "🫣",
+    "🫶",
+    "📖",
 )
 
 _ALLOWED_ANNOTATION_EMOJI_PATTERN = re.compile(
-    "|".join(sorted((re.escape(x) for x in ALLOWED_ANNOTATION_EMOJIS), key=len, reverse=True))
+    "|".join(
+        sorted((re.escape(x) for x in ALLOWED_ANNOTATION_EMOJIS), key=len, reverse=True)
+    )
 )
 
 
@@ -83,7 +135,8 @@ def build_duration_features(
 
         rows.append(
             [
-                min(max(float(token_count), 0.0), float(max_text_len)) / float(max_text_len),
+                min(max(float(token_count), 0.0), float(max_text_len))
+                / float(max_text_len),
                 _log1p_cap_float(float(char_count), 512.0),
                 float(token_count) / float(char_count),
                 _log1p_cap(period_count, 8),
