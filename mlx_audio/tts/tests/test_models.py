@@ -4370,6 +4370,333 @@ class TestIrodoriVoiceDesignGenerate(unittest.TestCase):
         self.assertGreater(results[0].samples, 0)
 
 
+# ---------------------------------------------------------------------------
+# Irodori-TTS v3 helpers
+# ---------------------------------------------------------------------------
+
+
+def _small_irodori_dit_config_v3(**overrides):
+    from mlx_audio.tts.models.irodori_tts.config import IrodoriDiTConfig
+
+    defaults = dict(
+        latent_dim=8,
+        latent_patch_size=1,
+        model_dim=32,
+        num_layers=2,
+        num_heads=4,
+        mlp_ratio=2.0,
+        text_mlp_ratio=2.0,
+        speaker_mlp_ratio=2.0,
+        text_vocab_size=64,
+        text_dim=32,
+        text_layers=1,
+        text_heads=4,
+        speaker_dim=32,
+        speaker_layers=1,
+        speaker_heads=4,
+        speaker_patch_size=1,
+        timestep_embed_dim=16,
+        adaln_rank=8,
+        norm_eps=1e-5,
+        use_duration_predictor=True,
+        duration_aux_dim=14,
+        duration_hidden_dim=16,
+        duration_layers=1,
+        duration_dropout=0.0,
+        duration_attention_heads=4,
+        duration_architecture="token_sum_adarn_zero_no_aux",
+        duration_token_init_frames=9.0,
+        duration_speaker_fusion="adarn_zero",
+    )
+    defaults.update(overrides)
+    return IrodoriDiTConfig(**defaults)
+
+
+def _small_irodori_model_config_v3(**sampler_overrides):
+    from mlx_audio.tts.models.irodori_tts.config import ModelConfig, SamplerConfig
+
+    sampler_defaults = dict(
+        num_steps=1,
+        cfg_scale_text=1.0,
+        cfg_scale_speaker=1.0,
+        sequence_length=4,
+        t_schedule_mode="sway",
+        sway_coeff=-1.0,
+    )
+    sampler_defaults.update(sampler_overrides)
+    return ModelConfig(
+        dit=_small_irodori_dit_config_v3(),
+        sampler=SamplerConfig(**sampler_defaults),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Irodori-TTS v3 test classes
+# ---------------------------------------------------------------------------
+
+
+class TestIrodoriDurationFeatures(unittest.TestCase):
+    def test_output_shape(self):
+        from mlx_audio.tts.models.irodori_tts.duration import build_duration_features
+
+        feats = build_duration_features(
+            ["こんにちは"],
+            token_counts=[5],
+            max_text_len=256,
+            has_speaker=[True],
+        )
+        self.assertEqual(tuple(feats.shape), (1, 14))
+
+    def test_speaker_flag_reflected(self):
+        from mlx_audio.tts.models.irodori_tts.duration import build_duration_features
+
+        with_spk = build_duration_features(
+            ["テスト"], token_counts=[3], max_text_len=256, has_speaker=[True]
+        )
+        without_spk = build_duration_features(
+            ["テスト"], token_counts=[3], max_text_len=256, has_speaker=[False]
+        )
+        self.assertAlmostEqual(float(with_spk[0, -1]), 1.0)
+        self.assertAlmostEqual(float(without_spk[0, -1]), 0.0)
+
+    def test_batch_shape(self):
+        from mlx_audio.tts.models.irodori_tts.duration import build_duration_features
+
+        feats = build_duration_features(
+            ["テキストA", "テキストB"],
+            token_counts=[4, 6],
+            max_text_len=256,
+            has_speaker=[True, False],
+        )
+        self.assertEqual(tuple(feats.shape), (2, 14))
+
+
+class TestIrodoriDurationPredictor(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.model import DurationPredictor
+
+        self.pred = DurationPredictor(
+            text_dim=32,
+            aux_dim=14,
+            hidden_dim=16,
+            layers=1,
+            norm_eps=1e-5,
+            speaker_dim=32,
+            speaker_fusion="adarn_zero",
+            attention_heads=4,
+            architecture="token_sum_adarn_zero_no_aux",
+            token_init_frames=9.0,
+        )
+
+    def test_output_shape_with_speaker(self):
+        B, S = 1, 5
+        text_state = mx.random.normal((B, S, 32))
+        text_mask = mx.ones((B, S), dtype=mx.bool_)
+        aux = mx.zeros((B, 14), dtype=mx.float32)
+        speaker_state = mx.random.normal((B, 8, 32))
+        has_speaker = mx.array([True], dtype=mx.bool_)
+
+        out = self.pred(
+            text_state,
+            text_mask=text_mask,
+            aux_features=aux,
+            speaker_state=speaker_state,
+            has_speaker=has_speaker,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B,))
+
+    def test_output_shape_no_speaker(self):
+        B, S = 2, 5
+        text_state = mx.random.normal((B, S, 32))
+        text_mask = mx.ones((B, S), dtype=mx.bool_)
+        aux = mx.zeros((B, 14), dtype=mx.float32)
+        has_speaker = mx.array([False, False], dtype=mx.bool_)
+
+        out = self.pred(
+            text_state,
+            text_mask=text_mask,
+            aux_features=aux,
+            speaker_state=None,
+            has_speaker=has_speaker,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B,))
+
+    def test_output_is_log1p_positive(self):
+        B, S = 1, 5
+        text_state = mx.random.normal((B, S, 32))
+        text_mask = mx.ones((B, S), dtype=mx.bool_)
+        aux = mx.zeros((B, 14), dtype=mx.float32)
+        has_speaker = mx.array([False], dtype=mx.bool_)
+
+        out = self.pred(
+            text_state,
+            text_mask=text_mask,
+            aux_features=aux,
+            speaker_state=None,
+            has_speaker=has_speaker,
+        )
+        mx.eval(out)
+        # log1p output should be >= 0 (log1p(max(total_frames,0)))
+        self.assertGreaterEqual(float(out[0]), 0.0)
+
+
+class TestIrodoriV3DiTShapes(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        self.cfg = _small_irodori_dit_config_v3()
+        self.model = IrodoriDiT(self.cfg)
+
+    def test_duration_predictor_exists(self):
+        self.assertIsNotNone(self.model.duration_predictor)
+
+    def test_encode_conditions_full_shape(self):
+        B = 1
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.random.normal((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+
+        result = self.model.encode_conditions_full(
+            text_ids, text_mask, ref_latent, ref_mask
+        )
+        self.assertEqual(len(result), 6)
+        text_state, text_mask_out, spk_state, spk_mask, _, _ = result
+        mx.eval(text_state)
+        self.assertEqual(tuple(text_state.shape), (B, 5, self.cfg.text_dim))
+
+    def test_predict_duration_log_frames(self):
+        from mlx_audio.tts.models.irodori_tts.duration import build_duration_features
+
+        B = 1
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.random.normal((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+
+        text_state, text_mask_out, spk_state, spk_mask, _, _ = (
+            self.model.encode_conditions_full(text_ids, text_mask, ref_latent, ref_mask)
+        )
+        dur_feats = build_duration_features(
+            ["テスト"],
+            token_counts=[5],
+            max_text_len=256,
+            has_speaker=[True],
+        )
+        has_speaker = mx.array([True], dtype=mx.bool_)
+        log_frames = self.model.predict_duration_log_frames(
+            text_state=text_state,
+            text_mask=text_mask_out,
+            speaker_state=spk_state,
+            speaker_mask=spk_mask,
+            duration_features=dur_feats,
+            has_speaker=has_speaker,
+        )
+        mx.eval(log_frames)
+        self.assertEqual(tuple(log_frames.shape), (B,))
+        self.assertGreaterEqual(float(log_frames[0]), 0.0)
+
+
+class TestIrodoriV3GenerateSmoke(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_v3()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        return model
+
+    def test_generate_uses_duration_predictor(self):
+        model = self._make_model()
+        results = list(model.generate("こんにちは", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_manual_seconds(self):
+        model = self._make_model()
+        results = list(model.generate("テスト", rng_seed=0, seconds=1.0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_with_ref_audio(self):
+        model = self._make_model()
+        cfg = model.config
+        ref = mx.zeros((1, cfg.audio_downsample_factor * 4), dtype=mx.float32)
+        results = list(model.generate("テスト", ref_audio=ref, rng_seed=1))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+
+class TestIrodoriSwaySampling(unittest.TestCase):
+    def _get_schedule(self, num_steps, mode, coeff=-1.0):
+        import numpy as np
+
+        init_scale = 0.999
+        t_schedule = np.linspace(1.0 * init_scale, 0.0, num_steps + 1, dtype=np.float32)
+        if mode == "sway":
+            u = np.linspace(0.0, 1.0, num_steps + 1, dtype=np.float32)
+            u = u + coeff * (np.cos(0.5 * np.pi * u) + u - 1.0)
+            u = np.clip(u, 0.0, 1.0)
+            t_schedule = (1.0 - u) * init_scale
+        return t_schedule
+
+    def test_sway_schedule_shape(self):
+        schedule = self._get_schedule(10, "sway")
+        self.assertEqual(len(schedule), 11)
+
+    def test_linear_schedule_shape(self):
+        schedule = self._get_schedule(10, "linear")
+        self.assertEqual(len(schedule), 11)
+
+    def test_sway_schedule_bounded(self):
+        schedule = self._get_schedule(20, "sway", coeff=-1.0)
+        self.assertTrue(float(schedule.min()) >= 0.0)
+        self.assertTrue(float(schedule.max()) <= 1.0)
+
+    def test_sway_differs_from_linear(self):
+        linear = self._get_schedule(10, "linear")
+        sway = self._get_schedule(10, "sway")
+        self.assertFalse(
+            all(abs(float(a) - float(b)) < 1e-6 for a, b in zip(linear, sway))
+        )
+
+    def test_sampler_uses_sway_schedule(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        cfg = _small_irodori_dit_config_v3()
+        model = IrodoriDiT(cfg)
+        text_ids = mx.zeros((1, 5), dtype=mx.int32)
+        text_mask = mx.ones((1, 5), dtype=mx.bool_)
+        ref_latent = mx.zeros((1, 4, cfg.latent_dim))
+        ref_mask = mx.zeros((1, 4), dtype=mx.bool_)
+
+        from mlx_audio.tts.models.irodori_tts.sampling import sample_euler_cfg
+
+        out = sample_euler_cfg(
+            model=model,
+            text_input_ids=text_ids,
+            text_mask=text_mask,
+            ref_latent=ref_latent,
+            ref_mask=ref_mask,
+            latent_dim=cfg.patched_latent_dim,
+            rng_seed=42,
+            sequence_length=4,
+            num_steps=1,
+            cfg_scale_text=0.0,
+            cfg_scale_speaker=0.0,
+            t_schedule_mode="sway",
+            sway_coeff=-1.0,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (1, 4, cfg.patched_latent_dim))
+
+
 class TestKugelAudioModel(unittest.TestCase):
     def _make_model(self):
         from mlx_audio.tts.models.kugelaudio.config import ModelConfig
