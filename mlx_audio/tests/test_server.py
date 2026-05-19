@@ -142,7 +142,9 @@ def _hf_repo_not_found(model_name: str) -> RepositoryNotFoundError:
     """Construct a RepositoryNotFoundError shaped like the real HF client raises."""
     request = httpx.Request("GET", f"https://huggingface.co/api/models/{model_name}")
     response = httpx.Response(404, request=request)
-    return RepositoryNotFoundError(f"404 Client Error. Repository Not Found", response=response)
+    return RepositoryNotFoundError(
+        f"404 Client Error. Repository Not Found", response=response
+    )
 
 
 def test_tts_speech_bad_model_returns_404_not_silent_200(client, mock_model_provider):
