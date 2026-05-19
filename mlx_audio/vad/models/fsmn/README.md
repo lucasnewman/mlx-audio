@@ -15,7 +15,7 @@ FSMN-VAD is a lightweight, low-latency VAD model based on Feedforward Sequential
 ```python
 from mlx_audio.vad import load
 
-model = load("mlx-community/fsmn-vad")
+model = load("taylorsweeit/fsmn-vad-mlx")
 ```
 
 ### Load from model class directly
