@@ -24,7 +24,7 @@ model = load("mlx-community/fsmn-vad")
 from mlx_audio.vad.models.fsmn.model import Model
 
 # From HuggingFace
-model = Model.from_pretrained("mlx-community/fsmn-vad")
+model = Model.from_pretrained("taylorsweeit/fsmn-vad-mlx")
 
 # Or from a local directory
 model = Model.from_pretrained("/path/to/fsmn-vad-mlx")
