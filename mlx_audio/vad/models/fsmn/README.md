@@ -6,7 +6,7 @@ FSMN-VAD is a lightweight, low-latency VAD model based on Feedforward Sequential
 
 ## Supported Model
 
-[`mlx-community/fsmn-vad`](https://huggingface.co/mlx-community/fsmn-vad)
+['taylorsweeit/fsmn-vad-mlx'](https://huggingface.co/taylorsweeit/fsmn-vad-mlx)
 
 ## Usage
 
