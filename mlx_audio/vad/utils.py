@@ -8,9 +8,7 @@ from mlx_audio.utils import base_load_model
 MODEL_REMAPPING = {
     "silero": "silero_vad",
     "silero-vad": "silero_vad",
-    "fsmn": "fsmn",
-    "fsmn-vad": "fsmn",
-    "fsmn_vad": "fsmn",
+    "fsmn": "fsmn"
 }
 
 
