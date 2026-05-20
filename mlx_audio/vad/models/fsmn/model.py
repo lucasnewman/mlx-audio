@@ -84,6 +84,7 @@ class Model(nn.Module):
             model._cmvn_scale = np.array(cmvn["scale"], dtype=np.float32)
         elif cmvn_mvn.exists():
             from .frontend import load_cmvn
+
             shift, scale = load_cmvn(str(cmvn_mvn))
             model._cmvn_shift = shift
             model._cmvn_scale = scale
@@ -109,22 +110,23 @@ class Model(nn.Module):
         Detect speech segments in audio.
 
         Args:
-            audio: path to wav file or float32 numpy waveform
+            audio: path to audio file or float32 numpy waveform
             sample_rate: audio sample rate (used only when audio is numpy)
 
         Returns:
             [[start_ms, end_ms], ...] speech segment timestamps
         """
         if isinstance(audio, str):
-            import soundfile as sf
+            from mlx_audio.audio_io import read as audio_read
+            from mlx_audio.utils import resample_audio
 
-            waveform, sr = sf.read(audio, dtype="float32")
+            waveform, sr = audio_read(audio, dtype="float32")
+            if waveform.ndim > 1:
+                waveform = np.mean(waveform, axis=-1)
             if sr != self.config.sample_rate:
-                from scipy.signal import resample
-
-                waveform = resample(
-                    waveform, int(len(waveform) * self.config.sample_rate / sr)
-                ).astype(np.float32)
+                waveform = resample_audio(waveform, sr, self.config.sample_rate).astype(
+                    np.float32
+                )
         else:
             waveform = audio.astype(np.float32)
 
