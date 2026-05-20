@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 
 import mlx.core as mx
 import numpy as np
+
 from mlx_audio.dsp import compute_fbank_kaldi as _compute_fbank_kaldi
 
 
