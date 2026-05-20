@@ -1,32 +1,35 @@
 """
-FSMN-VAD 前端特征提取: Kaldi-style Fbank + LFR + CMVN
+FSMN-VAD frontend: Kaldi-style Fbank + LFR + CMVN
 
-与 FunASR WavFrontendOnline 对齐:
-- Kaldi fbank (torchaudio.compliance.kaldi.fbank)
+Aligned with FunASR WavFrontendOnline:
+- Kaldi fbank via mlx_audio.dsp.compute_fbank_kaldi
 - LFR: lfr_m=5, lfr_n=1
-- CMVN: Kaldi Nnet 格式 (AddShift + Rescale)
+- CMVN: Kaldi Nnet format (AddShift + Rescale)
 """
+
 import re
+from typing import Optional, Tuple
+
+import mlx.core as mx
 import numpy as np
-from typing import Tuple, Optional
+from mlx_audio.dsp import compute_fbank_kaldi as _compute_fbank_kaldi
 
 
 def load_cmvn(cmvn_path: str) -> Tuple[np.ndarray, np.ndarray]:
     """
-    加载 Kaldi Nnet 格式的 CMVN 文件 (am.mvn).
+    Load Kaldi Nnet format CMVN file (am.mvn).
 
-    格式:
+    Format:
         <AddShift> D D
         <LearnRateCoef> 0 [ shift_values ]
         <Rescale> D D
         <LearnRateCoef> 0 [ scale_values ]
 
-    CMVN 操作: output = (input + shift) * scale
+    CMVN operation: output = (input + shift) * scale
     """
     with open(cmvn_path, "r") as f:
         content = f.read()
 
-    # 提取 AddShift 后的数值
     shift_match = re.search(r"<AddShift>.*?\[(.*?)\]", content, re.DOTALL)
     scale_match = re.search(r"<Rescale>.*?\[(.*?)\]", content, re.DOTALL)
 
@@ -39,7 +42,7 @@ def load_cmvn(cmvn_path: str) -> Tuple[np.ndarray, np.ndarray]:
     return shift, scale
 
 
-def compute_fbank_kaldi(
+def compute_fbank(
     waveform: np.ndarray,
     sample_rate: int = 16000,
     n_mels: int = 80,
@@ -48,47 +51,46 @@ def compute_fbank_kaldi(
     dither: float = 0.0,
 ) -> np.ndarray:
     """
-    Kaldi-style fbank 特征提取 (通过 torchaudio).
+    Kaldi-style fbank feature extraction via mlx_audio.dsp.
 
     Returns:
         fbank: [num_frames, n_mels] float32
     """
-    import torch
-    import torchaudio
+    win_len = int(sample_rate * frame_length_ms / 1000)
+    win_inc = int(sample_rate * frame_shift_ms / 1000)
 
-    waveform_tensor = torch.from_numpy(waveform).unsqueeze(0).float() * (1 << 15)
+    # Scale to Kaldi PCM convention (int16 range)
+    waveform_mx = mx.array(waveform * (1 << 15), dtype=mx.float32)
 
-    fbank = torchaudio.compliance.kaldi.fbank(
-        waveform_tensor,
-        sample_frequency=sample_rate,
-        num_mel_bins=n_mels,
-        frame_length=frame_length_ms,
-        frame_shift=frame_shift_ms,
+    fbank = _compute_fbank_kaldi(
+        waveform_mx,
+        sample_rate=sample_rate,
+        win_len=win_len,
+        win_inc=win_inc,
+        num_mels=n_mels,
+        win_type="hamming",
         dither=dither,
-        window_type="hamming",
     )
 
-    return fbank.numpy()  # [T, n_mels]
+    mx.eval(fbank)
+    return np.array(fbank)
 
 
-def apply_lfr(
-    features: np.ndarray, lfr_m: int = 5, lfr_n: int = 1
-) -> np.ndarray:
+def apply_lfr(features: np.ndarray, lfr_m: int = 5, lfr_n: int = 1) -> np.ndarray:
     """
-    Low Frame Rate: 每 lfr_n 帧取一帧, 每帧拼接 lfr_m 帧.
+    Low Frame Rate: stack lfr_m frames every lfr_n steps.
 
-    FunASR 的 LFR 对前几帧做左侧填充 (用第一帧重复).
+    FunASR pads the left side by repeating the first frame.
 
     Args:
         features: [T, D]
-        lfr_m: 拼接帧数
-        lfr_n: 步长
+        lfr_m: number of frames to stack
+        lfr_n: step size
 
     Returns:
         [T', D * lfr_m]
     """
     T, D = features.shape
-    # FunASR 左侧 padding: 重复第一帧 (lfr_m - 1) // 2 次
     left_pad = (lfr_m - 1) // 2
     if left_pad > 0:
         pad_frames = np.tile(features[0:1], (left_pad, 1))
@@ -132,12 +134,14 @@ def extract_features(
     cmvn_scale: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
-    Full frontend: waveform → Kaldi fbank → LFR → CMVN → [T', 400]
+    Full frontend: waveform -> Kaldi fbank -> LFR -> CMVN -> [T', 400]
 
     CMVN can be provided via file path (cmvn_path) or directly as
     numpy arrays (cmvn_shift, cmvn_scale). Direct arrays take priority.
     """
-    fbank = compute_fbank_kaldi(waveform, sample_rate, n_mels, frame_length_ms, frame_shift_ms)
+    fbank = compute_fbank(
+        waveform, sample_rate, n_mels, frame_length_ms, frame_shift_ms
+    )
     features = apply_lfr(fbank, lfr_m, lfr_n)
 
     if cmvn_shift is not None and cmvn_scale is not None:
