@@ -4,6 +4,7 @@
 用法:
     python convert.py --pt-path /path/to/model.pt --output-dir /path/to/fsmn-vad-mlx
 """
+
 import argparse
 import json
 import os
@@ -35,7 +36,7 @@ def sanitize(pt_weights: dict) -> dict:
 
         # 1. 去掉 "encoder." 前缀
         if new_k.startswith("encoder."):
-            new_k = new_k[len("encoder."):]
+            new_k = new_k[len("encoder.") :]
 
         # 2. 去掉多余的 ".linear" (in_linear1.linear.weight → in_linear1.weight)
         #    但保留 fsmn.X.linear.weight (这是层内的 linear 投影)
@@ -56,7 +57,7 @@ def sanitize(pt_weights: dict) -> dict:
         new_k = new_k.replace(".affine.linear.", ".affine.")
 
         # 3. Conv2d 权重转换: [128, 1, 20, 1] → [128, 20, 1]
-        v_np = v.numpy() if hasattr(v, 'numpy') else v
+        v_np = v.numpy() if hasattr(v, "numpy") else v
         if "conv_left.weight" in new_k and len(v_np.shape) == 4:
             # PyTorch Conv2d depthwise: [out, in/groups, kH, kW] = [128, 1, 20, 1]
             # MLX Conv1d: [out, kernel_size, in/groups] = [128, 20, 1]
@@ -87,7 +88,7 @@ def convert(pt_path: str, output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
 
     # 保存权重
-    
+
     mx.save_safetensors(os.path.join(output_dir, "model.safetensors"), mlx_weights)
 
     # 保存 config
@@ -122,7 +123,11 @@ def convert(pt_path: str, output_dir: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pt-path", type=str, required=True, help="PyTorch model.pt 路径")
-    parser.add_argument("--output-dir", type=str, required=True, help="MLX 模型输出目录")
+    parser.add_argument(
+        "--pt-path", type=str, required=True, help="PyTorch model.pt 路径"
+    )
+    parser.add_argument(
+        "--output-dir", type=str, required=True, help="MLX 模型输出目录"
+    )
     args = parser.parse_args()
     convert(args.pt_path, args.output_dir)
