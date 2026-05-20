@@ -94,16 +94,24 @@ class FSMNEncoder(nn.Module):
         super().__init__()
         self.config = config
 
-        self.in_linear1 = nn.Linear(config.input_dim, config.input_affine_dim, bias=True)
-        self.in_linear2 = nn.Linear(config.input_affine_dim, config.linear_dim, bias=True)
+        self.in_linear1 = nn.Linear(
+            config.input_dim, config.input_affine_dim, bias=True
+        )
+        self.in_linear2 = nn.Linear(
+            config.input_affine_dim, config.linear_dim, bias=True
+        )
 
         self.fsmn = [
             FSMNLayer(config.linear_dim, config.proj_dim, config.lorder, config.lstride)
             for _ in range(config.fsmn_layers)
         ]
 
-        self.out_linear1 = nn.Linear(config.linear_dim, config.output_affine_dim, bias=True)
-        self.out_linear2 = nn.Linear(config.output_affine_dim, config.output_dim, bias=True)
+        self.out_linear1 = nn.Linear(
+            config.linear_dim, config.output_affine_dim, bias=True
+        )
+        self.out_linear2 = nn.Linear(
+            config.output_affine_dim, config.output_dim, bias=True
+        )
 
     def __call__(self, x: mx.array) -> mx.array:
         """
@@ -112,14 +120,14 @@ class FSMNEncoder(nn.Module):
         Returns:
             [batch, time, output_dim] (248-dim softmax)
         """
-        x = self.in_linear1(x)      # no relu
-        x = self.in_linear2(x)      # no relu
-        x = nn.relu(x)              # single relu after in_linear2
+        x = self.in_linear1(x)  # no relu
+        x = self.in_linear2(x)  # no relu
+        x = nn.relu(x)  # single relu after in_linear2
 
         for layer in self.fsmn:
             x = layer(x)
 
-        x = self.out_linear1(x)     # no relu
-        x = self.out_linear2(x)     # no relu
+        x = self.out_linear1(x)  # no relu
+        x = self.out_linear2(x)  # no relu
         x = mx.softmax(x, axis=-1)
         return x
