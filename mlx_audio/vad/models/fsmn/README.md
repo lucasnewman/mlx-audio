@@ -6,7 +6,7 @@ FSMN-VAD is a lightweight, low-latency VAD model based on Feedforward Sequential
 
 ## Supported Model
 
-['taylorsweeit/fsmn-vad-mlx'](https://huggingface.co/taylorsweeit/fsmn-vad-mlx)
+[mlx-community/fsmn-vad](https://huggingface.co/mlx-community/fsmn-vad)
 
 ## Usage
 
@@ -15,7 +15,7 @@ FSMN-VAD is a lightweight, low-latency VAD model based on Feedforward Sequential
 ```python
 from mlx_audio.vad import load
 
-model = load("taylorsweeit/fsmn-vad-mlx")
+model = load("mlx-community/fsmn-vad")
 ```
 
 ### Load from model class directly
@@ -24,7 +24,7 @@ model = load("taylorsweeit/fsmn-vad-mlx")
 from mlx_audio.vad.models.fsmn.model import Model
 
 # From HuggingFace
-model = Model.from_pretrained("taylorsweeit/fsmn-vad-mlx")
+model = Model.from_pretrained("mlx-community/fsmn-vad")
 
 # Or from a local directory
 model = Model.from_pretrained("/path/to/fsmn-vad-mlx")
@@ -42,20 +42,16 @@ print(segments)  # [[start_ms, end_ms], ...]
 From a numpy waveform:
 
 ```python
-import soundfile as sf
+from mlx_audio.audio_io import read
 
-waveform, sr = sf.read("audio.wav", dtype="float32")
+waveform, sr = read("audio.wav")
 segments = model.detect(waveform, sample_rate=sr)
 print(segments)  # [[270, 3790], [4460, 6900], ...]
 ```
 
 ## Requirements
 
-The FSMN-VAD frontend uses Kaldi-style fbank features via `torchaudio`:
-
-```bash
-pip install torch torchaudio soundfile
-```
+The FSMN-VAD frontend uses `mlx_audio.dsp.compute_fbank_kaldi`, `mlx_audio.audio_io.read`, and `mlx_audio.utils.resample_audio`, so no extra torch/torchaudio/soundfile dependencies are required.
 
 ## Architecture
 
