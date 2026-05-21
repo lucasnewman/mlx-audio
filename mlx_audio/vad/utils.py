@@ -7,6 +7,7 @@ from mlx_audio.utils import base_load_model
 
 MODEL_REMAPPING = {"silero": "silero_vad", "silero-vad": "silero_vad", "fsmn": "fsmn"}
 
+
 def load_model(
     model_path: Union[str, Path], lazy: bool = False, strict: bool = False, **kwargs
 ) -> nn.Module:
