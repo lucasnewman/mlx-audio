@@ -43,11 +43,13 @@ class MegaASRConfig:
             self.text_config = TextConfig.from_dict(self.text_config)
 
     def to_qwen3_config(self) -> Qwen3ModelConfig:
+        assert self.audio_config is not None
+        assert self.text_config is not None
         return Qwen3ModelConfig(
             audio_config=self.audio_config,
             text_config=self.text_config,
             model_type="qwen3_asr",
-            model_repo=self.model_repo,
+            model_repo=self.model_repo or "",
             audio_token_id=self.audio_token_id,
             audio_start_token_id=self.audio_start_token_id,
             audio_end_token_id=self.audio_end_token_id,
