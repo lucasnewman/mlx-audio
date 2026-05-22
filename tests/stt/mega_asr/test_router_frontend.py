@@ -26,3 +26,16 @@ def test_logmel_matches_reference():
 
     assert got.shape == (10, 80)
     assert np.allclose(got, expected, atol=1e-3)
+
+
+def test_conv_frontend_and_positional_encoding_shapes():
+    from mlx_audio.stt.models.mega_asr.router import ConvFrontend, PositionalEncoding
+
+    features = mx.random.normal((1, 40, 80))
+
+    encoded = ConvFrontend()(features)
+    positioned = PositionalEncoding(d_model=256)(encoded)
+
+    assert encoded.shape == (1, 10, 256)
+    assert positioned.shape == (1, 10, 256)
+    assert np.isfinite(np.array(positioned)).all()
