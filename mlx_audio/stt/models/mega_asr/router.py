@@ -149,3 +149,23 @@ class TransformerEncoder(nn.Module):
         for layer in self.layers:
             x = layer(x)
         return self.norm(x)
+
+
+class AttentionPooling(nn.Module):
+    def __init__(self, d_model: int = 256):
+        super().__init__()
+        self.query = nn.Linear(d_model, 1)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        weights = mx.softmax(mx.squeeze(self.query(x), axis=-1), axis=-1)
+        return mx.sum(weights[..., None] * x, axis=1)
+
+
+class ClassifierHead(nn.Module):
+    def __init__(self, d_model: int = 256, hidden_dim: int = 128):
+        super().__init__()
+        self.fc1 = nn.Linear(d_model, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, 2)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        return self.fc2(nn.gelu(self.fc1(x)))
