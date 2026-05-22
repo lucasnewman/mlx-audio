@@ -88,3 +88,64 @@ class PositionalEncoding(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         return x + self.pe[:, : x.shape[1]]
+
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self, d_model: int = 256, nhead: int = 4):
+        super().__init__()
+        self.d_model = d_model
+        self.nhead = nhead
+        self.head_dim = d_model // nhead
+        self.scale = self.head_dim**-0.5
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        batch_size, steps, _ = x.shape
+        q = self.q_proj(x).reshape(batch_size, steps, self.nhead, self.head_dim)
+        k = self.k_proj(x).reshape(batch_size, steps, self.nhead, self.head_dim)
+        v = self.v_proj(x).reshape(batch_size, steps, self.nhead, self.head_dim)
+
+        q = q.transpose(0, 2, 1, 3)
+        k = k.transpose(0, 2, 3, 1)
+        v = v.transpose(0, 2, 1, 3)
+
+        attn = mx.softmax((q * self.scale) @ k, axis=-1)
+        out = (attn @ v).transpose(0, 2, 1, 3).reshape(batch_size, steps, self.d_model)
+        return self.out_proj(out)
+
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(self, d_model: int = 256, nhead: int = 4, dim_feedforward: int = 1024):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(d_model)
+        self.self_attn = MultiHeadSelfAttention(d_model=d_model, nhead=nhead)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        x = x + self.self_attn(self.norm1(x))
+        x = x + self.linear2(nn.gelu(self.linear1(self.norm2(x))))
+        return x
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, d_model: int = 256, nhead: int = 4, dim_feedforward: int = 1024, num_layers: int = 1):
+        super().__init__()
+        self.layers = [
+            TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+            )
+            for _ in range(num_layers)
+        ]
+        self.norm = nn.LayerNorm(d_model)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        for layer in self.layers:
+            x = layer(x)
+        return self.norm(x)
