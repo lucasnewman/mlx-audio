@@ -11,7 +11,7 @@ from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel
 from .config import MegaASRConfig
 from .convert_lora import load_lora_adapter
 from .convert_router import convert_router_weights
-from .lora import build_deltas
+from .lora import apply_deltas, build_deltas, remove_deltas
 from .router import AudioQualityRouter
 
 
@@ -77,6 +77,24 @@ class Model:
             model._deltas = build_deltas(load_lora_adapter(lora_dir))
 
         return model
+
+    def _set_lora(self, want: bool) -> None:
+        if want and not self._lora_active:
+            apply_deltas(self._asr, self._deltas)
+            self._lora_active = True
+        elif not want and self._lora_active:
+            remove_deltas(self._asr, self._deltas)
+            self._lora_active = False
+
+    def generate(self, audio, **kwargs):
+        route = self._router.route(audio)
+        self._set_lora(bool(route["use_lora"]))
+        return self._asr.generate(audio, **kwargs)
+
+    def stream_transcribe(self, audio, **kwargs):
+        route = self._router.route(audio)
+        self._set_lora(bool(route["use_lora"]))
+        return self._asr.stream_transcribe(audio, **kwargs)
 
     def __getattr__(self, name: str):
         try:
