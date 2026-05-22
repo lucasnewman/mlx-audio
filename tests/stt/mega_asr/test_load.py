@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import mlx.core as mx
+import numpy as np
 import pytest
 
 from mlx_audio.stt.models.mega_asr import MegaASRConfig, Model
@@ -18,7 +19,7 @@ from safetensors.mlx import save_file
 
 def _tiny_router_weights(tmp: Path) -> Path:
     extras = tmp / "extras"
-    extras.mkdir()
+    extras.mkdir(exist_ok=True)
     dest = extras / "router.safetensors"
     d_model, hidden, nhead = 32, 16, 2
     save_file(
@@ -92,6 +93,24 @@ def _tiny_lora_adapter(tmp: Path) -> Path:
     return lora_dir
 
 
+def _tiny_lora_weights(tmp: Path) -> Path:
+    extras = tmp / "extras"
+    extras.mkdir(exist_ok=True)
+    dest = extras / "lora.safetensors"
+    save_file(
+        {
+            "audio_tower.layers.0.self_attn.q_proj.lora_A": mx.random.normal((4, 64)).astype(
+                mx.float32
+            ),
+            "audio_tower.layers.0.self_attn.q_proj.lora_B": mx.random.normal((128, 4)).astype(
+                mx.float32
+            ),
+        },
+        str(dest),
+    )
+    return dest
+
+
 def _tiny_base_weights(tmp: Path) -> Path:
     dest = tmp / "model.safetensors"
     save_file(
@@ -158,8 +177,8 @@ def _mega_config(tmp: Path) -> Path:
             "max_len": 100,
         },
         "lora_config": {"r": 4, "lora_alpha": 4},
-        "router_filename": "extras/router.safetensors",
-        "lora_adapter_dir": "lora_adapter",
+        "router_weights": "extras/router.safetensors",
+        "lora_weights": "extras/lora.safetensors",
     }
     p = tmp / "config.json"
     with open(p, "w") as f:
@@ -174,7 +193,7 @@ class TestWeightLoadingWiring:
             router_config={"d_model": 32, "num_layers": 1, "nhead": 2},
             lora_config={"r": 4, "lora_alpha": 4},
             router_weights="router.safetensors",
-            lora_dir="lora_adapter",
+            lora_weights="lora.safetensors",
         )
         model = Model(cfg)
         assert isinstance(model._asr, Qwen3ASRModel)
@@ -206,26 +225,24 @@ class TestWeightLoadingWiring:
         assert model.model_quant_predicate("audio_tower.layers", audio_enc) is False
         assert model.model_quant_predicate("model.layers.0", audio_enc) is True
 
-    def test_post_load_hook_wires_router_and_lora(self, tmp_path):
+    def test_post_load_hook_wires_router_and_lora(self, tmp_path, monkeypatch):
         _tiny_router_weights(tmp_path)
-        _tiny_lora_adapter(tmp_path)
+        _tiny_lora_weights(tmp_path)
 
         cfg = MegaASRConfig(
             model_type="mega_asr",
             router_weights="extras/router.safetensors",
-            lora_dir="lora_adapter",
+            lora_weights="extras/lora.safetensors",
         )
         model = Model(cfg)
 
-        from mlx_audio.stt.models.mega_asr.convert_lora import load_lora_adapter
-        from mlx_audio.stt.models.mega_asr.convert_router import convert_router_weights
-        from mlx_audio.stt.models.mega_asr.router import AudioQualityRouter
+        monkeypatch.setattr(
+            Qwen3ASRModel,
+            "post_load_hook",
+            classmethod(lambda cls, inner_model, model_path: inner_model),
+        )
 
-        router_weights = convert_router_weights(tmp_path / "extras" / "router.safetensors")
-        model._router = AudioQualityRouter.from_converted(router_weights)
-
-        adapter = load_lora_adapter(tmp_path / "lora_adapter")
-        model._deltas = adapter
+        model = Model.post_load_hook(model, tmp_path)
 
         assert isinstance(model._asr, Qwen3ASRModel)
         assert isinstance(model._router, AudioQualityRouter)
@@ -239,7 +256,7 @@ class TestWeightLoadingWiring:
     def test_load_weights_glob_excludes_router_and_lora(self, tmp_path):
         _tiny_base_weights(tmp_path)
         _tiny_router_weights(tmp_path)
-        _tiny_lora_adapter(tmp_path)
+        _tiny_lora_weights(tmp_path)
 
         from mlx_audio.utils import load_weights
 
@@ -263,3 +280,30 @@ class TestWeightLoadingWiring:
         assert module["A"].shape == (4, 64)
         assert module["B"].shape == (128, 4)
         assert module["scaling"] == 1.0
+
+    def test_load_lora_factors_round_trips_flat_mlx_weights(self, tmp_path):
+        from mlx_audio.stt.models.mega_asr.convert_lora import load_lora_factors
+        from mlx_audio.stt.models.mega_asr.lora import materialize_delta
+
+        path = tmp_path / "lora.safetensors"
+        a = mx.arange(12, dtype=mx.float32).reshape(3, 4)
+        b = mx.arange(15, dtype=mx.float32).reshape(5, 3)
+        scaling = 1.5
+        save_file(
+            {
+                "model.layers.0.self_attn.q_proj.lora_A": a,
+                "model.layers.0.self_attn.q_proj.lora_B": (scaling * b).astype(mx.float32),
+            },
+            str(path),
+        )
+
+        adapter = load_lora_factors(path)
+
+        assert set(adapter.keys()) == {"model.layers.0.self_attn.q_proj"}
+        module = adapter["model.layers.0.self_attn.q_proj"]
+        assert module["A"].shape == (3, 4)
+        assert module["B"].shape == (5, 3)
+        assert module["scaling"] == 1.0
+        expected_delta = np.array((scaling * b) @ a)
+        actual_delta = np.array(materialize_delta(module))
+        assert np.allclose(actual_delta, expected_delta)

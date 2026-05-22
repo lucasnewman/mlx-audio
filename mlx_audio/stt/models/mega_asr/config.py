@@ -23,7 +23,7 @@ class MegaASRConfig:
     lora_config: Optional[Dict[str, Any]] = field(default_factory=dict)
 
     router_weights: str = "extras/router.safetensors"
-    lora_dir: str = "extras/lora"
+    lora_weights: str = "extras/lora.safetensors"
 
     audio_token_id: int = 151676
     audio_start_token_id: int = 151669

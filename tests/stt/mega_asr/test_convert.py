@@ -180,13 +180,14 @@ def test_convert_produces_loadable_dir(tmp_path, monkeypatch):
     assert (out / "config.json").exists()
     assert list(out.glob("model*.safetensors"))
     assert (out / "extras" / "router.safetensors").exists()
-    assert (out / "extras" / "lora" / "adapter_config.json").exists()
-    assert (out / "extras" / "lora" / "adapter_model.safetensors").exists()
+    assert (out / "extras" / "lora.safetensors").exists()
+    assert not (out / "extras" / "lora").exists()
+    assert not list(out.rglob("adapter_config.json"))
 
     cfg = json.loads((out / "config.json").read_text())
     assert cfg["model_type"] == "mega_asr"
     assert cfg["router_weights"] == "extras/router.safetensors"
-    assert cfg["lora_dir"] == "extras/lora"
+    assert cfg["lora_weights"] == "extras/lora.safetensors"
     assert cfg["router_config"] == {
         "d_model": 256,
         "nhead": 4,
@@ -200,6 +201,11 @@ def test_convert_produces_loadable_dir(tmp_path, monkeypatch):
     assert type(model).__module__.endswith("mega_asr.mega_asr")
     assert hasattr(model, "_router")
     assert hasattr(model, "_deltas")
+    assert model._deltas
+    module = model._deltas["audio_tower.layers.0.self_attn.q_proj"]
+    assert module["A"].shape == (4, 32)
+    assert module["B"].shape == (32, 4)
+    assert module["scaling"] == 1.0
 
     logits = model._router.logits(mx.zeros((16000,), dtype=mx.float32))
     assert tuple(logits.shape) == (2,)

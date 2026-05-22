@@ -9,7 +9,7 @@ import mlx.nn as nn
 from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel
 
 from .config import MegaASRConfig
-from .convert_lora import LoraModule, load_lora_adapter
+from .convert_lora import LoraModule, load_lora_factors
 from .lora import apply_deltas, remove_deltas
 from .router import AudioQualityRouter
 
@@ -72,9 +72,9 @@ class Model:
             model._router = AudioQualityRouter.from_converted(router_weights)
             model._router.eval()
 
-        lora_dir = model_path / model.config.lora_dir
-        if lora_dir.exists():
-            model._deltas = load_lora_adapter(lora_dir)
+        lora_path = model_path / model.config.lora_weights
+        if lora_path.exists():
+            model._deltas = load_lora_factors(lora_path)
 
         return model
 

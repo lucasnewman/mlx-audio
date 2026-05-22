@@ -5,12 +5,14 @@ import json
 import shutil
 from pathlib import Path
 
+import mlx.core as mx
 from safetensors.mlx import save_file
 
 import mlx_audio.convert as base_convert
 
 from mlx_audio.stt.models.qwen3_asr.config import ModelConfig as Qwen3ModelConfig
 
+from .convert_lora import load_lora_adapter
 from .convert_router import convert_router_weights
 
 BASE_SUBDIR = "Qwen3-ASR-1.7B"
@@ -69,7 +71,7 @@ def _mega_config(base_dir: Path) -> dict[str, object]:
         "text_config": dict(cfg.text_config.__dict__),
         "router_config": dict(ROUTER_CONFIG),
         "router_weights": "extras/router.safetensors",
-        "lora_dir": "extras/lora",
+        "lora_weights": "extras/lora.safetensors",
     }
 
 
@@ -78,6 +80,17 @@ def _copy_support_files(base_dir: Path, out_dir: Path) -> None:
         src = base_dir / name
         if src.exists():
             shutil.copy2(src, out_dir / name)
+
+
+def _flatten_lora(adapter_dir: Path) -> dict[str, mx.array]:
+    adapter = load_lora_adapter(adapter_dir)
+    flattened: dict[str, mx.array] = {}
+    for module, factors in adapter.items():
+        flattened[f"{module}.lora_A"] = factors["A"].astype(mx.float32)
+        flattened[f"{module}.lora_B"] = (float(factors["scaling"]) * factors["B"]).astype(
+            mx.float32
+        )
+    return flattened
 
 
 def convert(
@@ -104,10 +117,10 @@ def convert(
         str(extras_dir / "router.safetensors"),
     )
 
-    lora_out = extras_dir / "lora"
-    lora_out.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(root_dir / LORA_SUBDIR / "adapter_config.json", lora_out / "adapter_config.json")
-    shutil.copy2(root_dir / LORA_SUBDIR / "adapter_model.safetensors", lora_out / "adapter_model.safetensors")
+    save_file(
+        _flatten_lora(root_dir / LORA_SUBDIR),
+        str(extras_dir / "lora.safetensors"),
+    )
 
     _copy_support_files(base_dir, out_dir)
     (out_dir / "config.json").write_text(json.dumps(_mega_config(base_dir), indent=2) + "\n")

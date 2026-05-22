@@ -9,6 +9,8 @@ import mlx.core as mx
 THINKER_PREFIX = "base_model.model.thinker."
 LORA_A_SUFFIX = ".lora_A.weight"
 LORA_B_SUFFIX = ".lora_B.weight"
+LORA_A_FACTOR_SUFFIX = ".lora_A"
+LORA_B_FACTOR_SUFFIX = ".lora_B"
 
 
 class LoraModule(TypedDict):
@@ -70,4 +72,23 @@ def load_lora_adapter(directory: str | Path) -> dict[str, LoraModule]:
             "B": b_tensors[module],
             "scaling": float(alpha) / float(rank),
         }
+    return adapter
+
+
+def load_lora_factors(path: str | Path) -> dict[str, LoraModule]:
+    raw = mx.load(str(path))
+    if not isinstance(raw, dict):
+        raise ValueError(f"expected a tensor mapping in {path!r}")
+
+    a_tensors: dict[str, mx.array] = {}
+    b_tensors: dict[str, mx.array] = {}
+    for key, tensor in raw.items():
+        if key.endswith(LORA_A_FACTOR_SUFFIX):
+            a_tensors[key[: -len(LORA_A_FACTOR_SUFFIX)]] = tensor.astype(mx.float32)
+        elif key.endswith(LORA_B_FACTOR_SUFFIX):
+            b_tensors[key[: -len(LORA_B_FACTOR_SUFFIX)]] = tensor.astype(mx.float32)
+
+    adapter: dict[str, LoraModule] = {}
+    for module, a in a_tensors.items():
+        adapter[module] = {"A": a, "B": b_tensors[module], "scaling": 1.0}
     return adapter
