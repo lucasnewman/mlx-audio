@@ -23,6 +23,7 @@ def _router_safetensors():
 
 def test_router_weights_remap():
     from mlx_audio.stt.models.mega_asr.convert_router import convert_router_weights
+    from mlx_audio.stt.models.mega_asr.router import AudioQualityRouter
 
     out = convert_router_weights(_router_safetensors())
 
@@ -46,3 +47,7 @@ def test_router_weights_remap():
 
     assert tuple(out["transformer.layers.0.self_attn.in_proj_weight"].shape) == (768, 256)
     assert tuple(out["pos_encoder.pe"].shape) == (1, 850, 256)
+
+    router = AudioQualityRouter.from_converted(out)
+    logits = router.logits(mx.zeros((16000,), dtype=mx.float32))
+    assert tuple(logits.shape) == (2,)

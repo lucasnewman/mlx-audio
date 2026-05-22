@@ -67,9 +67,10 @@ class Model:
 
         router_path = model_path / model.config.router_weights
         if router_path.exists():
-            model._router = AudioQualityRouter.from_converted(
-                convert_router_weights(router_path)
-            )
+            router_weights = mx.load(str(router_path))
+            if not isinstance(router_weights, dict):
+                raise ValueError(f"expected a tensor mapping in {router_path!s}")
+            model._router = AudioQualityRouter.from_converted(router_weights)
             model._router.eval()
 
         lora_dir = model_path / model.config.lora_dir
