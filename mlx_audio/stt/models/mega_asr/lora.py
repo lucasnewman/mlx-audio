@@ -8,19 +8,15 @@ import mlx.nn as nn
 from .convert_lora import LoraModule
 
 _LORA_ACTIVE_ATTR = "_lora_active"
-_FP32_ACCUM_DTYPES = (mx.float16, mx.bfloat16)
 
 
-def build_deltas(adapter: Mapping[str, LoraModule]) -> dict[str, mx.array]:
-    deltas: dict[str, mx.array] = {}
-    for path, module in adapter.items():
-        a = module["A"].astype(mx.float32)
-        b = module["B"].astype(mx.float32)
-        scaling = float(module["scaling"])
-        delta = scaling * (b @ a)
-        assert delta.shape == (b.shape[0], a.shape[1])
-        deltas[path] = delta
-    return deltas
+def materialize_delta(module: LoraModule) -> mx.array:
+    a = module["A"].astype(mx.float32)
+    b = module["B"].astype(mx.float32)
+    scaling = float(module["scaling"])
+    delta = scaling * (b @ a)
+    assert delta.shape == (b.shape[0], a.shape[1])
+    return delta
 
 
 def resolve_linear(model: nn.Module, path: str) -> nn.Linear:
@@ -42,34 +38,36 @@ def resolve_linear(model: nn.Module, path: str) -> nn.Linear:
     return node
 
 
-def _accumulate(leaf: nn.Linear, delta: mx.array, sign: float) -> None:
+def _accumulate(leaf: nn.Linear, module: LoraModule, sign: float) -> None:
     weight = leaf.weight
+    delta = materialize_delta(module)
     if weight.shape != delta.shape:
         raise ValueError(
             f"delta shape {tuple(delta.shape)} does not match "
             + f"weight shape {tuple(weight.shape)}"
         )
-    signed = delta if sign > 0 else -delta
-    if weight.dtype in _FP32_ACCUM_DTYPES:
-        updated = (weight.astype(mx.float32) + signed.astype(mx.float32)).astype(
-            weight.dtype
-        )
-    else:
-        updated = weight + signed.astype(weight.dtype)
-    leaf.weight = updated
+    delta = delta.astype(weight.dtype)
+    leaf.weight = weight + delta if sign > 0 else weight - delta
+    mx.eval(leaf.weight)
 
 
-def apply_deltas(model: nn.Module, deltas: Mapping[str, mx.array]) -> None:
+def apply_deltas(model: nn.Module, adapter: Mapping[str, LoraModule]) -> None:
     if getattr(model, _LORA_ACTIVE_ATTR, False):
         raise RuntimeError("LoRA deltas already applied; remove before re-applying")
-    for path, delta in deltas.items():
-        _accumulate(resolve_linear(model, path), delta, 1.0)
-    setattr(model, _LORA_ACTIVE_ATTR, True)
+    try:
+        for path, module in adapter.items():
+            _accumulate(resolve_linear(model, path), module, 1.0)
+        setattr(model, _LORA_ACTIVE_ATTR, True)
+    finally:
+        mx.clear_cache()
 
 
-def remove_deltas(model: nn.Module, deltas: Mapping[str, mx.array]) -> None:
+def remove_deltas(model: nn.Module, adapter: Mapping[str, LoraModule]) -> None:
     if not getattr(model, _LORA_ACTIVE_ATTR, False):
         raise RuntimeError("LoRA deltas are not applied; nothing to remove")
-    for path, delta in deltas.items():
-        _accumulate(resolve_linear(model, path), delta, -1.0)
-    setattr(model, _LORA_ACTIVE_ATTR, False)
+    try:
+        for path, module in adapter.items():
+            _accumulate(resolve_linear(model, path), module, -1.0)
+        setattr(model, _LORA_ACTIVE_ATTR, False)
+    finally:
+        mx.clear_cache()

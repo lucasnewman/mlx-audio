@@ -9,7 +9,6 @@ import mlx.core as mx
 import pytest
 
 from mlx_audio.stt.models.mega_asr import MegaASRConfig, Model
-from mlx_audio.stt.models.mega_asr.lora import build_deltas
 from mlx_audio.stt.models.mega_asr.router import AudioQualityRouter
 from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel
 
@@ -202,6 +201,7 @@ class TestWeightLoadingWiring:
         model = Model(cfg)
         from mlx_audio.stt.models.qwen3_asr.qwen3_asr import AudioEncoder
 
+        assert cfg.audio_config is not None
         audio_enc = AudioEncoder(cfg.audio_config)
         assert model.model_quant_predicate("audio_tower.layers", audio_enc) is False
         assert model.model_quant_predicate("model.layers.0", audio_enc) is True
@@ -219,21 +219,22 @@ class TestWeightLoadingWiring:
 
         from mlx_audio.stt.models.mega_asr.convert_lora import load_lora_adapter
         from mlx_audio.stt.models.mega_asr.convert_router import convert_router_weights
-        from mlx_audio.stt.models.mega_asr.lora import build_deltas
         from mlx_audio.stt.models.mega_asr.router import AudioQualityRouter
 
         router_weights = convert_router_weights(tmp_path / "extras" / "router.safetensors")
         model._router = AudioQualityRouter.from_converted(router_weights)
 
         adapter = load_lora_adapter(tmp_path / "lora_adapter")
-        model._deltas = build_deltas(adapter)
+        model._deltas = adapter
 
         assert isinstance(model._asr, Qwen3ASRModel)
         assert isinstance(model._router, AudioQualityRouter)
         assert model._deltas, "deltas must be populated"
-        for path, delta in model._deltas.items():
-            assert isinstance(delta, mx.array), f"delta {path!r} must be mx.array"
-            assert delta.ndim == 2, f"delta {path!r} must be 2-D"
+        for path, module in model._deltas.items():
+            assert set(module) == {"A", "B", "scaling"}, f"module {path!r} must keep LoRA factors"
+            assert module["A"].ndim == 2, f"module {path!r} A must be 2-D"
+            assert module["B"].ndim == 2, f"module {path!r} B must be 2-D"
+            assert isinstance(module["scaling"], float)
 
     def test_load_weights_glob_excludes_router_and_lora(self, tmp_path):
         _tiny_base_weights(tmp_path)
@@ -250,21 +251,15 @@ class TestWeightLoadingWiring:
         assert not lora_keys, f"lora keys should not be loaded: {lora_keys}"
         assert "audio_tower.proj1.weight" in weights
 
-    def test_build_deltas_produces_correct_paths(self):
-        adapter = {
-            "audio_tower.layers.0.self_attn.q_proj": {
-                "A": mx.random.normal((4, 64)),
-                "B": mx.random.normal((128, 4)),
-                "scaling": 1.0,
-            },
-            "model.layers.0.mlp.gate_proj": {
-                "A": mx.random.normal((4, 2048)),
-                "B": mx.random.normal((6144, 4)),
-                "scaling": 2.0,
-            },
-        }
-        deltas = build_deltas(adapter)
-        assert set(deltas.keys()) == {"audio_tower.layers.0.self_attn.q_proj", "model.layers.0.mlp.gate_proj"}
-        a = adapter["audio_tower.layers.0.self_attn.q_proj"]
-        expected_shape = (a["B"].shape[0], a["A"].shape[1])
-        assert deltas["audio_tower.layers.0.self_attn.q_proj"].shape == expected_shape
+    def test_load_lora_adapter_preserves_paths_and_factor_shapes(self, tmp_path):
+        lora_dir = _tiny_lora_adapter(tmp_path)
+
+        from mlx_audio.stt.models.mega_asr.convert_lora import load_lora_adapter
+
+        adapter = load_lora_adapter(lora_dir)
+
+        assert set(adapter.keys()) == {"audio_tower.layers.0.self_attn.q_proj"}
+        module = adapter["audio_tower.layers.0.self_attn.q_proj"]
+        assert module["A"].shape == (4, 64)
+        assert module["B"].shape == (128, 4)
+        assert module["scaling"] == 1.0

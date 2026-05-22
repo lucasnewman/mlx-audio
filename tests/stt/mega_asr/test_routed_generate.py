@@ -12,7 +12,7 @@ import mlx.core as mx
 import numpy as np
 
 from mlx_audio.stt.models.mega_asr.config import MegaASRConfig
-from mlx_audio.stt.models.mega_asr.lora import build_deltas, resolve_linear
+from mlx_audio.stt.models.mega_asr.lora import materialize_delta, resolve_linear
 from mlx_audio.stt.models.mega_asr.mega_asr import Model
 from mlx_audio.stt.models.qwen3_asr.config import AudioEncoderConfig, TextConfig
 
@@ -72,10 +72,10 @@ def _build():
     r, in_dim, out_dim = 4, 32, 32
     a = (mx.random.normal((r, in_dim)) * 0.1).astype(mx.float32)
     b = (mx.random.normal((out_dim, r)) * 0.1).astype(mx.float32)
-    model._deltas = build_deltas({TARGET: {"A": a, "B": b, "scaling": 2.0}})
+    model._deltas = {TARGET: {"A": a, "B": b, "scaling": 2.0}}
 
     base = np.array(resolve_linear(model._asr, TARGET).weight)
-    delta = np.array(model._deltas[TARGET])
+    delta = np.array(materialize_delta(model._deltas[TARGET]))
 
     calls = []
 

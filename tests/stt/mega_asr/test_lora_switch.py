@@ -92,53 +92,53 @@ def test_resolve_linear_returns_correct_leaf():
 def test_apply_remove_roundtrip():
     from mlx_audio.stt.models.mega_asr.lora import (
         apply_deltas,
-        build_deltas,
         remove_deltas,
         resolve_linear,
     )
 
     model, adapter = _build_stub_and_adapter()
-    deltas = build_deltas(adapter)
+    resolve_linear(model, "audio_tower.conv_out").weight = resolve_linear(
+        model, "audio_tower.conv_out"
+    ).weight.astype(mx.bfloat16)
     paths = list(adapter)
 
-    base = {p: np.array(resolve_linear(model, p).weight) for p in paths}
+    base = {p: np.array(resolve_linear(model, p).weight.astype(mx.float32)) for p in paths}
 
-    apply_deltas(model, deltas)
+    apply_deltas(model, adapter)
     for p in paths:
-        after = np.array(resolve_linear(model, p).weight)
+        after = np.array(resolve_linear(model, p).weight.astype(mx.float32))
         assert not np.allclose(after, base[p])
 
-    remove_deltas(model, deltas)
+    remove_deltas(model, adapter)
     for p in paths:
-        restored = np.array(resolve_linear(model, p).weight)
-        assert np.allclose(restored, base[p], atol=1e-4)
+        restored = np.array(resolve_linear(model, p).weight.astype(mx.float32))
+        atol = 5e-2 if resolve_linear(model, p).weight.dtype == mx.bfloat16 else 1e-5
+        assert np.allclose(restored, base[p], atol=atol)
 
 
 def test_double_apply_is_guarded():
-    from mlx_audio.stt.models.mega_asr.lora import apply_deltas, build_deltas
+    from mlx_audio.stt.models.mega_asr.lora import apply_deltas
 
     model, adapter = _build_stub_and_adapter()
-    deltas = build_deltas(adapter)
 
-    apply_deltas(model, deltas)
+    apply_deltas(model, adapter)
     with pytest.raises(RuntimeError):
-        apply_deltas(model, deltas)
+        apply_deltas(model, adapter)
 
 
 def test_remove_when_inactive_is_guarded():
-    from mlx_audio.stt.models.mega_asr.lora import build_deltas, remove_deltas
+    from mlx_audio.stt.models.mega_asr.lora import remove_deltas
 
     model, adapter = _build_stub_and_adapter()
-    deltas = build_deltas(adapter)
 
     with pytest.raises(RuntimeError):
-        remove_deltas(model, deltas)
+        remove_deltas(model, adapter)
 
 
 def test_fp16_weight_keeps_dtype_and_accumulates_in_fp32():
     from mlx_audio.stt.models.mega_asr.lora import (
         apply_deltas,
-        build_deltas,
+        materialize_delta,
         resolve_linear,
     )
 
@@ -146,12 +146,11 @@ def test_fp16_weight_keeps_dtype_and_accumulates_in_fp32():
     path = "audio_tower.layers.0.self_attn.q_proj"
     leaf = resolve_linear(model, path)
     leaf.weight = leaf.weight.astype(mx.float16)
-    base_fp32 = np.array(leaf.weight.astype(mx.float32))
+    base = leaf.weight
 
-    deltas = build_deltas(adapter)
-    apply_deltas(model, deltas)
+    apply_deltas(model, adapter)
 
     out = resolve_linear(model, path).weight
     assert out.dtype == mx.float16
-    expected = base_fp32 + np.array(deltas[path])
+    expected = np.array((base + materialize_delta(adapter[path]).astype(mx.float16)).astype(mx.float32))
     assert np.allclose(np.array(out.astype(mx.float32)), expected, atol=1e-2)

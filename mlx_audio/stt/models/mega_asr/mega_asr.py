@@ -9,9 +9,8 @@ import mlx.nn as nn
 from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel
 
 from .config import MegaASRConfig
-from .convert_lora import load_lora_adapter
-from .convert_router import convert_router_weights
-from .lora import apply_deltas, build_deltas, remove_deltas
+from .convert_lora import LoraModule, load_lora_adapter
+from .lora import apply_deltas, remove_deltas
 from .router import AudioQualityRouter
 
 
@@ -33,7 +32,7 @@ class Model:
             max_len=router_cfg.get("max_len", 850),
         )
 
-        self._deltas: Dict[str, mx.array] = {}
+        self._deltas: Dict[str, LoraModule] = {}
         self._lora_active: bool = False
 
     @property
@@ -75,7 +74,7 @@ class Model:
 
         lora_dir = model_path / model.config.lora_dir
         if lora_dir.exists():
-            model._deltas = build_deltas(load_lora_adapter(lora_dir))
+            model._deltas = load_lora_adapter(lora_dir)
 
         return model
 
