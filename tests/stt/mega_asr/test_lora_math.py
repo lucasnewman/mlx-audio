@@ -3,6 +3,8 @@ from __future__ import annotations
 import mlx.core as mx
 import numpy as np
 
+from mlx_audio.stt.models.mega_asr.convert_lora import LoraModule
+
 
 def test_delta_equals_scaled_BA():
     from mlx_audio.stt.models.mega_asr.lora import build_deltas
@@ -34,7 +36,7 @@ def test_delta_shape_is_out_by_in_matching_linear_weight():
 def test_build_deltas_multiple_modules():
     from mlx_audio.stt.models.mega_asr.lora import build_deltas
 
-    adapter = {
+    adapter: dict[str, LoraModule] = {
         "audio_tower.layers.0.self_attn.q_proj": {
             "A": mx.random.normal((8, 16)),
             "B": mx.random.normal((16, 8)),
