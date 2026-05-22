@@ -47,3 +47,4 @@ output/
 claude.md
 .claude/site/
 .generated/legacy-docs-generated/
+.reference/
