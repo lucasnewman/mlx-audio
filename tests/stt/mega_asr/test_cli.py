@@ -16,11 +16,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.mark.requires_weights
-def test_cli_generate_with_pretrained_model():
+def test_cli_generate_with_pretrained_model(tmp_path):
     model_dir = Path(os.environ.get(MODEL_DIR_ENV, DEFAULT_MODEL_DIR))
     if not model_dir.exists():
         pytest.skip(f"Mega-ASR MLX model dir missing: {model_dir}")
 
+    output_path = tmp_path / "transcript"
     cmd = [
         "uv",
         "run",
@@ -31,6 +32,8 @@ def test_cli_generate_with_pretrained_model():
         str(model_dir),
         "--audio",
         str(FIXTURES_DIR / "degraded.wav"),
+        "--output-path",
+        str(output_path),
         "--verbose",
     ]
     result = subprocess.run(
@@ -44,3 +47,4 @@ def test_cli_generate_with_pretrained_model():
     assert result.returncode == 0, result.stderr or result.stdout
     assert "Transcription:" in result.stdout
     assert result.stdout.strip()
+    assert output_path.with_suffix(".txt").exists()

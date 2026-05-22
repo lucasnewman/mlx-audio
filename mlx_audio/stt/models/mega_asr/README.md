@@ -38,7 +38,6 @@ You do not need to toggle adapters manually.
 uv run python -m mlx_audio.stt.generate \
   --model /path/to/mega-asr-mlx \
   --audio audio.wav \
+  --output-path transcript \
   --verbose
 ```
-
-By default the CLI saves `transcript.txt` in the current working directory unless you pass `--output-path`.
