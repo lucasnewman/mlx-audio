@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
 
 from mlx_audio.dsp import hanning, mel_filters, stft
+from mlx_audio.stt.utils import load_audio
 
 
 class LogMel80(nn.Module):
@@ -61,12 +63,12 @@ class BatchNorm1d(nn.Module):
 
 
 class ConvFrontend(nn.Module):
-    def __init__(self):
+    def __init__(self, n_mels: int = 80, hidden_dim: int = 128, d_model: int = 256):
         super().__init__()
-        self.conv1 = nn.Conv1d(80, 128, kernel_size=3, stride=2, padding=1)
-        self.bn1 = BatchNorm1d(128)
-        self.conv2 = nn.Conv1d(128, 256, kernel_size=3, stride=2, padding=1)
-        self.bn2 = BatchNorm1d(256)
+        self.conv1 = nn.Conv1d(n_mels, hidden_dim, kernel_size=3, stride=2, padding=1)
+        self.bn1 = BatchNorm1d(hidden_dim)
+        self.conv2 = nn.Conv1d(hidden_dim, d_model, kernel_size=3, stride=2, padding=1)
+        self.bn2 = BatchNorm1d(d_model)
 
     def __call__(self, x: mx.array) -> mx.array:
         x = nn.gelu(self.bn1(self.conv1(x)))
@@ -169,3 +171,144 @@ class ClassifierHead(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         return self.fc2(nn.gelu(self.fc1(x)))
+
+
+class AudioQualityRouter(nn.Module):
+    def __init__(
+        self,
+        d_model: int = 256,
+        nhead: int = 4,
+        dim_feedforward: int = 1024,
+        num_layers: int = 1,
+        n_mels: int = 80,
+        frontend_hidden_dim: int = 128,
+        classifier_hidden_dim: int = 128,
+        max_len: int = 850,
+    ):
+        super().__init__()
+        self.logmel = LogMel80()
+        self.frontend = ConvFrontend(
+            n_mels=n_mels,
+            hidden_dim=frontend_hidden_dim,
+            d_model=d_model,
+        )
+        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_len)
+        self.transformer = TransformerEncoder(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            num_layers=num_layers,
+        )
+        self.pooling = AttentionPooling(d_model=d_model)
+        self.classifier = ClassifierHead(
+            d_model=d_model,
+            hidden_dim=classifier_hidden_dim,
+        )
+
+    @classmethod
+    def from_converted(cls, weights: dict[str, mx.array]) -> "AudioQualityRouter":
+        d_model = int(weights["transformer.norm.weight"].shape[0])
+        dim_feedforward = int(weights["transformer.layers.0.linear1.weight"].shape[0])
+        num_layers = len(
+            {key.split(".")[2] for key in weights if key.startswith("transformer.layers.")}
+        )
+        n_mels = int(weights["frontend.conv.0.weight"].shape[2])
+        frontend_hidden_dim = int(weights["frontend.conv.0.weight"].shape[0])
+        classifier_hidden_dim = int(weights["classifier.0.weight"].shape[0])
+        max_len = int(weights["pos_encoder.pe"].shape[1])
+
+        model = cls(
+            d_model=d_model,
+            nhead=4,
+            dim_feedforward=dim_feedforward,
+            num_layers=num_layers,
+            n_mels=n_mels,
+            frontend_hidden_dim=frontend_hidden_dim,
+            classifier_hidden_dim=classifier_hidden_dim,
+            max_len=max_len,
+        )
+        model._load_weights(weights)
+        return model
+
+    def _load_weights(self, weights: dict[str, mx.array]) -> None:
+        self.frontend.conv1.weight = weights["frontend.conv.0.weight"]
+        self.frontend.conv1.bias = weights["frontend.conv.0.bias"]
+        self.frontend.bn1.weight = weights["frontend.conv.1.weight"]
+        self.frontend.bn1.bias = weights["frontend.conv.1.bias"]
+        self.frontend.bn1.running_mean = weights["frontend.conv.1.running_mean"]
+        self.frontend.bn1.running_var = weights["frontend.conv.1.running_var"]
+
+        self.frontend.conv2.weight = weights["frontend.conv.4.weight"]
+        self.frontend.conv2.bias = weights["frontend.conv.4.bias"]
+        self.frontend.bn2.weight = weights["frontend.conv.5.weight"]
+        self.frontend.bn2.bias = weights["frontend.conv.5.bias"]
+        self.frontend.bn2.running_mean = weights["frontend.conv.5.running_mean"]
+        self.frontend.bn2.running_var = weights["frontend.conv.5.running_var"]
+
+        self.pos_encoder.pe = weights["pos_encoder.pe"]
+
+        for index, layer in enumerate(self.transformer.layers):
+            prefix = f"transformer.layers.{index}"
+            in_proj_weight = weights[f"{prefix}.self_attn.in_proj_weight"]
+            in_proj_bias = weights[f"{prefix}.self_attn.in_proj_bias"]
+            q_weight, k_weight, v_weight = mx.split(in_proj_weight, 3, axis=0)
+            q_bias, k_bias, v_bias = mx.split(in_proj_bias, 3, axis=0)
+
+            layer.self_attn.q_proj.weight = q_weight
+            layer.self_attn.q_proj.bias = q_bias
+            layer.self_attn.k_proj.weight = k_weight
+            layer.self_attn.k_proj.bias = k_bias
+            layer.self_attn.v_proj.weight = v_weight
+            layer.self_attn.v_proj.bias = v_bias
+            layer.self_attn.out_proj.weight = weights[
+                f"{prefix}.self_attn.out_proj.weight"
+            ]
+            layer.self_attn.out_proj.bias = weights[
+                f"{prefix}.self_attn.out_proj.bias"
+            ]
+
+            layer.linear1.weight = weights[f"{prefix}.linear1.weight"]
+            layer.linear1.bias = weights[f"{prefix}.linear1.bias"]
+            layer.linear2.weight = weights[f"{prefix}.linear2.weight"]
+            layer.linear2.bias = weights[f"{prefix}.linear2.bias"]
+            layer.norm1.weight = weights[f"{prefix}.norm1.weight"]
+            layer.norm1.bias = weights[f"{prefix}.norm1.bias"]
+            layer.norm2.weight = weights[f"{prefix}.norm2.weight"]
+            layer.norm2.bias = weights[f"{prefix}.norm2.bias"]
+
+        self.transformer.norm.weight = weights["transformer.norm.weight"]
+        self.transformer.norm.bias = weights["transformer.norm.bias"]
+        self.pooling.query.weight = weights["pooling.query.weight"]
+        self.pooling.query.bias = weights["pooling.query.bias"]
+        self.classifier.fc1.weight = weights["classifier.0.weight"]
+        self.classifier.fc1.bias = weights["classifier.0.bias"]
+        self.classifier.fc2.weight = weights["classifier.3.weight"]
+        self.classifier.fc2.bias = weights["classifier.3.bias"]
+
+    def _prepare_waveform(self, wav: str | Path | mx.array) -> mx.array:
+        if isinstance(wav, (str, Path)):
+            return load_audio(str(wav))
+
+        waveform = wav if isinstance(wav, mx.array) else mx.array(wav, mx.float32)
+        if waveform.ndim > 1:
+            waveform = mx.mean(waveform, axis=-1)
+        return waveform.astype(mx.float32)
+
+    def logits(self, wav: str | Path | mx.array) -> mx.array:
+        waveform = self._prepare_waveform(wav)
+        hidden_states = mx.expand_dims(self.logmel(waveform), axis=0)
+        hidden_states = self.frontend(hidden_states)
+        hidden_states = self.pos_encoder(hidden_states)
+        hidden_states = self.transformer(hidden_states)
+        pooled = self.pooling(hidden_states)
+        return mx.squeeze(self.classifier(pooled), axis=0)
+
+    def degraded_prob(self, wav: str | Path | mx.array) -> float:
+        return float(mx.softmax(self.logits(wav), axis=-1)[1])
+
+    def route(self, wav: str | Path | mx.array) -> dict[str, float | bool]:
+        degraded_prob = self.degraded_prob(wav)
+        return {
+            "degraded_prob": degraded_prob,
+            "use_lora": degraded_prob >= 0.5,
+        }
