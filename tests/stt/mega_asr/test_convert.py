@@ -154,12 +154,19 @@ def test_convert_produces_loadable_dir(tmp_path, monkeypatch):
     hf_dir = _write_stub_hf_tree(tmp_path / "hf")
     out_dir = tmp_path / "mlx"
 
-    def fake_base_convert(hf_path: str, mlx_path: str, dtype: str = "bfloat16", **_: object):
+    def fake_base_convert(
+        hf_path: str, mlx_path: str, dtype: str = "bfloat16", **_: object
+    ):
         assert Path(hf_path) == hf_dir / "Qwen3-ASR-1.7B"
         assert dtype == "bfloat16"
         dest = Path(mlx_path)
         dest.mkdir(parents=True, exist_ok=True)
-        for name in ["tokenizer_config.json", "vocab.json", "merges.txt", "preprocessor_config.json"]:
+        for name in [
+            "tokenizer_config.json",
+            "vocab.json",
+            "merges.txt",
+            "preprocessor_config.json",
+        ]:
             (dest / name).write_text((hf_dir / "Qwen3-ASR-1.7B" / name).read_text())
         (dest / "config.json").write_text(json.dumps(_tiny_qwen3_config()))
         save_file(_tiny_base_weights(), str(dest / "model.safetensors"))

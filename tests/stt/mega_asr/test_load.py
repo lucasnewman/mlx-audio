@@ -1,4 +1,5 @@
 """Test mega_asr weight-loading wiring (Task 4.2)."""
+
 from __future__ import annotations
 
 import json
@@ -8,13 +9,11 @@ from pathlib import Path
 import mlx.core as mx
 import numpy as np
 import pytest
+from safetensors.mlx import save_file
 
 from mlx_audio.stt.models.mega_asr import MegaASRConfig, Model
 from mlx_audio.stt.models.mega_asr.router import AudioQualityRouter
 from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel
-
-
-from safetensors.mlx import save_file
 
 
 def _tiny_router_weights(tmp: Path) -> Path:
@@ -45,13 +44,9 @@ def _tiny_router_weights(tmp: Path) -> Path:
                 (d_model, d_model)
             ),
             "transformer.layers.0.self_attn.out_proj.bias": mx.zeros((d_model,)),
-            "transformer.layers.0.linear1.weight": mx.random.normal(
-                (hidden, d_model)
-            ),
+            "transformer.layers.0.linear1.weight": mx.random.normal((hidden, d_model)),
             "transformer.layers.0.linear1.bias": mx.zeros((hidden,)),
-            "transformer.layers.0.linear2.weight": mx.random.normal(
-                (d_model, hidden)
-            ),
+            "transformer.layers.0.linear2.weight": mx.random.normal((d_model, hidden)),
             "transformer.layers.0.linear2.bias": mx.zeros((d_model,)),
             "transformer.layers.0.norm1.weight": mx.ones((d_model,)),
             "transformer.layers.0.norm1.bias": mx.zeros((d_model,)),
@@ -99,12 +94,12 @@ def _tiny_lora_weights(tmp: Path) -> Path:
     dest = extras / "lora.safetensors"
     save_file(
         {
-            "audio_tower.layers.0.self_attn.q_proj.lora_A": mx.random.normal((4, 64)).astype(
-                mx.float32
-            ),
-            "audio_tower.layers.0.self_attn.q_proj.lora_B": mx.random.normal((128, 4)).astype(
-                mx.float32
-            ),
+            "audio_tower.layers.0.self_attn.q_proj.lora_A": mx.random.normal(
+                (4, 64)
+            ).astype(mx.float32),
+            "audio_tower.layers.0.self_attn.q_proj.lora_B": mx.random.normal(
+                (128, 4)
+            ).astype(mx.float32),
         },
         str(dest),
     )
@@ -248,7 +243,11 @@ class TestWeightLoadingWiring:
         assert isinstance(model._router, AudioQualityRouter)
         assert model._deltas, "deltas must be populated"
         for path, module in model._deltas.items():
-            assert set(module) == {"A", "B", "scaling"}, f"module {path!r} must keep LoRA factors"
+            assert set(module) == {
+                "A",
+                "B",
+                "scaling",
+            }, f"module {path!r} must keep LoRA factors"
             assert module["A"].ndim == 2, f"module {path!r} A must be 2-D"
             assert module["B"].ndim == 2, f"module {path!r} B must be 2-D"
             assert isinstance(module["scaling"], float)
@@ -262,7 +261,11 @@ class TestWeightLoadingWiring:
 
         weights = load_weights(tmp_path)
         weight_keys = set(weights.keys())
-        router_keys = {k for k in weight_keys if k.startswith("frontend.") or k.startswith("transformer.")}
+        router_keys = {
+            k
+            for k in weight_keys
+            if k.startswith("frontend.") or k.startswith("transformer.")
+        }
         lora_keys = {k for k in weight_keys if "lora_" in k}
         assert not router_keys, f"router keys should not be loaded: {router_keys}"
         assert not lora_keys, f"lora keys should not be loaded: {lora_keys}"
@@ -292,7 +295,9 @@ class TestWeightLoadingWiring:
         save_file(
             {
                 "model.layers.0.self_attn.q_proj.lora_A": a,
-                "model.layers.0.self_attn.q_proj.lora_B": (scaling * b).astype(mx.float32),
+                "model.layers.0.self_attn.q_proj.lora_B": (scaling * b).astype(
+                    mx.float32
+                ),
             },
             str(path),
         )

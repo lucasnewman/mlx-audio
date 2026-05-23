@@ -13,7 +13,6 @@ from mlx_audio.stt import load
 from mlx_audio.stt.models.base import STTOutput
 from mlx_audio.stt.models.mega_asr.mega_asr import Model as MegaASRModel
 
-
 MODEL_DIR_ENV = "MEGA_ASR_MLX_DIR"
 DEFAULT_MODEL_DIR = Path(
     "/var/folders/kj/d8bkjl_n4y58ks_vx3qv9rmm0000gn/T/opencode/mega-asr-mlx"
@@ -57,9 +56,9 @@ def _assert_close_text(got: str, expected: str, *, max_char_distance: int) -> No
     norm_got = _normalize(got)
     norm_expected = _normalize(expected)
     distance = _levenshtein(norm_got, norm_expected)
-    assert distance <= max_char_distance, (
-        f"char distance {distance} exceeded {max_char_distance}: got={got!r} expected={expected!r}"
-    )
+    assert (
+        distance <= max_char_distance
+    ), f"char distance {distance} exceeded {max_char_distance}: got={got!r} expected={expected!r}"
 
 
 def _generate_and_measure(model: MegaASRModel, audio: Path) -> tuple[STTOutput, float]:

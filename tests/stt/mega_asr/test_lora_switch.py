@@ -102,7 +102,9 @@ def test_apply_remove_roundtrip():
     ).weight.astype(mx.bfloat16)
     paths = list(adapter)
 
-    base = {p: np.array(resolve_linear(model, p).weight.astype(mx.float32)) for p in paths}
+    base = {
+        p: np.array(resolve_linear(model, p).weight.astype(mx.float32)) for p in paths
+    }
 
     apply_deltas(model, adapter)
     for p in paths:
@@ -152,5 +154,7 @@ def test_fp16_weight_keeps_dtype_and_accumulates_in_fp32():
 
     out = resolve_linear(model, path).weight
     assert out.dtype == mx.float16
-    expected = np.array((base + materialize_delta(adapter[path]).astype(mx.float16)).astype(mx.float32))
+    expected = np.array(
+        (base + materialize_delta(adapter[path]).astype(mx.float16)).astype(mx.float32)
+    )
     assert np.allclose(np.array(out.astype(mx.float32)), expected, atol=1e-2)

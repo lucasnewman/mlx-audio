@@ -7,7 +7,6 @@ import mlx.core as mx
 import numpy as np
 from scipy.io import wavfile
 
-
 FIX = Path(__file__).parent / "fixtures"
 
 

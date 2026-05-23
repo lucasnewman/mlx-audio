@@ -4,11 +4,9 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from mlx_audio.stt.models.qwen3_asr.config import (
-    AudioEncoderConfig,
-    ModelConfig as Qwen3ModelConfig,
-    TextConfig,
-)
+from mlx_audio.stt.models.qwen3_asr.config import AudioEncoderConfig
+from mlx_audio.stt.models.qwen3_asr.config import ModelConfig as Qwen3ModelConfig
+from mlx_audio.stt.models.qwen3_asr.config import TextConfig
 
 
 @dataclass
@@ -74,13 +72,20 @@ class MegaASRConfig:
 
         if "thinker_config" in params:
             thinker = params.pop("thinker_config")
-            for key in ("audio_config", "text_config", "audio_token_id",
-                        "audio_start_token_id", "audio_end_token_id"):
+            for key in (
+                "audio_config",
+                "text_config",
+                "audio_token_id",
+                "audio_start_token_id",
+                "audio_end_token_id",
+            ):
                 if key in thinker:
                     params[key] = thinker[key]
 
         if "audio_config" in params and isinstance(params["audio_config"], dict):
-            params["audio_config"] = AudioEncoderConfig.from_dict(params["audio_config"])
+            params["audio_config"] = AudioEncoderConfig.from_dict(
+                params["audio_config"]
+            )
         elif "audio_config" not in params:
             params["audio_config"] = AudioEncoderConfig()
 
@@ -90,8 +95,15 @@ class MegaASRConfig:
             params["text_config"] = TextConfig()
 
         router_cfg: Dict[str, Any] = {}
-        for key in ("d_model", "num_layers", "nhead", "dim_feedforward",
-                    "frontend_hidden_dim", "classifier_hidden_dim", "max_len"):
+        for key in (
+            "d_model",
+            "num_layers",
+            "nhead",
+            "dim_feedforward",
+            "frontend_hidden_dim",
+            "classifier_hidden_dim",
+            "max_len",
+        ):
             if key in params:
                 router_cfg[key] = params.pop(key)
         if "router_config" in params and isinstance(params["router_config"], dict):

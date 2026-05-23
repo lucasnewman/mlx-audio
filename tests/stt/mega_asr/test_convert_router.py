@@ -45,7 +45,10 @@ def test_router_weights_remap():
     assert tuple(out["frontend.conv.1.weight"].shape) == (128,)
     assert tuple(out["frontend.conv.5.weight"].shape) == (256,)
 
-    assert tuple(out["transformer.layers.0.self_attn.in_proj_weight"].shape) == (768, 256)
+    assert tuple(out["transformer.layers.0.self_attn.in_proj_weight"].shape) == (
+        768,
+        256,
+    )
     assert tuple(out["pos_encoder.pe"].shape) == (1, 850, 256)
 
     router = AudioQualityRouter.from_converted(out)

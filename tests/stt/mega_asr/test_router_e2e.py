@@ -9,7 +9,6 @@ import pytest
 from mlx_audio.stt.models.mega_asr.convert_router import convert_router_weights
 from mlx_audio.stt.utils import load_audio
 
-
 FIX = Path(__file__).parent / "fixtures"
 REFERENCE = json.loads((FIX / "reference.json").read_text())
 

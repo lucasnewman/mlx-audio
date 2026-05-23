@@ -9,7 +9,6 @@ import mlx.core as mx
 from safetensors.mlx import save_file
 
 import mlx_audio.convert as base_convert
-
 from mlx_audio.stt.models.qwen3_asr.config import ModelConfig as Qwen3ModelConfig
 
 from .convert_lora import load_lora_adapter
@@ -87,9 +86,9 @@ def _flatten_lora(adapter_dir: Path) -> dict[str, mx.array]:
     flattened: dict[str, mx.array] = {}
     for module, factors in adapter.items():
         flattened[f"{module}.lora_A"] = factors["A"].astype(mx.float32)
-        flattened[f"{module}.lora_B"] = (float(factors["scaling"]) * factors["B"]).astype(
-            mx.float32
-        )
+        flattened[f"{module}.lora_B"] = (
+            float(factors["scaling"]) * factors["B"]
+        ).astype(mx.float32)
     return flattened
 
 
@@ -123,14 +122,22 @@ def convert(
     )
 
     _copy_support_files(base_dir, out_dir)
-    (out_dir / "config.json").write_text(json.dumps(_mega_config(base_dir), indent=2) + "\n")
+    (out_dir / "config.json").write_text(
+        json.dumps(_mega_config(base_dir), indent=2) + "\n"
+    )
     return out_dir
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Convert Mega-ASR Hugging Face weights to MLX format")
-    parser.add_argument("--hf-path", required=True, help="Mega-ASR HF repo or local snapshot path")
-    parser.add_argument("--mlx-path", required=True, help="Output directory for the MLX Mega-ASR model")
+    parser = argparse.ArgumentParser(
+        description="Convert Mega-ASR Hugging Face weights to MLX format"
+    )
+    parser.add_argument(
+        "--hf-path", required=True, help="Mega-ASR HF repo or local snapshot path"
+    )
+    parser.add_argument(
+        "--mlx-path", required=True, help="Output directory for the MLX Mega-ASR model"
+    )
     parser.add_argument(
         "--dtype",
         default="bfloat16",

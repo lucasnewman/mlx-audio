@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-
 MODEL_DIR_ENV = "MEGA_ASR_MLX_DIR"
 DEFAULT_MODEL_DIR = Path(
     "/var/folders/kj/d8bkjl_n4y58ks_vx3qv9rmm0000gn/T/opencode/mega-asr-mlx"

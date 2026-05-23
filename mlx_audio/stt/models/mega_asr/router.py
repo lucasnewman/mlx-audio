@@ -135,7 +135,13 @@ class TransformerEncoderLayer(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, d_model: int = 256, nhead: int = 4, dim_feedforward: int = 1024, num_layers: int = 1):
+    def __init__(
+        self,
+        d_model: int = 256,
+        nhead: int = 4,
+        dim_feedforward: int = 1024,
+        num_layers: int = 1,
+    ):
         super().__init__()
         self.layers = [
             TransformerEncoderLayer(
@@ -210,7 +216,11 @@ class AudioQualityRouter(nn.Module):
         d_model = int(weights["transformer.norm.weight"].shape[0])
         dim_feedforward = int(weights["transformer.layers.0.linear1.weight"].shape[0])
         num_layers = len(
-            {key.split(".")[2] for key in weights if key.startswith("transformer.layers.")}
+            {
+                key.split(".")[2]
+                for key in weights
+                if key.startswith("transformer.layers.")
+            }
         )
         n_mels = int(weights["frontend.conv.0.weight"].shape[2])
         frontend_hidden_dim = int(weights["frontend.conv.0.weight"].shape[0])
@@ -263,9 +273,7 @@ class AudioQualityRouter(nn.Module):
             layer.self_attn.out_proj.weight = weights[
                 f"{prefix}.self_attn.out_proj.weight"
             ]
-            layer.self_attn.out_proj.bias = weights[
-                f"{prefix}.self_attn.out_proj.bias"
-            ]
+            layer.self_attn.out_proj.bias = weights[f"{prefix}.self_attn.out_proj.bias"]
 
             layer.linear1.weight = weights[f"{prefix}.linear1.weight"]
             layer.linear1.bias = weights[f"{prefix}.linear1.bias"]

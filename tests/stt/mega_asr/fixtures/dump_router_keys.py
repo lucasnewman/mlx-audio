@@ -47,14 +47,20 @@ def main() -> int:
     out = Path(__file__).with_name("router_state_dict_keys.json")
     out.write_text(json.dumps(dict(sorted(shapes.items())), indent=2))
 
-    n_layers = len({k.split(".")[2] for k in shapes if k.startswith("transformer.layers.")})
+    n_layers = len(
+        {k.split(".")[2] for k in shapes if k.startswith("transformer.layers.")}
+    )
     d_model = shapes.get("transformer.norm.weight", [None])[0]
     print(f"checkpoint: {path}")
     print(f"tensors: {len(shapes)}")
     print(f"d_model (transformer.norm): {d_model}")
     print(f"transformer layers: {n_layers}")
-    print(f"conv.0: {shapes.get('frontend.conv.0.weight')}  conv.4: {shapes.get('frontend.conv.4.weight')}")
-    print(f"classifier.0: {shapes.get('classifier.0.weight')}  classifier.3: {shapes.get('classifier.3.weight')}")
+    print(
+        f"conv.0: {shapes.get('frontend.conv.0.weight')}  conv.4: {shapes.get('frontend.conv.4.weight')}"
+    )
+    print(
+        f"classifier.0: {shapes.get('classifier.0.weight')}  classifier.3: {shapes.get('classifier.3.weight')}"
+    )
     print(f"wrote {out}")
     return 0
 
