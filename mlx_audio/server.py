@@ -944,6 +944,40 @@ async def tts_speech(payload: SpeechRequest, request: Request):
     )
 
 
+@app.get("/v1/audio/voices")
+async def tts_voices(model: Optional[str] = None):
+    """List available voices for a TTS model.
+
+    Resolves the model's HF snapshot directory and enumerates
+    ``voices/*.safetensors`` files (the convention used by Kokoro and
+    similar voice-pack-based TTS models). Returns an empty ``data`` list
+    for models that don't ship per-voice packs so callers can fall back
+    to whatever defaults make sense for that model.
+    """
+    if not model:
+        raise HTTPException(status_code=400, detail="model query parameter is required")
+
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot = snapshot_download(
+            repo_id=model, allow_patterns=["voices/*.safetensors"]
+        )
+    except Exception as e:
+        return {"object": "list", "model": model, "data": [], "error": str(e)}
+
+    voices_dir = Path(snapshot) / "voices"
+    if not voices_dir.is_dir():
+        return {"object": "list", "model": model, "data": []}
+
+    voices = sorted(p.stem for p in voices_dir.glob("*.safetensors"))
+    return {
+        "object": "list",
+        "model": model,
+        "data": [{"id": v, "name": v} for v in voices],
+    }
+
+
 @app.post("/v1/audio/transcriptions")
 async def stt_transcriptions(
     request: Request,
