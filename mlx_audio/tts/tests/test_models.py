@@ -1,6 +1,7 @@
 import importlib.resources
 import importlib.util
 import json
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -201,6 +202,39 @@ class TestKokoroModel(unittest.TestCase):
         # Check that the output was created correctly
         self.assertIs(output.audio, audio)
         self.assertIs(output.pred_dur, pred_dur)
+
+    def test_sine_generator_uses_thread_safe_python_upsample_scale(self):
+        from mlx_audio.tts.models.kokoro.istftnet import Generator
+
+        generator = Generator(
+            style_dim=128,
+            resblock_kernel_sizes=[3, 7, 11],
+            upsample_rates=[8, 8, 2, 2],
+            upsample_initial_channel=512,
+            resblock_dilation_sizes=[[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+            upsample_kernel_sizes=[16, 16, 4, 4],
+            gen_istft_n_fft=16,
+            gen_istft_hop_size=4,
+        )
+
+        self.assertIsInstance(generator.m_source.l_sin_gen.upsample_scale, int)
+
+        errors = []
+
+        def run_sine_generator():
+            try:
+                f0 = mx.ones((1, generator.m_source.l_sin_gen.upsample_scale, 1))
+                outputs = generator.m_source.l_sin_gen(f0)
+                mx.eval(*outputs)
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=run_sine_generator)
+        thread.start()
+        thread.join()
+
+        if errors:
+            raise errors[0]
 
 
 @patch("importlib.resources.open_text", patched_open_text)
