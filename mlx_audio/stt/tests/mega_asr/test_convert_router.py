@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import mlx.core as mx
@@ -11,6 +12,8 @@ EXPECTED_KEYS = set(SOURCE_KEYS) - DROPPED
 
 
 def _router_safetensors():
+    if not os.environ.get("MEGA_ASR_RUN_HF_TESTS"):
+        pytest.skip("set MEGA_ASR_RUN_HF_TESTS=1 to run HuggingFace-download tests")
     hf = pytest.importorskip("huggingface_hub")
     try:
         return hf.hf_hub_download(
@@ -21,6 +24,7 @@ def _router_safetensors():
         pytest.skip(f"router weights unavailable (offline?): {exc}")
 
 
+@pytest.mark.requires_weights
 def test_router_weights_remap():
     from mlx_audio.stt.models.mega_asr.convert_router import convert_router_weights
     from mlx_audio.stt.models.mega_asr.router import AudioQualityRouter

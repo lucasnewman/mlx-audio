@@ -14,14 +14,12 @@ from mlx_audio.stt.models.base import STTOutput
 from mlx_audio.stt.models.mega_asr.mega_asr import Model as MegaASRModel
 
 MODEL_DIR_ENV = "MEGA_ASR_MLX_DIR"
-DEFAULT_MODEL_DIR = Path(
-    "/var/folders/kj/d8bkjl_n4y58ks_vx3qv9rmm0000gn/T/opencode/mega-asr-mlx"
-)
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
-def _model_dir() -> Path:
-    return Path(os.environ.get(MODEL_DIR_ENV, DEFAULT_MODEL_DIR))
+def _model_dir() -> Path | None:
+    raw = os.environ.get(MODEL_DIR_ENV)
+    return Path(raw) if raw else None
 
 
 def _normalize(text: str) -> str:
@@ -74,8 +72,10 @@ def _generate_and_measure(model: MegaASRModel, audio: Path) -> tuple[STTOutput, 
 @pytest.mark.requires_weights
 def test_pretrained_mega_asr_matches_reference():
     model_dir = _model_dir()
-    if not model_dir.exists():
-        pytest.skip(f"Mega-ASR MLX model dir missing: {model_dir}")
+    if model_dir is None or not model_dir.exists():
+        pytest.skip(
+            f"set {MODEL_DIR_ENV} to a converted Mega-ASR MLX dir to run this test"
+        )
 
     ref = json.loads((FIXTURES_DIR / "reference.json").read_text())
     model = cast(MegaASRModel, cast(object, load(str(model_dir))))
@@ -107,8 +107,10 @@ def test_pretrained_mega_asr_matches_reference():
 @pytest.mark.requires_weights
 def test_pretrained_mega_asr_peak_memory_stays_below_threshold():
     model_dir = _model_dir()
-    if not model_dir.exists():
-        pytest.skip(f"Mega-ASR MLX model dir missing: {model_dir}")
+    if model_dir is None or not model_dir.exists():
+        pytest.skip(
+            f"set {MODEL_DIR_ENV} to a converted Mega-ASR MLX dir to run this test"
+        )
 
     ref = json.loads((FIXTURES_DIR / "reference.json").read_text())
     model = cast(MegaASRModel, cast(object, load(str(model_dir))))

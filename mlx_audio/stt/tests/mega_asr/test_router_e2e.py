@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,8 @@ REFERENCE = json.loads((FIX / "reference.json").read_text())
 
 
 def _router_weights():
+    if not os.environ.get("MEGA_ASR_RUN_HF_TESTS"):
+        pytest.skip("set MEGA_ASR_RUN_HF_TESTS=1 to run HuggingFace-download tests")
     hf = pytest.importorskip("huggingface_hub")
     try:
         path = hf.hf_hub_download(
@@ -25,6 +28,7 @@ def _router_weights():
     return convert_router_weights(path)
 
 
+@pytest.mark.requires_weights
 def test_router_logits_and_decision_match_reference():
     from mlx_audio.stt.models.mega_asr.router import AudioQualityRouter
 

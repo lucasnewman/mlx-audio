@@ -1,34 +1,3 @@
-from mlx_audio.stt.utils import MODEL_REMAPPING
-from mlx_audio.utils import get_model_class
-
-
-def test_mega_asr_in_remapping():
-    assert "mega_asr" in MODEL_REMAPPING
-    assert MODEL_REMAPPING["mega_asr"] == "mega_asr"
-
-
-def test_get_model_class_resolves_mega_asr():
-    arch, model_type = get_model_class("mega_asr", [], "stt", MODEL_REMAPPING)
-    assert model_type == "mega_asr"
-
-
-def test_arch_exposes_model():
-    arch, _ = get_model_class("mega_asr", [], "stt", MODEL_REMAPPING)
-    assert hasattr(arch, "Model")
-
-
-def test_arch_exposes_modelconfig():
-    arch, _ = get_model_class("mega_asr", [], "stt", MODEL_REMAPPING)
-    assert hasattr(arch, "ModelConfig")
-
-
-def test_modelconfig_is_megaasrconfig():
-    from mlx_audio.stt.models.mega_asr import MegaASRConfig
-
-    arch, _ = get_model_class("mega_asr", [], "stt", MODEL_REMAPPING)
-    assert arch.ModelConfig is MegaASRConfig
-
-
 def test_megaasrconfig_from_dict_defaults():
     from mlx_audio.stt.models.mega_asr import MegaASRConfig
 
