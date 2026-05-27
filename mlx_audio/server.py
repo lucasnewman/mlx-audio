@@ -1780,10 +1780,10 @@ async def realtime_ws(websocket: WebSocket):
                 audio_b64 = msg.get("audio", "")
                 if not audio_b64:
                     continue
-                # In server-VAD mode the conversation item is created on
-                # ``speech_started`` (below) to match OpenAI; in manual-commit
-                # mode it is created on the first appended audio.
-                if current_item_id is None and turn_detector is None:
+                # Create the conversation item on the first appended audio so
+                # transcription deltas always carry a valid item_id; the VAD's
+                # speech_started (below) reuses it instead of making a second.
+                if current_item_id is None:
                     current_item_id = _new_item_id()
                     await send_event(
                         {
