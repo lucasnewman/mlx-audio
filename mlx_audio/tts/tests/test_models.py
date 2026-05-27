@@ -7660,6 +7660,46 @@ def moss_local_tiny_config(**overrides):
 
 
 class TestMossTTSDelayConfig(unittest.TestCase):
+    def test_config_parses_v15_delay_checkpoint(self):
+        from mlx_audio.tts.models.moss_tts import ModelConfig
+
+        config = ModelConfig.from_dict(
+            {
+                "model_type": "moss_tts_delay",
+                "architectures": ["MossTTSDelayModel"],
+                "dtype": "bfloat16",
+                "auto_map": {
+                    "AutoConfig": "configuration_moss_tts.MossTTSDelayConfig",
+                    "AutoModel": "modeling_moss_tts.MossTTSDelayModel",
+                },
+                "n_vq": 32,
+                "audio_vocab_size": 1024,
+                "audio_pad_code": 1024,
+                "sampling_rate": 24000,
+                "language_config": {
+                    "model_type": "qwen3",
+                    "vocab_size": 155648,
+                    "hidden_size": 4096,
+                    "num_hidden_layers": 36,
+                    "intermediate_size": 12288,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "rms_norm_eps": 1e-6,
+                    "max_position_embeddings": 40960,
+                    "rope_theta": 1000000,
+                    "tie_word_embeddings": False,
+                },
+            }
+        )
+
+        self.assertEqual(config.model_type, "moss_tts_delay")
+        self.assertEqual(config.n_vq, 32)
+        self.assertEqual(config.hidden_size, 4096)
+        self.assertEqual(config.audio_vocab_size, 1024)
+        self.assertEqual(config.sampling_rate, 24000)
+        self.assertFalse(config.is_local_transformer)
+
     def test_config_parses_upstream_shape(self):
         from mlx_audio.tts.models.moss_tts import ModelConfig
 
@@ -7760,6 +7800,30 @@ class TestMossTTSDelayConfig(unittest.TestCase):
 
 
 class TestMossTTSDelayProcessor(unittest.TestCase):
+    def test_v15_normalizer_preserves_pause_and_file_tokens(self):
+        from mlx_audio.tts.models.moss_tts.text import normalize_tts_text
+
+        text = "  Hello   world!!!\nCheck app.js.map and [pause 3.2s] now  "
+
+        self.assertEqual(
+            normalize_tts_text(text),
+            "Hello world\uff01\u3002Check app.js.map and [pause 3.2s] now",
+        )
+
+    def test_user_message_normalizes_text(self):
+        from mlx_audio.tts.models.moss_tts.processor import MossTTSDelayProcessor
+
+        config = moss_delay_tiny_config()
+        processor = MossTTSDelayProcessor(MossDelayFakeTokenizer(), config)
+        message = processor.build_user_message(
+            text="  Hello   world!!!\nCheck app.js.map  "
+        )
+
+        self.assertIn(
+            "Hello world\uff01\u3002Check app.js.map",
+            message["content"],
+        )
+
     def test_delay_pattern_round_trip(self):
         from mlx_audio.tts.models.moss_tts.processor import (
             apply_de_delay_pattern,
@@ -7831,7 +7895,7 @@ class TestMossTTSDelayProcessor(unittest.TestCase):
                 mode="generation",
             )
 
-    def test_user_message_preserves_empty_references_and_scene(self):
+    def test_user_message_preserves_empty_references_and_omits_scene_for_base(self):
         from mlx_audio.tts.models.moss_tts.processor import MossTTSDelayProcessor
 
         config = moss_delay_tiny_config()
@@ -7848,8 +7912,18 @@ class TestMossTTSDelayProcessor(unittest.TestCase):
         self.assertIn("[S1]: None", message["content"])
         self.assertIn("[S2]:\n<|audio|>", message["content"])
         self.assertIn("- Tokens:\n123", message["content"])
-        self.assertIn("- Scene:\nstudio", message["content"])
+        self.assertNotIn("- Scene:", message["content"])
+        self.assertNotIn("studio", message["content"])
         self.assertEqual(len(message["audio_codes_list"]), 1)
+
+    def test_ttsd_user_message_includes_scene(self):
+        from mlx_audio.tts.models.moss_tts.processor import MossTTSDelayProcessor
+
+        config = moss_delay_tiny_config(n_vq=16)
+        processor = MossTTSDelayProcessor(MossDelayFakeTokenizer(), config)
+        message = processor.build_user_message(text="[S1] hello", scene="studio")
+
+        self.assertIn("- Scene:\nstudio", message["content"])
 
     def test_local_generation_prompt_uses_undelayed_reference_and_audio_start(self):
         from mlx_audio.tts.models.moss_tts.processor import MossTTSLocalProcessor
