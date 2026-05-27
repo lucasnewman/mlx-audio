@@ -23,6 +23,7 @@ MODEL_REMAPPING = {
     "mms": "mms",
     "granite_speech": "granite_speech",
     "qwen2_audio": "qwen2_audio",
+    "mega_asr": "mega_asr",
 }
 
 
