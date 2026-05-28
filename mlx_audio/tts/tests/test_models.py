@@ -7189,6 +7189,51 @@ class TestVoxCPM2Model(unittest.TestCase):
         emb = model.base_lm.embed_tokens(x)
         self.assertEqual(emb.shape, (1, 3, 64))
 
+    def test_tokenize_splits_multichar_chinese_tokens(self):
+        from unittest.mock import MagicMock
+
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
+
+        args = _tiny_voxcpm2_args()
+        model = Model(args)
+        model.tokenizer = MagicMock()
+        model.tokenizer.tokenize.return_value = [
+            "▁",
+            "你好",
+            "，",
+            "这是",
+            "▁V",
+            "ox",
+            "CP",
+            "M",
+            "2",
+            "中文",
+            "。",
+        ]
+        model.tokenizer.convert_tokens_to_ids.side_effect = lambda tokens: tokens
+
+        tokens = model._tokenize("你好，这是 VoxCPM2 中文。")
+
+        self.assertEqual(
+            tokens,
+            [
+                "▁",
+                "你",
+                "好",
+                "，",
+                "这",
+                "是",
+                "▁V",
+                "ox",
+                "CP",
+                "M",
+                "2",
+                "中",
+                "文",
+                "。",
+            ],
+        )
+
     def test_inference_pipeline(self):
         """Test forward pass through the full inference pipeline (no tokenizer)."""
         from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
