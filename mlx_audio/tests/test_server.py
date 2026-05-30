@@ -558,3 +558,241 @@ def test_realtime_ws_streaming_disabled_fallback(client, mock_model_provider):
     # Should have at least one legacy text message
     text_msgs = [m for m in messages if "text" in m and "type" not in m]
     assert len(text_msgs) >= 1, f"Expected legacy text message, got: {messages}"
+
+
+# --- /v1/realtime server-side VAD turn detection --------------------------
+
+
+class _FakeStreamingSession:
+    """Minimal streaming session: emits one delta once the audio is closed."""
+
+    input_sample_rate = 16000
+
+    def __init__(self):
+        self._closed = False
+        self._emitted = False
+
+    def feed(self, samples):
+        pass
+
+    def close(self):
+        self._closed = True
+
+    def step(self, max_decode_tokens=4):
+        if self._closed and not self._emitted:
+            self._emitted = True
+            return ["bonjour"]
+        return []
+
+    @property
+    def done(self):
+        return self._closed and self._emitted
+
+
+class _FakeStreamingModel:
+    def create_streaming_session(self, *, temperature=0.0, **kwargs):
+        return _FakeStreamingSession()
+
+
+class _FakeVadModel:
+    """Returns a scripted speech probability per consumed 512-sample frame."""
+
+    def __init__(self, probs):
+        self._probs = probs
+
+    def initial_state(self, sample_rate=16000):
+        return {"i": 0}
+
+    def feed(self, chunk, state, sample_rate=16000):
+        i = state["i"]
+        p = self._probs[i] if i < len(self._probs) else 0.0
+        return mx.array([[p]]), {"i": i + 1}
+
+
+def test_realtime_ws_server_vad_auto_commits(client, mock_model_provider, monkeypatch):
+    """With server_vad the server detects end-of-speech, emits
+    speech_started/stopped, auto-commits and returns the transcript — the
+    client never sends input_audio_buffer.commit."""
+    import base64
+
+    from mlx_audio.realtime_vad import VAD_FRAME_SIZE
+
+    mock_model_provider.load_model = MagicMock(return_value=_FakeStreamingModel())
+    # Four speech frames, then silence — enough to open then close a turn.
+    probs = [0.9] * 4 + [0.0] * 60
+    monkeypatch.setattr(
+        "mlx_audio.server._load_realtime_vad_model",
+        lambda name: _FakeVadModel(probs),
+    )
+
+    with client.websocket_connect("/v1/realtime?model=fake-stt") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+
+        ws.send_json(
+            {
+                "type": "session.update",
+                "session": {
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": 16000},
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "silence_duration_ms": 160,
+                            },
+                        }
+                    }
+                },
+            }
+        )
+        updated = ws.receive_json()
+        assert updated["type"] == "session.updated"
+        assert (
+            updated["session"]["audio"]["input"]["turn_detection"]["type"]
+            == "server_vad"
+        )
+
+        pcm = np.zeros(VAD_FRAME_SIZE * 40, dtype=np.int16).tobytes()
+        ws.send_json(
+            {
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(pcm).decode(),
+            }
+        )
+
+        events = []
+        while True:
+            evt = ws.receive_json()
+            events.append(evt)
+            if evt["type"] == ("conversation.item.input_audio_transcription.completed"):
+                break
+
+    types = [e["type"] for e in events]
+    assert "input_audio_buffer.speech_started" in types
+    assert "input_audio_buffer.speech_stopped" in types
+    assert "input_audio_buffer.committed" in types
+    # speech_started precedes speech_stopped.
+    assert types.index("input_audio_buffer.speech_started") < types.index(
+        "input_audio_buffer.speech_stopped"
+    )
+    assert events[-1]["transcript"] == "bonjour"
+
+
+def test_realtime_ws_rejects_semantic_vad(client, mock_model_provider):
+    """semantic_vad is not implemented yet → the server replies with an error
+    rather than silently ignoring the request."""
+    mock_model_provider.load_model = MagicMock(return_value=_FakeStreamingModel())
+
+    with client.websocket_connect("/v1/realtime?model=fake-stt") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+        ws.send_json(
+            {
+                "type": "session.update",
+                "session": {
+                    "audio": {"input": {"turn_detection": {"type": "semantic_vad"}}}
+                },
+            }
+        )
+        evt = ws.receive_json()
+        assert evt["type"] == "error"
+        assert "semantic_vad" in evt["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# word_timestamps form field tests
+# ---------------------------------------------------------------------------
+
+
+def test_transcription_request_word_timestamps_defaults():
+    """TranscriptionRequest defaults word_timestamps=False, timestamp_granularities=None."""
+    from mlx_audio.server import TranscriptionRequest
+
+    req = TranscriptionRequest(model="test-model")
+    assert req.word_timestamps is False
+    assert req.timestamp_granularities is None
+
+
+def test_transcription_request_word_timestamps_accepted():
+    """TranscriptionRequest accepts word_timestamps=True."""
+    from mlx_audio.server import TranscriptionRequest
+
+    req = TranscriptionRequest(
+        model="test-model", word_timestamps=True, timestamp_granularities="word"
+    )
+    assert req.word_timestamps is True
+    assert req.timestamp_granularities == "word"
+
+
+def test_stt_word_timestamps_passed_to_generate(client, mock_model_provider):
+    """word_timestamps=true form field reaches stt_model.generate() as a kwarg.
+
+    The STTExecutionAdapter allowlist (_STT_EXTRA_KWARGS) must pass word_timestamps
+    through even when it isn't declared in the model's generate() signature.
+    """
+    captured_kwargs: dict = {}
+
+    def mock_generate(path, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"text": "hello", "segments": [], "language": "en"}
+
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = mock_generate
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={
+            "model": "test_stt_model",
+            "response_format": "verbose_json",
+            "word_timestamps": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured_kwargs.get("word_timestamps") is True
+
+
+def test_stt_word_timestamps_verbose_json_words_passthrough(
+    client, mock_model_provider
+):
+    """verbose_json response includes words[] from the model when word_timestamps=True."""
+    full_payload = {
+        "text": "Hello world.",
+        "language": "en",
+        "segments": [
+            {
+                "id": 0,
+                "text": "Hello world.",
+                "start": 0.0,
+                "end": 1.0,
+                "words": [
+                    {"word": "Hello", "start": 0.0, "end": 0.5, "probability": 0.99},
+                    {"word": "world.", "start": 0.5, "end": 1.0, "probability": 0.98},
+                ],
+            }
+        ],
+    }
+
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = MagicMock(return_value=full_payload)
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={
+            "model": "test_stt_model",
+            "response_format": "verbose_json",
+            "word_timestamps": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["text"] == "Hello world."
+    segments = body.get("segments", [])
+    assert len(segments) == 1
+    words = segments[0].get("words", [])
+    assert len(words) == 2
+    assert words[0]["word"] == "Hello"
+    assert words[1]["word"] == "world."
