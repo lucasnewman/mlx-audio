@@ -60,7 +60,7 @@ uv tool install --force git+https://github.com/Blaizzy/mlx-audio.git --prereleas
 ```bash
 git clone https://github.com/Blaizzy/mlx-audio.git
 cd mlx-audio
-pip install -e ".[dev]"
+pip install -e ".[dev, server]"
 ```
 
 ## Quick Start
