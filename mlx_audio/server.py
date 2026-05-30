@@ -197,6 +197,8 @@ class TranscriptionRequest(BaseModel):
     context: str | None = None
     prefill_step_size: int = 2048
     text: str | None = None
+    word_timestamps: bool = False
+    timestamp_granularities: Optional[str] = None
 
 
 class SeparationResponse(BaseModel):
@@ -263,6 +265,9 @@ async def _preflight_model_load(model_name: str) -> None:
         ) from exc
 
 
+_STT_EXTRA_KWARGS = {"word_timestamps", "timestamp_granularities"}
+
+
 class STTExecutionAdapter(BaseModelExecutionAdapter):
     def run_serial(self, request: InferenceRequest) -> None:
         payload: TranscriptionTaskPayload = request.payload
@@ -280,7 +285,7 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
             gen_kwargs = {
                 key: value
                 for key, value in gen_kwargs.items()
-                if key in signature.parameters
+                if key in signature.parameters or key in _STT_EXTRA_KWARGS
             }
 
             result = stt_model.generate(tmp_path, **gen_kwargs)
@@ -967,6 +972,8 @@ async def stt_transcriptions(
     prefill_step_size: int = Form(2048),
     text: Optional[str] = Form(None),
     response_format: str = Form("ndjson"),
+    word_timestamps: bool = Form(False),
+    timestamp_granularities: Optional[str] = Form(None),
 ):
     """Transcribe audio using an STT model.
 
@@ -996,6 +1003,8 @@ async def stt_transcriptions(
         context=context,
         prefill_step_size=prefill_step_size,
         text=text,
+        word_timestamps=word_timestamps,
+        timestamp_granularities=timestamp_granularities,
     )
     data = await file.read()
     tmp = io.BytesIO(data)
