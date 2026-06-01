@@ -4914,8 +4914,14 @@ class TestIrodoriV3VoiceDesignShapes(unittest.TestCase):
         x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
         t = mx.array([0.5], dtype=mx.float32)
         out = self.model.forward_with_conditions(
-            x_t, t, text_state, t_mask, spk_state, spk_mask,
-            caption_state=cap_state, caption_mask=c_mask
+            x_t,
+            t,
+            text_state,
+            t_mask,
+            spk_state,
+            spk_mask,
+            caption_state=cap_state,
+            caption_mask=c_mask,
         )
         mx.eval(out)
         self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
@@ -4940,7 +4946,9 @@ class TestIrodoriV3VoiceDesignGenerate(unittest.TestCase):
         cfg = model.config
         ref = mx.zeros((1, cfg.audio_downsample_factor * 4), dtype=mx.float32)
         results = list(
-            model.generate("こんにちは", ref_audio=ref, caption="穏やかな声", rng_seed=0)
+            model.generate(
+                "こんにちは", ref_audio=ref, caption="穏やかな声", rng_seed=0
+            )
         )
         self.assertEqual(len(results), 1)
         self.assertGreater(results[0].samples, 0)

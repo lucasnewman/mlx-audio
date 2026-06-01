@@ -264,15 +264,17 @@ def sample_euler_cfg(
         elif cfg_guidance_mode == "joint":
             if is_dual:
                 if has_text_cfg or has_speaker_cfg or has_caption_cfg:
-                    kv_text_uncond_joint, kv_speaker_uncond_joint, kv_caption_uncond_joint = (
-                        model.build_kv_cache(
-                            text_state_uncond, speaker_state_uncond, caption_state_uncond
-                        )
+                    (
+                        kv_text_uncond_joint,
+                        kv_speaker_uncond_joint,
+                        kv_caption_uncond_joint,
+                    ) = model.build_kv_cache(
+                        text_state_uncond, speaker_state_uncond, caption_state_uncond
                     )
             else:
                 if has_text_cfg or has_context_cfg:
-                    kv_text_uncond_joint, kv_speaker_uncond_joint, _ = model.build_kv_cache(
-                        text_state_uncond, speaker_state_uncond
+                    kv_text_uncond_joint, kv_speaker_uncond_joint, _ = (
+                        model.build_kv_cache(text_state_uncond, speaker_state_uncond)
                     )
 
         elif cfg_guidance_mode == "alternating":
@@ -285,7 +287,10 @@ def sample_euler_cfg(
                     _, kv_speaker_uncond_alt, _ = model.build_kv_cache(
                         text_state_cond, speaker_state_uncond
                     )
-                    if speaker_kv_scale is not None and kv_speaker_uncond_alt is not None:
+                    if (
+                        speaker_kv_scale is not None
+                        and kv_speaker_uncond_alt is not None
+                    ):
                         kv_speaker_uncond_alt = _scale_kv_cache(
                             kv_speaker_uncond_alt,
                             speaker_kv_scale,
@@ -485,11 +490,13 @@ def sample_euler_cfg(
                 )
                 if is_dual:
                     all_scales = [
-                        s for s, a in [
+                        s
+                        for s, a in [
                             (cfg_scale_text, has_text_cfg),
                             (cfg_scale_speaker, has_speaker_cfg),
                             (cfg_scale_caption, has_caption_cfg),
-                        ] if a
+                        ]
+                        if a
                     ]
                     joint_scale = all_scales[0] if all_scales else cfg_scale_text
                 elif has_text_cfg and has_context_cfg:
@@ -602,9 +609,7 @@ def sample_euler_cfg(
             )
             if kv_speaker_cfg is not None:
                 n_rep = 3 if (not is_dual and has_text_cfg and has_context_cfg) else 2
-                kv_speaker_cfg = _concat_kv_caches(
-                    *([kv_speaker_cond] * n_rep)
-                )
+                kv_speaker_cfg = _concat_kv_caches(*([kv_speaker_cond] * n_rep))
             if kv_speaker_uncond_alt is not None:
                 kv_speaker_uncond_alt = _scale_kv_cache(
                     kv_speaker_uncond_alt, inv, max_layers=speaker_kv_max_layers

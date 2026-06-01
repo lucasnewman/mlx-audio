@@ -262,7 +262,9 @@ class JointAttention(nn.Module):
         self.has_speaker_condition = speaker_ctx_dim is not None
         self.has_caption_condition = caption_ctx_dim is not None
         if not self.has_speaker_condition and not self.has_caption_condition:
-            raise ValueError("At least one of speaker_ctx_dim or caption_ctx_dim must be set")
+            raise ValueError(
+                "At least one of speaker_ctx_dim or caption_ctx_dim must be set"
+            )
         if speaker_ctx_dim is not None:
             self.wk_speaker = nn.Linear(speaker_ctx_dim, dim, bias=False)
             self.wv_speaker = nn.Linear(speaker_ctx_dim, dim, bias=False)
@@ -602,8 +604,12 @@ class DurationSwiGLUBlock(nn.Module):
                 gate = gate + dg
             if self.caption_modulation is not None:
                 if caption_cond is None:
-                    raise ValueError("caption_cond is required for caption AdaRN-Zero blocks.")
-                cs, csc, cg = mx.split(self.caption_modulation(nn.silu(caption_cond)), 3, axis=-1)
+                    raise ValueError(
+                        "caption_cond is required for caption AdaRN-Zero blocks."
+                    )
+                cs, csc, cg = mx.split(
+                    self.caption_modulation(nn.silu(caption_cond)), 3, axis=-1
+                )
                 if h.ndim == 3 and cs.ndim == 2:
                     cs, csc, cg = cs[:, None, :], csc[:, None, :], cg[:, None, :]
                 shift = shift + cs
@@ -978,9 +984,13 @@ class DurationPredictor(nn.Module):
                     "Dual token-sum architecture requires both speaker and caption modules."
                 )
             if has_speaker is None:
-                raise ValueError("has_speaker is required for dual duration prediction.")
+                raise ValueError(
+                    "has_speaker is required for dual duration prediction."
+                )
             if has_caption is None:
-                raise ValueError("has_caption is required for dual duration prediction.")
+                raise ValueError(
+                    "has_caption is required for dual duration prediction."
+                )
             has_speaker = has_speaker.astype(mx.bool_)
             has_caption = has_caption.astype(mx.bool_)
             speaker_vec = self._speaker_vec(
@@ -1185,8 +1195,12 @@ class IrodoriDiT(nn.Module):
         # Duration predictor (v3)
         self.duration_predictor = None
         if cfg.use_duration_predictor:
-            duration_speaker_dim = cfg.speaker_dim if cfg.use_speaker_condition_resolved else None
-            duration_caption_dim = cfg.caption_dim_resolved if cfg.use_caption_condition else None
+            duration_speaker_dim = (
+                cfg.speaker_dim if cfg.use_speaker_condition_resolved else None
+            )
+            duration_caption_dim = (
+                cfg.caption_dim_resolved if cfg.use_caption_condition else None
+            )
             self.duration_predictor = DurationPredictor(
                 text_dim=cfg.text_dim,
                 aux_dim=cfg.duration_aux_dim,
@@ -1440,8 +1454,12 @@ class IrodoriDiT(nn.Module):
 
         # For caption-only models: speaker_state arg contains caption context (backward compat)
         if not use_spk and use_cap:
-            actual_caption_state = caption_state if caption_state is not None else speaker_state
-            actual_caption_mask = caption_mask if caption_mask is not None else speaker_mask
+            actual_caption_state = (
+                caption_state if caption_state is not None else speaker_state
+            )
+            actual_caption_mask = (
+                caption_mask if caption_mask is not None else speaker_mask
+            )
             actual_kv_caption = kv_caption if kv_caption is not None else kv_speaker
             actual_speaker_state = None
             actual_speaker_mask = None
