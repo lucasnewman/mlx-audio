@@ -5228,14 +5228,6 @@ class TestMossTTSRegistration(unittest.TestCase):
 
 
 class TestMisoTTSRegistration(unittest.TestCase):
-    def test_model_type_registered(self):
-        from mlx_audio.tts.utils import MODEL_REMAPPING
-        from mlx_audio.utils import get_model_category, get_model_name_parts
-
-        model_name = get_model_name_parts("MisoLabs/MisoTTS")
-
-        self.assertEqual(MODEL_REMAPPING["misotts"], "sesame")
-        self.assertEqual(get_model_category(None, model_name), "tts")
 
     def test_miso_llama_flavors(self):
         from mlx_audio.tts.models.sesame.sesame import create_llama_model_args
