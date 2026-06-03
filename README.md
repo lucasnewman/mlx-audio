@@ -120,7 +120,7 @@ for result in model.generate(
 | **KittenTTS** | Compact KittenTTS 0.8 models for edge-friendly TTS | EN | [nano](https://huggingface.co/mlx-community/kitten-tts-nano-0.8), [micro](https://huggingface.co/mlx-community/kitten-tts-micro-0.8), [mini](https://huggingface.co/mlx-community/kitten-tts-mini-0.8), [collection](https://huggingface.co/collections/mlx-community/kittentts) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
 | **OmniVoice** | Zero-shot multilingual TTS with voice cloning, batch generation, and nonverbal tags | 646+ languages | [mlx-community/OmniVoice-bf16](https://huggingface.co/mlx-community/OmniVoice-bf16) |
-| **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
+| **CSM / MisoTTS** | Sesame-style conversational speech models with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b), [MisoTTS bf16](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-bf16), [MisoTTS 8bit](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-8bit) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
 | **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
 | **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |

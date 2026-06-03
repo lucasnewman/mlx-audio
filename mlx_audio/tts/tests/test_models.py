@@ -5227,6 +5227,114 @@ class TestMossTTSRegistration(unittest.TestCase):
             self.assertIs(arch.Model, SharedModel)
 
 
+class TestMisoTTSRegistration(unittest.TestCase):
+    def test_model_type_registered(self):
+        from mlx_audio.tts.utils import MODEL_REMAPPING
+        from mlx_audio.utils import get_model_category, get_model_name_parts
+
+        model_name = get_model_name_parts("MisoLabs/MisoTTS")
+
+        self.assertEqual(MODEL_REMAPPING["misotts"], "sesame")
+        self.assertEqual(get_model_category(None, model_name), "tts")
+
+    def test_miso_llama_flavors(self):
+        from mlx_audio.tts.models.sesame.sesame import create_llama_model_args
+
+        backbone = create_llama_model_args("llama-8B")
+        decoder = create_llama_model_args("llama-300M")
+
+        self.assertEqual(backbone.num_hidden_layers, 32)
+        self.assertEqual(backbone.hidden_size, 4096)
+        self.assertEqual(backbone.intermediate_size, 14336)
+        self.assertEqual(backbone.num_attention_heads, 32)
+        self.assertEqual(backbone.num_key_value_heads, 8)
+        self.assertEqual(decoder.num_hidden_layers, 8)
+        self.assertEqual(decoder.hidden_size, 1536)
+        self.assertEqual(decoder.intermediate_size, 6912)
+        self.assertEqual(decoder.num_attention_heads, 24)
+        self.assertEqual(decoder.num_key_value_heads, 6)
+
+    def test_sesame_uses_configured_frame_size_and_prompt_spacing(self):
+        from mlx_audio.tts.models.sesame import sesame
+
+        encoded_text = []
+
+        class FakeTokenizer:
+            def encode(self, text, return_tensors=None):
+                encoded_text.append(text)
+                return mx.array([[7, 8]])
+
+        class FakeSesameModel:
+            def __init__(self, config):
+                self.args = SimpleNamespace(
+                    audio_num_codebooks=config["audio_num_codebooks"]
+                )
+
+            def setup_caches(self, max_batch_size):
+                self.max_batch_size = max_batch_size
+
+            def reset_caches(self):
+                pass
+
+            def generate_frame(self, tokens, tokens_mask, input_pos, sampler):
+                return mx.zeros((1, self.args.audio_num_codebooks), dtype=mx.int32)
+
+        class FakeMimi:
+            cfg = SimpleNamespace(sample_rate=24000)
+
+            def eval(self):
+                return None
+
+            def encode(self, audio):
+                return mx.array([[[1, 2], [3, 4], [5, 6]]])
+
+        with (
+            patch("mlx_audio.tts.models.sesame.sesame.SesameModel", FakeSesameModel),
+            patch(
+                "mlx_audio.tts.models.sesame.sesame.load_llama3_tokenizer",
+                return_value=FakeTokenizer(),
+            ),
+            patch(
+                "mlx_audio.tts.models.sesame.sesame.Mimi.from_pretrained",
+                return_value=FakeMimi(),
+            ),
+            patch(
+                "mlx_audio.tts.models.sesame.sesame.MimiStreamingDecoder",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "mlx_audio.tts.models.sesame.sesame.load_watermarker",
+                side_effect=RuntimeError,
+                create=True,
+            ),
+        ):
+            model = sesame.Model(
+                {
+                    "audio_num_codebooks": 3,
+                    "speaker_prefix_space": True,
+                    "use_default_voice_prompt": False,
+                    "voice_match": False,
+                }
+            )
+
+        text_tokens, text_mask = model._tokenize_text_segment("  Hello", speaker=2)
+        audio_tokens, audio_mask = model._tokenize_audio(mx.zeros((16,)))
+
+        self.assertFalse(model._use_default_voice_prompt)
+        self.assertFalse(model._default_voice_match)
+        self.assertEqual(encoded_text[-1], "[2] Hello")
+        self.assertEqual(text_tokens.shape, (2, 4))
+        self.assertEqual(text_mask.shape, (2, 4))
+        self.assertEqual(audio_tokens.shape, (3, 4))
+        self.assertEqual(audio_mask.shape, (3, 4))
+
+        model.default_speaker_prompt = MagicMock(
+            side_effect=AssertionError("default prompt should not load")
+        )
+        list(model.generate("Direct text", max_audio_length_ms=80))
+        self.assertEqual(encoded_text[-1], "[0] Direct text")
+
+
 class TestOmniVoiceBackbone(unittest.TestCase):
     def _make_backbone(self):
         from mlx_audio.tts.models.omnivoice.backbone import (
