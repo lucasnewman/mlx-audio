@@ -266,15 +266,24 @@ class Model(nn.Module):
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Map checkpoint weight names to this model's MLX parameter names.
 
-        Two on-disk layouts are supported:
+        Three on-disk layouts are supported:
 
+        * **Already-sanitized** – internal MLX parameter names produced after a
+          previous sanitize pass (e.g. a re-saved or convert-script output). Keys
+          start with ``decoder.blocks.``; no remapping needed.
         * **NeMo-native** – raw NeMo names (``transf_decoder._decoder.layers.*``,
           ``log_softmax.mlp.layer0.*``) with PyTorch conv layout that needs to be
           transposed to MLX's ``(out, *kernel, in)`` order.
-        * **MLX-native** – conversions that already use MLX tensor layouts and
-          flattened names (``transf_decoder.layers.N.first_sub_layer.linear_q``,
+        * **MLX-native** – community conversions that already use MLX tensor layouts
+          and flattened names (``transf_decoder.layers.N.first_sub_layer.linear_q``,
           ``head.classifier``). These must *not* be transposed again.
         """
+        is_already_sanitized = any(
+            k.startswith("decoder.blocks.") for k in weights
+        )
+        if is_already_sanitized:
+            return dict(weights)
+
         is_mlx_native = "head.classifier.weight" in weights or any(
             k.startswith("transf_decoder.layers.") for k in weights
         )
@@ -295,16 +304,24 @@ class Model(nn.Module):
             if sub.startswith("first_sub_layer."):
                 inner = sub[len("first_sub_layer.") :]
                 for a, b in attn:
-                    inner = inner.replace(a, b)
+                    if inner.startswith(a):
+                        inner = b + inner[len(a):]
+                        break
                 return "self_attn." + inner
             if sub.startswith("second_sub_layer."):
                 inner = sub[len("second_sub_layer.") :]
                 for a, b in attn:
-                    inner = inner.replace(a, b)
+                    if inner.startswith(a):
+                        inner = b + inner[len(a):]
+                        break
                 return "cross_attn." + inner
             if sub.startswith("third_sub_layer."):
                 inner = sub[len("third_sub_layer.") :]
-                return inner.replace("linear1.", "ff1.").replace("linear2.", "ff2.")
+                if inner.startswith("linear1."):
+                    inner = "ff1." + inner[len("linear1."):]
+                elif inner.startswith("linear2."):
+                    inner = "ff2." + inner[len("linear2."):]
+                return inner
             if sub.startswith("layer_norm_1."):
                 return "self_attn_norm." + sub[len("layer_norm_1.") :]
             if sub.startswith("layer_norm_2."):
@@ -486,7 +503,17 @@ class Model(nn.Module):
         b64 = tok.get("model_base64")
         if not b64:
             return None
-        return base64.b64decode(b64)
+        try:
+            return base64.b64decode(b64)
+        except ValueError as exc:
+            import warnings
+            warnings.warn(
+                f"Failed to decode tokenizer.model_base64 from {config_path}: {exc}. "
+                "Tokenizer will not be loaded from config.json.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return None
 
     @classmethod
     def from_pretrained(cls, path_or_repo: str, *, dtype: mx.Dtype = mx.bfloat16):

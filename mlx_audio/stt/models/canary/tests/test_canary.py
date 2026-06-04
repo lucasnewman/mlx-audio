@@ -440,7 +440,7 @@ class TestFixedPositionalEncoding(unittest.TestCase):
     def test_table_is_sinusoidal_not_zeros(self):
         d_model, max_len = 32, 16
         pe = FixedPositionalEncoding(d_model, max_len=max_len)
-        table = pe.pos_enc
+        table = pe._pos_enc
         mx.eval(table)
         self.assertEqual(table.shape, (max_len, d_model))
         self.assertGreater(float(mx.max(mx.abs(table))), 0.0)
@@ -450,6 +450,15 @@ class TestFixedPositionalEncoding(unittest.TestCase):
         mx.eval(row0)
         self.assertAlmostEqual(float(row0[0]), 0.0, places=5)
         self.assertAlmostEqual(float(row0[1]), 1.0 / math.sqrt(d_model), places=5)
+
+    def test_pos_enc_not_a_module_parameter(self):
+        pe = FixedPositionalEncoding(32, max_len=16)
+        params = pe.parameters()
+        # _pos_enc must NOT appear in parameters() so it is never serialized
+        # or treated as a trainable weight.
+        flat = dict(pe.parameters())
+        self.assertNotIn("_pos_enc", flat)
+        self.assertNotIn("pos_enc", flat)
 
     def test_lookup_shape(self):
         pe = FixedPositionalEncoding(32, max_len=16)
@@ -514,6 +523,53 @@ class TestEmbeddedTokenizer(unittest.TestCase):
             model = Model(_small_model_config())
             model = Model.post_load_hook(model, Path(d))
             self.assertIsNone(model._tokenizer)
+
+    def test_malformed_base64_returns_none_with_warning(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)
+            with open(path / "config.json", "w") as f:
+                json.dump({"tokenizer": {"model_base64": "not-valid-base64!!!"}}, f)
+            import warnings
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = Model._load_embedded_tokenizer_proto(path)
+            self.assertIsNone(result)
+            self.assertEqual(len(w), 1)
+            self.assertIn("RuntimeWarning", str(w[0].category))
+
+    def test_tokens_path_only_tokenizer_raises_on_decode(self):
+        tok = CanaryTokenizer.__new__(CanaryTokenizer)
+        tok.token2id = {}
+        tok.id2token = {}
+        with self.assertRaises(RuntimeError):
+            tok.decode([1, 2, 3])
+        with self.assertRaises(RuntimeError):
+            tok.encode("hello")
+
+
+class TestSanitizeAlreadySanitized(unittest.TestCase):
+    """Weights already in internal MLX format (e.g. from a re-saved checkpoint)
+    must pass through sanitize() unchanged — no key remapping, no conv transpose."""
+
+    def setUp(self):
+        self.model = Model(_small_model_config())
+
+    def test_already_sanitized_passthrough(self):
+        weights = {
+            "decoder.blocks.0.self_attn.q_proj.weight": mx.zeros((32, 32)),
+            "encoder.conformer.pre_encode.conv.0.weight": mx.zeros((256, 3, 3, 1)),
+            "decoder.output_proj.weight": mx.zeros((64, 32)),
+        }
+        sanitized = self.model.sanitize(weights)
+        # Keys must be unchanged.
+        self.assertIn("decoder.blocks.0.self_attn.q_proj.weight", sanitized)
+        self.assertIn("encoder.conformer.pre_encode.conv.0.weight", sanitized)
+        self.assertIn("decoder.output_proj.weight", sanitized)
+        # Conv weight must NOT be transposed (already in MLX layout).
+        self.assertEqual(
+            sanitized["encoder.conformer.pre_encode.conv.0.weight"].shape,
+            (256, 3, 3, 1),
+        )
 
 
 class TestModel(unittest.TestCase):

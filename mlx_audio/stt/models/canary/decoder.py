@@ -165,11 +165,11 @@ class FixedPositionalEncoding(nn.Module):
         pos_enc = mx.stack([mx.sin(angles), mx.cos(angles)], axis=2).reshape(
             max_len, d_model
         )
-        self.pos_enc = pos_enc / math.sqrt(d_model)
+        self._pos_enc = pos_enc / math.sqrt(d_model)
 
     def __call__(self, position_ids: mx.array) -> mx.array:
         """Get position embeddings for the given position IDs."""
-        return self.pos_enc[position_ids]
+        return self._pos_enc[position_ids]
 
 
 class CanaryDecoder(nn.Module):

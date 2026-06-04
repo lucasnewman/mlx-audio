@@ -71,10 +71,20 @@ class CanaryTokenizer:
 
     def encode(self, text: str) -> List[int]:
         """Encode text to token IDs."""
+        if not hasattr(self, "sp"):
+            raise RuntimeError(
+                "encode() requires a SentencePiece model; this tokenizer was "
+                "initialized from tokens.txt only and does not support text encoding."
+            )
         return self.sp.encode(text)
 
     def decode(self, ids: List[int]) -> str:
         """Decode token IDs to text."""
+        if not hasattr(self, "sp"):
+            raise RuntimeError(
+                "decode() requires a SentencePiece model; this tokenizer was "
+                "initialized from tokens.txt only and does not support text decoding."
+            )
         return self.sp.decode(ids)
 
     def get_special_token_id(self, token: str) -> Optional[int]:
