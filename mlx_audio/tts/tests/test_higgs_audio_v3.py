@@ -19,8 +19,8 @@ from mlx_audio.tts.models.higgs_audio_v3.prompt import (
     HiggsAudioV3PromptBuilder,
     ReferenceCodes,
 )
-from mlx_audio.utils import get_model_name_parts
 from mlx_audio.tts.utils import get_model_and_args
+from mlx_audio.utils import get_model_name_parts
 
 
 def _tiny_config() -> HiggsAudioV3Config:
