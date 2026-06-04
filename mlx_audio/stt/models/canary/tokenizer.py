@@ -31,7 +31,10 @@ class CanaryTokenizer:
             self.sp = spm.SentencePieceProcessor(model_proto=model_proto)
         else:
             if model_path is None:
-                raise ValueError("Either model_path or model_proto must be provided")
+                raise ValueError(
+                    "Either model_path or model_proto must be provided. "
+                    "tokens_path only overrides token ID mapping and requires a SentencePiece model source."
+                )
             self.sp = spm.SentencePieceProcessor()
             self.sp.load(model_path)
 

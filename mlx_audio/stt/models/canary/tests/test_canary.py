@@ -432,6 +432,32 @@ class TestModelSanitizeMLXNative(unittest.TestCase):
         self.assertIn("decoder.blocks.0.self_attn.q_proj.scales", sanitized)
         self.assertIn("decoder.blocks.0.self_attn.q_proj.biases", sanitized)
 
+    def test_third_sub_layer_unknown_key_warns(self):
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sanitized = self._sanitize(
+                {"transf_decoder.layers.0.third_sub_layer.unknown_key.weight": mx.zeros((32, 32))}
+            )
+        self.assertEqual(len(w), 1)
+        self.assertIn("RuntimeWarning", str(w[0].category))
+        self.assertIn("third_sub_layer", str(w[0].message))
+        # Key passes through with bare suffix, not prefixed with ff_
+        self.assertIn("decoder.blocks.0.unknown_key.weight", sanitized)
+
+    def test_unknown_sub_layer_prefix_warns(self):
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sanitized = self._sanitize(
+                {"transf_decoder.layers.0.future_sublayer.weight": mx.zeros((32, 32))}
+            )
+        self.assertEqual(len(w), 1)
+        self.assertIn("RuntimeWarning", str(w[0].category))
+        self.assertIn("future_sublayer", str(w[0].message))
+        # Key passes through unchanged
+        self.assertIn("decoder.blocks.0.future_sublayer.weight", sanitized)
+
 
 class TestFixedPositionalEncoding(unittest.TestCase):
     """The positional encoding is a computed sinusoidal table (NeMo divides it by
@@ -521,8 +547,28 @@ class TestEmbeddedTokenizer(unittest.TestCase):
     def test_post_load_hook_no_tokenizer_when_absent(self):
         with tempfile.TemporaryDirectory() as d:
             model = Model(_small_model_config())
-            model = Model.post_load_hook(model, Path(d))
+            import warnings
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                model = Model.post_load_hook(model, Path(d))
             self.assertIsNone(model._tokenizer)
+            self.assertEqual(len(w), 1)
+            self.assertIn("RuntimeWarning", str(w[0].category))
+            self.assertIn("No tokenizer found", str(w[0].message))
+
+    def test_post_load_hook_warns_when_config_has_no_tokenizer_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)
+            with open(path / "config.json", "w") as f:
+                json.dump({"model_type": "canary"}, f)
+            model = Model(_small_model_config())
+            import warnings
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                model = Model.post_load_hook(model, path)
+            self.assertIsNone(model._tokenizer)
+            self.assertEqual(len(w), 1)
+            self.assertIn("No tokenizer found", str(w[0].message))
 
     def test_malformed_base64_returns_none_with_warning(self):
         with tempfile.TemporaryDirectory() as d:

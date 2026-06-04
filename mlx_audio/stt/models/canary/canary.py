@@ -321,6 +321,13 @@ class Model(nn.Module):
                     inner = "ff1." + inner[len("linear1."):]
                 elif inner.startswith("linear2."):
                     inner = "ff2." + inner[len("linear2."):]
+                else:
+                    warnings.warn(
+                        f"Unrecognized third_sub_layer key {inner!r}; passing through unchanged. "
+                        "The resulting weight key may not match any model parameter.",
+                        RuntimeWarning,
+                        stacklevel=4,
+                    )
                 return inner
             if sub.startswith("layer_norm_1."):
                 return "self_attn_norm." + sub[len("layer_norm_1.") :]
@@ -328,6 +335,12 @@ class Model(nn.Module):
                 return "cross_attn_norm." + sub[len("layer_norm_2.") :]
             if sub.startswith("layer_norm_3."):
                 return "ff_norm." + sub[len("layer_norm_3.") :]
+            warnings.warn(
+                f"Unrecognized sub-layer key {sub!r} in MLX-native checkpoint; "
+                "passing through unchanged. The resulting weight key may not match any model parameter.",
+                RuntimeWarning,
+                stacklevel=4,
+            )
             return sub
 
         sanitized = {}
@@ -486,6 +499,14 @@ class Model(nn.Module):
             proto = cls._load_embedded_tokenizer_proto(model_path)
             if proto is not None:
                 model._tokenizer = CanaryTokenizer(model_proto=proto)
+            else:
+                warnings.warn(
+                    f"No tokenizer found for model at '{model_path}'. "
+                    "Looked for tokenizer.model, tokens.txt, and tokenizer.model_base64 in config.json. "
+                    "Calls to generate() will raise RuntimeError.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         return model
 
