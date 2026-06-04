@@ -13,7 +13,7 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 | [**OmniVoice**](omnivoice.md) | 0.6B backbone + HiggsAudio tokenizer | 646+ languages | Yes | -- | Zero-shot multilingual cloning, nonverbal tags, CMU + pinyin controls |
 | [**Voxtral TTS**](voxtral-tts.md) | 4B | EN, FR, ES, DE, IT, PT, NL, AR, HI | -- | Yes | 20 voice presets, 9 languages, chunked streaming output |
 | [**Svara TTS**](svara.md) | 3B | 19 Indian langs (HI, BN, TA, TE, KN, ML, MR, GU, PA, OR, AS, BH, MAG, MAI, HNE, BRX, DOI, NE, SA, EN-IN) | -- | Yes | Orpheus-family, SNAC 24 kHz, 38 voices, 4-bit/8-bit MLX quants |
-| [**CSM**](csm.md) | 1B | EN | Yes | Yes | Conversational speech, voice cloning, multi-turn context |
+| [**CSM / MisoTTS**](csm.md) | 1B / 8B | EN | Yes | Yes | Sesame-style conversational speech, voice cloning, multi-turn context |
 | [**Dia**](dia.md) | 1.6B | EN | -- | -- | Dialogue with `[S1]`/`[S2]` speaker tags |
 | [**Chatterbox**](chatterbox.md) | -- | EN + 15 languages | Yes | -- | Expressive, emotion exaggeration control |
 | [KugelAudio](kugelaudio.md) | 7B | 24 European languages | -- | -- | VibeVoice-based multilingual TTS with diffusion decoding |
