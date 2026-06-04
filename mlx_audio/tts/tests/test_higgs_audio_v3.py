@@ -19,6 +19,7 @@ from mlx_audio.tts.models.higgs_audio_v3.prompt import (
     HiggsAudioV3PromptBuilder,
     ReferenceCodes,
 )
+from mlx_audio.utils import get_model_name_parts
 from mlx_audio.tts.utils import get_model_and_args
 
 
@@ -98,9 +99,10 @@ class TestHiggsAudioV3Config(unittest.TestCase):
         self.assertEqual(cfg.audio_eoc_token_id, 1025)
 
     def test_loader_remapping(self):
+        model_name = get_model_name_parts("bosonai/higgs-audio-v3-tts-4b")
         arch, model_type = get_model_and_args(
             "higgs_multimodal_qwen3",
-            ["bosonai", "higgs-audio-v3-tts-4b"],
+            model_name,
         )
         self.assertEqual(model_type, "higgs_audio_v3")
         self.assertTrue(hasattr(arch, "Model"))
