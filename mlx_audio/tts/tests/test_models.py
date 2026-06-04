@@ -4173,9 +4173,10 @@ class TestIrodoriDiTShapes(unittest.TestCase):
         t_state, t_mask, s_state, s_mask = self.model.encode_conditions(
             text_ids, text_mask, ref_latent, ref_mask
         )
-        kv_text, kv_speaker = self.model.build_kv_cache(t_state, s_state)
+        kv_text, kv_speaker, kv_caption = self.model.build_kv_cache(t_state, s_state)
         self.assertEqual(len(kv_text), self.cfg.num_layers)
         self.assertEqual(len(kv_speaker), self.cfg.num_layers)
+        self.assertIsNone(kv_caption)
 
         x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
         t = mx.array([0.3], dtype=mx.float32)
@@ -4729,6 +4730,234 @@ class TestIrodoriSwaySampling(unittest.TestCase):
         )
         mx.eval(out)
         self.assertEqual(tuple(out.shape), (1, 4, cfg.patched_latent_dim))
+
+
+# ---------------------------------------------------------------------------
+# Irodori-TTS v3 VoiceDesign helpers (dual speaker + caption)
+# ---------------------------------------------------------------------------
+
+
+def _small_irodori_dit_config_v3_voicedesign(**overrides):
+    from mlx_audio.tts.models.irodori_tts.config import IrodoriDiTConfig
+
+    defaults = dict(
+        latent_dim=8,
+        latent_patch_size=1,
+        model_dim=32,
+        num_layers=2,
+        num_heads=4,
+        mlp_ratio=2.0,
+        text_mlp_ratio=2.0,
+        speaker_mlp_ratio=2.0,
+        text_vocab_size=64,
+        text_dim=32,
+        text_layers=1,
+        text_heads=4,
+        speaker_dim=32,
+        speaker_layers=1,
+        speaker_heads=4,
+        speaker_patch_size=1,
+        timestep_embed_dim=16,
+        adaln_rank=8,
+        norm_eps=1e-5,
+        use_duration_predictor=True,
+        use_caption_condition=True,
+        use_speaker_condition=True,
+        caption_vocab_size=64,
+        caption_dim=32,
+        caption_layers=1,
+        caption_heads=4,
+        caption_mlp_ratio=2.0,
+        duration_aux_dim=14,
+        duration_hidden_dim=16,
+        duration_layers=1,
+        duration_dropout=0.0,
+        duration_attention_heads=4,
+        duration_architecture="token_sum_dual_adarn_zero_no_aux",
+        duration_token_init_frames=9.0,
+        duration_speaker_fusion="adarn_zero",
+        duration_caption_fusion="adarn_zero",
+        duration_caption_pooling="masked_mean",
+    )
+    defaults.update(overrides)
+    return IrodoriDiTConfig(**defaults)
+
+
+def _small_irodori_model_config_v3_voicedesign(**sampler_overrides):
+    from mlx_audio.tts.models.irodori_tts.config import ModelConfig, SamplerConfig
+
+    sampler_defaults = dict(
+        num_steps=1,
+        cfg_scale_text=1.0,
+        cfg_scale_speaker=1.0,
+        cfg_scale_caption=1.0,
+        sequence_length=4,
+        t_schedule_mode="sway",
+        sway_coeff=-1.0,
+    )
+    sampler_defaults.update(sampler_overrides)
+    return ModelConfig(
+        dit=_small_irodori_dit_config_v3_voicedesign(),
+        sampler=SamplerConfig(**sampler_defaults),
+    )
+
+
+class TestIrodoriV3VoiceDesignShapes(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        self.cfg = _small_irodori_dit_config_v3_voicedesign()
+        self.model = IrodoriDiT(self.cfg)
+
+    def test_both_encoders_present(self):
+        self.assertTrue(hasattr(self.model, "speaker_encoder"))
+        self.assertTrue(hasattr(self.model, "caption_encoder"))
+
+    def test_duration_predictor_present(self):
+        self.assertIsNotNone(self.model.duration_predictor)
+        self.assertEqual(
+            self.model.duration_predictor.duration_architecture,
+            "token_sum_dual_adarn_zero_no_aux",
+        )
+
+    def test_encode_conditions_full_returns_six(self):
+        B = 1
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.random.normal((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 5), dtype=mx.int32)
+        cap_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        result = self.model.encode_conditions_full(
+            text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+        )
+        self.assertEqual(len(result), 6)
+        text_state, _, spk_state, _, cap_state, _ = result
+        self.assertIsNotNone(spk_state)
+        self.assertIsNotNone(cap_state)
+        mx.eval(text_state, spk_state, cap_state)
+        self.assertEqual(tuple(text_state.shape), (B, 5, self.cfg.text_dim))
+        self.assertEqual(tuple(spk_state.shape[:2]), (B, 8))
+        self.assertEqual(tuple(cap_state.shape), (B, 5, self.cfg.caption_dim_resolved))
+
+    def test_build_kv_cache_dual(self):
+        B = 1
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.zeros((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 5), dtype=mx.int32)
+        cap_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        _, _, spk_state, _, cap_state, _ = self.model.encode_conditions_full(
+            text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+        )
+        text_state = self.model.text_norm(self.model.text_encoder(text_ids, text_mask))
+        kv_text, kv_spk, kv_cap = self.model.build_kv_cache(
+            text_state, spk_state, cap_state
+        )
+        self.assertEqual(len(kv_text), self.cfg.num_layers)
+        self.assertIsNotNone(kv_spk)
+        self.assertIsNotNone(kv_cap)
+        self.assertEqual(len(kv_spk), self.cfg.num_layers)
+        self.assertEqual(len(kv_cap), self.cfg.num_layers)
+
+    def test_predict_duration_dual(self):
+        from mlx_audio.tts.models.irodori_tts.duration import build_duration_features
+
+        B = 1
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.random.normal((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 5), dtype=mx.int32)
+        cap_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        text_state, text_mask_out, spk_state, spk_mask, cap_state, cap_mask_out = (
+            self.model.encode_conditions_full(
+                text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+            )
+        )
+        dur_feats = build_duration_features(
+            ["テスト"], token_counts=[5], max_text_len=256, has_speaker=[True]
+        )
+        log_frames = self.model.predict_duration_log_frames(
+            text_state=text_state,
+            text_mask=text_mask_out,
+            speaker_state=spk_state,
+            speaker_mask=spk_mask,
+            duration_features=dur_feats,
+            has_speaker=mx.array([True], dtype=mx.bool_),
+            caption_state=cap_state,
+            caption_mask=cap_mask_out,
+            has_caption=mx.array([True], dtype=mx.bool_),
+        )
+        mx.eval(log_frames)
+        self.assertEqual(tuple(log_frames.shape), (B,))
+        self.assertGreaterEqual(float(log_frames[0]), 0.0)
+
+    def test_forward_with_conditions_dual(self):
+        B, S = 1, 4
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.zeros((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 5), dtype=mx.int32)
+        cap_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        text_state, t_mask, spk_state, spk_mask, cap_state, c_mask = (
+            self.model.encode_conditions_full(
+                text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+            )
+        )
+        x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
+        t = mx.array([0.5], dtype=mx.float32)
+        out = self.model.forward_with_conditions(
+            x_t,
+            t,
+            text_state,
+            t_mask,
+            spk_state,
+            spk_mask,
+            caption_state=cap_state,
+            caption_mask=c_mask,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
+
+
+class TestIrodoriV3VoiceDesignGenerate(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_v3_voicedesign()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        model._caption_tokenizer = _MockTokenizer()
+        return model
+
+    def test_generate_dual_caption_and_ref(self):
+        model = self._make_model()
+        cfg = model.config
+        ref = mx.zeros((1, cfg.audio_downsample_factor * 4), dtype=mx.float32)
+        results = list(
+            model.generate(
+                "こんにちは", ref_audio=ref, caption="穏やかな声", rng_seed=0
+            )
+        )
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_duration_predictor_used(self):
+        model = self._make_model()
+        results = list(model.generate("テスト", caption="低い声", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
 
 
 class TestKugelAudioModel(unittest.TestCase):
