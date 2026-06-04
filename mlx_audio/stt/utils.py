@@ -25,8 +25,6 @@ MODEL_REMAPPING = {
     "granite_speech_nar": "granite_speech_nar",
     "qwen2_audio": "qwen2_audio",
     "mega_asr": "mega_asr",
-    "nemotron": "nemotron_asr",
-    "nemotron_asr": "nemotron_asr",
 }
 
 

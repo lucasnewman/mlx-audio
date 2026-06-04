@@ -270,7 +270,10 @@ def main() -> None:
         "--dtype", default="bfloat16", choices=["float32", "float16", "bfloat16"]
     )
     parser.add_argument(
-        "-q", "--quantize", action="store_true", help="Quantize Linear/Embedding weights"
+        "-q",
+        "--quantize",
+        action="store_true",
+        help="Quantize Linear/Embedding weights",
     )
     parser.add_argument("--q-bits", type=int, default=4, help="Quantization bits")
     parser.add_argument(
