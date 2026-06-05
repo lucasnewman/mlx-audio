@@ -14,7 +14,7 @@ from typing import Optional, Union
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_audio.stt.models.parakeet.alignment import (
+from mlx_audio.stt.models.nemo.alignment import (
     AlignedResult,
     AlignedToken,
     sentences_to_result,
