@@ -209,3 +209,80 @@ class Model(nn.Module):
         if verbose:
             print(result.text)
         return result
+
+    # ---------------------------------------------------------- stream_generate
+    def stream_generate(
+        self,
+        audio: Union[str, Path, mx.array],
+        *,
+        language: Optional[str] = None,
+        chunk_frames: Optional[int] = None,
+        dtype: mx.Dtype = mx.float32,
+        **kwargs,
+    ):
+        """Cache-aware streaming transcription.
+
+        Yields a cumulative ``AlignedResult`` per chunk as audio is processed, using
+        per-layer attention/conv caches and incremental subsampling (O(n), no
+        recompute). Token-identical to :meth:`generate` at the native chunk size.
+        """
+        from .streaming import stream_encode
+
+        if isinstance(audio, (str, Path)):
+            audio_data = load_audio(
+                audio, self.preprocessor_config.sample_rate, dtype=dtype
+            )
+        else:
+            audio_data = audio.astype(dtype) if audio.dtype != dtype else audio
+        mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
+
+        frame_sec = (
+            self.encoder_config.subsampling_factor
+            * self.preprocessor_config.hop_length
+            / self.preprocessor_config.sample_rate
+        )
+        last_token = self.blank_id
+        decoder_hidden = None
+        hypothesis: list[AlignedToken] = []
+        global_time = 0
+
+        for prompted in stream_encode(
+            self, mel, language or self.default_language, chunk_frames
+        ):
+            chunk_len = prompted.shape[1]
+            time = 0
+            new_symbols = 0
+            while time < chunk_len:
+                feature = prompted[:, time : time + 1]
+                current_token = (
+                    mx.array([[last_token]], dtype=mx.int32)
+                    if last_token != self.blank_id
+                    else None
+                )
+                decoder_output, (h, c) = self.decoder(current_token, decoder_hidden)
+                decoder_output = decoder_output.astype(feature.dtype)
+                proposed_hidden = (h.astype(feature.dtype), c.astype(feature.dtype))
+                joint_output = self.joint(feature, decoder_output)
+                pred_token = int(mx.argmax(joint_output))
+                if pred_token != self.blank_id:
+                    last_token = pred_token
+                    decoder_hidden = proposed_hidden
+                    if not tok.is_special_token(last_token, self.vocabulary):
+                        hypothesis.append(
+                            AlignedToken(
+                                last_token,
+                                start=(global_time + time) * frame_sec,
+                                duration=frame_sec,
+                                text=tok.decode([last_token], self.vocabulary),
+                            )
+                        )
+                    new_symbols += 1
+                    if self.max_symbols is not None and new_symbols >= self.max_symbols:
+                        time += 1
+                        new_symbols = 0
+                else:
+                    time += 1
+                    new_symbols = 0
+            global_time += chunk_len
+            yield sentences_to_result(tokens_to_sentences(hypothesis))
+        mx.clear_cache()

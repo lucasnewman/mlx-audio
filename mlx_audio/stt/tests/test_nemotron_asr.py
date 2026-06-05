@@ -117,6 +117,37 @@ def test_decode_runs_and_is_clean():
     assert "<" not in result.text
 
 
+def _total_tokens(result) -> int:
+    return sum(len(sentence.tokens) for sentence in result.sentences)
+
+
+def test_stream_generate_runs_and_is_clean():
+    model = _build_tiny()
+    sr = model.preprocessor_config.sample_rate
+    # ~2.5s of fake waveform -> several native chunks.
+    audio = mx.array((np.random.randn(int(2.5 * sr)) * 0.1).astype(np.float32))
+
+    results = list(model.stream_generate(audio, language="auto"))
+    assert len(results) >= 1
+    # cumulative: the hypothesis only grows, so token count never decreases.
+    counts = [_total_tokens(r) for r in results]
+    assert counts == sorted(counts)
+    # special tokens (e.g. <en-US>, <unk>) never leak into any chunk's text.
+    assert all("<" not in r.text for r in results)
+
+
+def test_stream_matches_offline():
+    # Cache-aware streaming is frame-identical to the offline chunked_limited
+    # encoder at the native chunk size, so the greedy decode must be identical.
+    model = _build_tiny()
+    sr = model.preprocessor_config.sample_rate
+    audio = mx.array((np.random.randn(int(2.5 * sr)) * 0.1).astype(np.float32))
+
+    offline = model.generate(audio, language="auto")
+    streamed = list(model.stream_generate(audio, language="auto"))[-1]
+    assert streamed.text == offline.text
+
+
 def test_tokenizer_decode_and_lang_tags():
     vocab = ["<unk>", "<en-US>", "▁hello", "▁world", "!", "<"]
     assert tok.is_lang_tag("<en-US>") and not tok.is_lang_tag("<")

@@ -77,6 +77,29 @@ class RelPositionMultiHeadAttention(nn.Module):
         o = o.transpose(0, 2, 1, 3).reshape(batch, seq, self.n_feat)
         return self.linear_out(o)
 
+    def stream(self, q_in: mx.array, kv_in: mx.array, pos_emb: mx.array) -> mx.array:
+        """Cache-aware step: q_in (B,c,d) attends to kv_in (B,L,d), no mask (the
+        L-window IS the allowed context). pos_emb is for length L (2L-1)."""
+        q = self.linear_q(q_in)
+        k = self.linear_k(kv_in)
+        v = self.linear_v(kv_in)
+        p = self.linear_pos(pos_emb)
+        batch, c, _ = q.shape
+        ksz = kv_in.shape[1]
+        pos_len = p.shape[1]
+        q = q.reshape(batch, c, self.n_head, self.head_dim)
+        q_u = (q + self.pos_bias_u).transpose(0, 2, 1, 3)
+        q_v = (q + self.pos_bias_v).transpose(0, 2, 1, 3)
+        k = k.reshape(batch, ksz, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
+        v = v.reshape(batch, ksz, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
+        p = p.reshape(1, pos_len, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
+        matrix_bd = mx.matmul(q_v, p.swapaxes(-2, -1))
+        matrix_bd = self.rel_shift(matrix_bd)[:, :, :, :ksz] * self.scale
+        o = mx.fast.scaled_dot_product_attention(
+            q_u, k, v, scale=self.scale, mask=matrix_bd
+        )
+        return self.linear_out(o.transpose(0, 2, 1, 3).reshape(batch, c, -1))
+
 
 class RelPositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 5000, scale_input: bool = False):
@@ -112,3 +135,15 @@ class RelPositionalEncoding(nn.Module):
         end_idx = buffer_len // 2 + (input_len - 1) + 1
         pos_emb = self._pe[:, start_idx:end_idx].astype(x.dtype)
         return x, pos_emb
+
+    def pos_emb_for(self, length: int, dtype: mx.Dtype = mx.float32) -> mx.array:
+        """Positional embedding for a window of ``length`` frames (2*length-1).
+
+        Used by cache-aware streaming where queries (the new chunk) attend to a
+        longer key window (cache + chunk).
+        """
+        if length > self.max_len:
+            self.max_len = length + 1
+            self.calculate_pe()
+        center = self._pe.shape[1] // 2
+        return self._pe[:, center - (length - 1) : center + length].astype(dtype)
