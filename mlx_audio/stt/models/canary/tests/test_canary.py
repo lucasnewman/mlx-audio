@@ -346,7 +346,9 @@ class TestModelSanitizeMLXNative(unittest.TestCase):
 
     def test_detected_via_decoder_layers(self):
         weights = {
-            "transf_decoder.layers.0.first_sub_layer.linear_q.weight": mx.zeros((32, 32))
+            "transf_decoder.layers.0.first_sub_layer.linear_q.weight": mx.zeros(
+                (32, 32)
+            )
         }
         sanitized = self.model.sanitize(weights)
         self.assertIn("decoder.blocks.0.self_attn.q_proj.weight", sanitized)
@@ -434,10 +436,15 @@ class TestModelSanitizeMLXNative(unittest.TestCase):
 
     def test_third_sub_layer_unknown_key_warns(self):
         import warnings
+
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             sanitized = self._sanitize(
-                {"transf_decoder.layers.0.third_sub_layer.unknown_key.weight": mx.zeros((32, 32))}
+                {
+                    "transf_decoder.layers.0.third_sub_layer.unknown_key.weight": mx.zeros(
+                        (32, 32)
+                    )
+                }
             )
         self.assertEqual(len(w), 1)
         self.assertIn("RuntimeWarning", str(w[0].category))
@@ -447,6 +454,7 @@ class TestModelSanitizeMLXNative(unittest.TestCase):
 
     def test_unknown_sub_layer_prefix_warns(self):
         import warnings
+
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             sanitized = self._sanitize(
@@ -542,12 +550,15 @@ class TestEmbeddedTokenizer(unittest.TestCase):
             model = Model(_small_model_config())
             model = Model.post_load_hook(model, path)
             self.assertIsNotNone(model._tokenizer)
-            self.assertEqual(model._tokenizer.decode(model._tokenizer.encode("text")), "text")
+            self.assertEqual(
+                model._tokenizer.decode(model._tokenizer.encode("text")), "text"
+            )
 
     def test_post_load_hook_no_tokenizer_when_absent(self):
         with tempfile.TemporaryDirectory() as d:
             model = Model(_small_model_config())
             import warnings
+
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
                 model = Model.post_load_hook(model, Path(d))
@@ -563,6 +574,7 @@ class TestEmbeddedTokenizer(unittest.TestCase):
                 json.dump({"model_type": "canary"}, f)
             model = Model(_small_model_config())
             import warnings
+
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
                 model = Model.post_load_hook(model, path)
@@ -576,6 +588,7 @@ class TestEmbeddedTokenizer(unittest.TestCase):
             with open(path / "config.json", "w") as f:
                 json.dump({"tokenizer": {"model_base64": "not-valid-base64!!!"}}, f)
             import warnings
+
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
                 result = Model._load_embedded_tokenizer_proto(path)

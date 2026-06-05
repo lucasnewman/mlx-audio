@@ -278,9 +278,7 @@ class Model(nn.Module):
           and flattened names (``transf_decoder.layers.N.first_sub_layer.linear_q``,
           ``head.classifier``). These must *not* be transposed again.
         """
-        is_already_sanitized = any(
-            k.startswith("decoder.blocks.") for k in weights
-        )
+        is_already_sanitized = any(k.startswith("decoder.blocks.") for k in weights)
         if is_already_sanitized:
             return dict(weights)
 
@@ -305,22 +303,22 @@ class Model(nn.Module):
                 inner = sub[len("first_sub_layer.") :]
                 for a, b in attn:
                     if inner.startswith(a):
-                        inner = b + inner[len(a):]
+                        inner = b + inner[len(a) :]
                         break
                 return "self_attn." + inner
             if sub.startswith("second_sub_layer."):
                 inner = sub[len("second_sub_layer.") :]
                 for a, b in attn:
                     if inner.startswith(a):
-                        inner = b + inner[len(a):]
+                        inner = b + inner[len(a) :]
                         break
                 return "cross_attn." + inner
             if sub.startswith("third_sub_layer."):
                 inner = sub[len("third_sub_layer.") :]
                 if inner.startswith("linear1."):
-                    inner = "ff1." + inner[len("linear1."):]
+                    inner = "ff1." + inner[len("linear1.") :]
                 elif inner.startswith("linear2."):
-                    inner = "ff2." + inner[len("linear2."):]
+                    inner = "ff2." + inner[len("linear2.") :]
                 else:
                     warnings.warn(
                         f"Unrecognized third_sub_layer key {inner!r}; passing through unchanged. "
@@ -348,14 +346,19 @@ class Model(nn.Module):
             if key.startswith("encoder."):
                 new_key = "encoder.conformer." + key[len("encoder.") :]
             elif key.startswith("transf_decoder.token_embedding."):
-                new_key = "decoder.embedding." + key[len("transf_decoder.token_embedding.") :]
+                new_key = (
+                    "decoder.embedding." + key[len("transf_decoder.token_embedding.") :]
+                )
             elif key.startswith("transf_decoder.embedding_layer_norm."):
                 new_key = (
                     "decoder.embedding_layer_norm."
                     + key[len("transf_decoder.embedding_layer_norm.") :]
                 )
             elif key.startswith("transf_decoder.final_layer_norm."):
-                new_key = "decoder.final_norm." + key[len("transf_decoder.final_layer_norm.") :]
+                new_key = (
+                    "decoder.final_norm."
+                    + key[len("transf_decoder.final_layer_norm.") :]
+                )
             elif key.startswith("transf_decoder.layers."):
                 rest = key[len("transf_decoder.layers.") :]
                 layer_idx, sub_rest = rest.split(".", 1)
@@ -528,6 +531,7 @@ class Model(nn.Module):
             return base64.b64decode(b64)
         except ValueError as exc:
             import warnings
+
             warnings.warn(
                 f"Failed to decode tokenizer.model_base64 from {config_path}: {exc}. "
                 "Tokenizer will not be loaded from config.json.",
