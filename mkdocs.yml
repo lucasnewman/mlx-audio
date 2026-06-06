@@ -94,6 +94,7 @@ nav:
       - Whisper: models/stt/whisper.md
       - Parakeet: models/stt/parakeet.md
       - Voxtral Realtime: models/stt/voxtral-realtime.md
+      - Fun-ASR-Nano: models/stt/fun-asr-nano.md
       - Qwen2-Audio: models/stt/qwen2-audio.md
     - Speech-to-Speech: models/sts/index.md
     - Voice Activity Detection: models/vad/index.md

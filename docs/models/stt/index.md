@@ -14,6 +14,7 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 | **Distil-Whisper** | HuggingFace | Various | EN | -- | Segment | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | [**Parakeet**](parakeet.md) | NVIDIA | 0.6B | EN (v2), 25 EU (v3) | Yes | Sentence + Word | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
 | [**Voxtral Realtime**](voxtral-realtime.md) | Mistral | 4B | Multiple | Yes | -- | [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
+| [**Fun-ASR-Nano**](fun-asr-nano.md) | FunAudioLLM | 0.8B | ZH, EN, JA | -- | -- | [mlx-community/Fun-ASR-Nano-2512](https://huggingface.co/mlx-community/Fun-ASR-Nano-2512) |
 | **Qwen3-ASR** | Alibaba | 0.6B / 1.7B | ZH, EN, JA, KO + more | Yes | Segment | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
 | **Qwen3-ForcedAligner** | Alibaba | 0.6B | ZH, EN, JA, KO + more | -- | Word-level | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **VibeVoice-ASR** | Microsoft | 9B | Multiple | Yes | Segment | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
