@@ -546,6 +546,13 @@ def resample_audio(
 ):
     """Resample audio with polyphase filtering.
 
+    Uses a Kaiser-windowed sinc anti-aliasing filter equivalent to ``librosa``'s
+    ``kaiser_best`` (resampy parameters) instead of ``resample_poly``'s default
+    Kaiser(5.0). The default filter has a wide transition band that leaves
+    significant energy near the new Nyquist; the sharper filter band-limits
+    cleanly so resampled audio matches the librosa-equivalent featurizers that
+    ASR reference pipelines (e.g. NeMo) assume. See issue #24.
+
     Args:
         audio: Audio array as numpy or MLX.
         orig_sample_rate: Original sample rate.
@@ -567,11 +574,23 @@ def resample_audio(
     gcd = math.gcd(int(orig_sample_rate), int(sample_rate))
     up = sample_rate // gcd
     down = orig_sample_rate // gcd
+
+    # kaiser_best-equivalent anti-aliasing FIR (resampy defaults): a long,
+    # high-attenuation Kaiser sinc designed at the upsampled rate. Cutoff is at
+    # ``rolloff / max(up, down)`` of the upsampled Nyquist.
+    max_rate = max(up, down)
+    num_zeros, rolloff, beta = 64, 0.9475937167399596, 14.769656459379492
+    fir = signal.firwin(
+        2 * num_zeros * max_rate + 1,
+        rolloff / max_rate,
+        window=("kaiser", beta),
+    )
     resampled = signal.resample_poly(
         audio_np,
         up,
         down,
         axis=axis,
+        window=fir,
         padtype="edge",
     ).astype(np.float32, copy=False)
 

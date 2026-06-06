@@ -119,8 +119,9 @@ for result in model.generate(
 | **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16), [8bit](https://huggingface.co/mlx-community/Kokoro-82M-8bit), [6bit](https://huggingface.co/mlx-community/Kokoro-82M-6bit), [4bit](https://huggingface.co/mlx-community/Kokoro-82M-4bit) |
 | **KittenTTS** | Compact KittenTTS 0.8 models for edge-friendly TTS | EN | [nano](https://huggingface.co/mlx-community/kitten-tts-nano-0.8), [micro](https://huggingface.co/mlx-community/kitten-tts-micro-0.8), [mini](https://huggingface.co/mlx-community/kitten-tts-mini-0.8), [collection](https://huggingface.co/collections/mlx-community/kittentts) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
+| **Higgs Audio v3** | 4B conversational TTS with voice cloning and inline control tokens | 100 languages | [bosonai/higgs-audio-v3-tts-4b](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b) |
 | **OmniVoice** | Zero-shot multilingual TTS with voice cloning, batch generation, and nonverbal tags | 646+ languages | [mlx-community/OmniVoice-bf16](https://huggingface.co/mlx-community/OmniVoice-bf16) |
-| **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
+| **CSM / MisoTTS** | Sesame-style conversational speech models with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b), [MisoTTS bf16](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-bf16), [MisoTTS 8bit](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-8bit) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
 | **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
 | **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
@@ -146,6 +147,7 @@ for result in model.generate(
 | **Mega-ASR** | Routed Qwen3-ASR with automatic clean/base vs degraded/LoRA switching | EN (fixtures), multilingual Qwen3-ASR backbone | [README](mlx_audio/stt/models/mega_asr/README.md) |
 | **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
+| **Nemotron 3.5 ASR (streaming)** | NVIDIA's cache-aware streaming FastConformer-RNNT with language-ID prompting | 40 language-locales | [mlx-community/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
 | **Voxtral Realtime** | Mistral's 4B streaming STT | Multiple | [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
 | **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
