@@ -162,7 +162,6 @@ def sample_frame(
         )
         greedy = mx.argmax(filtered, axis=-1).astype(mx.int32)
         ids = mx.where(valid, sampled, greedy)
-        mx.eval(ids)
 
     return [int(token) for token in ids.tolist()] + [int(state.text_vocab)]
 

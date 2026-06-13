@@ -26,11 +26,7 @@ ModelConfig = Zonos2Config
 
 
 def _rms_norm(x: mx.array, weight: Optional[mx.array], eps: float) -> mx.array:
-    x32 = x.astype(mx.float32)
-    y = x32 * mx.rsqrt(mx.mean(mx.square(x32), axis=-1, keepdims=True) + eps)
-    if weight is not None:
-        y = y * weight
-    return y.astype(x.dtype)
+    return mx.fast.rms_norm(x, weight, eps)
 
 
 class Zonos2RMSNorm(nn.Module):
@@ -256,7 +252,7 @@ class Zonos2MoEFeedForward(nn.Module):
             topk_weights = topk_weights / (
                 topk_weights.sum(axis=-1, keepdims=True) + 1e-8
             )
-        expert_outputs = self.experts(x.astype(mx.float32), topk_ids)
+        expert_outputs = self.experts(x, topk_ids)
         out = (expert_outputs.astype(mx.float32) * topk_weights[..., None]).sum(axis=-2)
         return out.astype(x.dtype), next_router_states
 
