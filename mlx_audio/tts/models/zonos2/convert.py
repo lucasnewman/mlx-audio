@@ -11,6 +11,8 @@ import mlx.core as mx
 from .config import Zonos2Config
 from .speaker_encoder import DEFAULT_SPEAKER_ENCODER_REPO, convert_speaker_encoder
 
+OFFICIAL_MLX_REPO = "mlx-community/Zyphra-ZONOS2"
+
 
 def _load_source_dir(hf_path: str, revision: str | None = None) -> Path:
     path = Path(hf_path).expanduser()
@@ -322,27 +324,127 @@ def _write_readme(
     include_speaker_encoder: bool,
 ) -> None:
     speaker_line = (
-        "- speaker cloning: reference audio and precomputed 2048-D `.npy`/`.npz` embeddings"
+        "- Reference-audio speaker extraction uses the bundled speaker encoder."
         if include_speaker_encoder
-        else "- speaker cloning: precomputed 2048-D `.npy`/`.npz` embeddings; reference-audio extraction downloads the speaker encoder on first use"
+        else "- Reference-audio speaker extraction downloads the speaker encoder on first use."
     )
     text = f"""---
 license: apache-2.0
+base_model:
+- {source}
+library_name: mlx-audio
 tags:
 - mlx
 - text-to-speech
+- voice-cloning
 ---
 
-# ZONOS2 MLX
+# ZONOS2
 
-This is an MLX conversion of [`{source}`](https://huggingface.co/{source}) for
-`mlx-audio`.
+ZONOS2 is Zyphra's autoregressive text-to-speech model with multi-codebook audio
+generation, 44.1 kHz DAC decode, and speaker conditioning from reference audio.
 
-- dtype: `{dtype}`
+**Original model:** [`{source}`](https://huggingface.co/{source})
+
+## Supported Repositories
+
+| Repository | Format | Notes |
+|------------|--------|-------|
+| `{OFFICIAL_MLX_REPO}` | {dtype} | Official MLX conversion for `mlx-audio` |
+
+## Usage
+
+Python API:
+
+```python
+from mlx_audio.audio_io import write as audio_write
+from mlx_audio.tts import load
+
+model = load("{OFFICIAL_MLX_REPO}", lazy=True)
+
+result = next(model.generate(
+    text="Hello, this is ZONOS two running locally with MLX audio.",
+    max_tokens=220,
+))
+
+audio_write("zonos2.wav", result.audio, result.sample_rate)
+```
+
+## Voice Cloning
+
+Pass a short reference clip with `ref_audio`. Clean speech-only clips work best.
+
+```python
+result = next(model.generate(
+    text="This text will be spoken with the reference speaker.",
+    ref_audio="speaker.wav",
+    max_tokens=220,
+))
+```
+
+You can also compute the speaker embedding once and reuse it from the Python
+API:
+
+```python
+speaker = model.extract_speaker_embedding("speaker.wav")
+
+result = next(model.generate(
+    text="This reuses a precomputed speaker embedding.",
+    speaker_embedding=speaker,
+    max_tokens=220,
+))
+```
+
+## CLI
+
+```bash
+python -m mlx_audio.tts.generate \\
+  --model {OFFICIAL_MLX_REPO} \\
+  --text "Hello, this is ZONOS two running with MLX audio." \\
+  --output_path outputs \\
+  --file_prefix zonos2
+```
+
+Voice cloning:
+
+```bash
+python -m mlx_audio.tts.generate \\
+  --model {OFFICIAL_MLX_REPO} \\
+  --text "This text will use the voice from the reference clip." \\
+  --ref_audio speaker.wav \\
+  --output_path outputs \\
+  --file_prefix zonos2_clone
+```
+
+## Generation Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ref_audio` | `None` | Reference audio path or array for voice cloning |
+| `speaker_embedding` | `None` | Precomputed 2048-D speaker embedding, Python API only |
+| `max_tokens` | 1024 | Maximum number of audio token frames |
+| `temperature` | 1.15 | Sampling temperature |
+| `top_k` | 106 | Top-k sampling filter |
+| `top_p` | 0.0 | Nucleus sampling filter, disabled at 0 |
+| `min_p` | 0.18 | Minimum-probability sampling filter |
+| `repetition_penalty` | 1.2 | Repetition penalty applied to recent audio tokens |
+| `seed` | `None` | Seed for deterministic sampling |
+| `text_normalization` | `True` | English text normalization toggle, Python API only |
+
+## Notes
+
+- Output audio is mono 44.1 kHz.
 - DAC dependency: [`{dac_repo}`](https://huggingface.co/{dac_repo})
-- speaker encoder: [`{speaker_encoder_repo}`](https://huggingface.co/{speaker_encoder_repo})
+- Speaker encoder: [`{speaker_encoder_repo}`](https://huggingface.co/{speaker_encoder_repo})
 {speaker_line}
-- streaming: not included in the initial artifact
+- English text normalization handles common written forms; unsupported languages
+  fall back to raw UTF-8 byte prompting.
+- Streaming is not implemented yet. Use non-streaming generation.
+
+## License
+
+See the [`{source}` model card](https://huggingface.co/{source}) for upstream
+license and usage details.
 """
     (out_dir / "README.md").write_text(text, encoding="utf-8")
 
