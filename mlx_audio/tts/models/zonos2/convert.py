@@ -158,8 +158,6 @@ def iter_converted_state_dict(
 def convert_state_dict(state_dict, dtype: str = "bfloat16") -> dict[str, mx.array]:
     return dict(iter_converted_state_dict(state_dict, dtype=dtype))
 
-    return converted
-
 
 def _make_shards(weights: dict[str, mx.array], max_file_size_gb: float):
     max_bytes = int(max_file_size_gb * (1 << 30))
@@ -395,6 +393,29 @@ result = next(model.generate(
 ))
 ```
 
+## Batch Generation
+
+Use `batch_generate` from Python for non-streaming batches. A shared
+`ref_audio` or `speaker_embedding` applies to every row; use `ref_audios` or
+`speaker_embeddings` for per-row speaker conditioning.
+
+```python
+texts = [
+    "This is the first ZONOS two batch sample.",
+    "This is the second sample generated in the same batch.",
+]
+
+for result in model.batch_generate(texts, max_tokens=220):
+    audio_write(
+        f"zonos2_batch_{{result.sequence_idx}}.wav",
+        result.audio,
+        result.sample_rate,
+    )
+```
+
+Batch streaming is not implemented yet; use `generate(..., stream=True)` for
+single-sequence streaming.
+
 ## CLI
 
 ```bash
@@ -416,12 +437,24 @@ python -m mlx_audio.tts.generate \\
   --file_prefix zonos2_clone
 ```
 
+Streaming playback:
+
+```bash
+python -m mlx_audio.tts.generate \\
+  --model {OFFICIAL_MLX_REPO} \\
+  --text "This streams ZONOS two audio chunks as they are generated." \\
+  --stream \\
+  --streaming_interval 0.5
+```
+
 ## Generation Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `ref_audio` | `None` | Reference audio path or array for voice cloning |
+| `ref_audios` | `None` | Per-row reference audio list for batch generation, Python API only |
 | `speaker_embedding` | `None` | Precomputed 2048-D speaker embedding, Python API only |
+| `speaker_embeddings` | `None` | Per-row 2048-D speaker embeddings for batch generation, Python API only |
 | `max_tokens` | 1024 | Maximum number of audio token frames |
 | `temperature` | 1.15 | Sampling temperature |
 | `top_k` | 106 | Top-k sampling filter |
@@ -429,6 +462,8 @@ python -m mlx_audio.tts.generate \\
 | `min_p` | 0.18 | Minimum-probability sampling filter |
 | `repetition_penalty` | 1.2 | Repetition penalty applied to recent audio tokens |
 | `seed` | `None` | Seed for deterministic sampling |
+| `stream` | `False` | Yield audio chunks during generation |
+| `streaming_interval` | 2.0 | Approximate seconds of audio per streaming chunk |
 | `text_normalization` | `True` | English text normalization toggle, Python API only |
 
 ## Notes
@@ -439,7 +474,9 @@ python -m mlx_audio.tts.generate \\
 {speaker_line}
 - English text normalization handles common written forms; unsupported languages
   fall back to raw UTF-8 byte prompting.
-- Streaming is not implemented yet. Use non-streaming generation.
+- Streaming decodes completed delayed-codebook frames as they become available;
+  final audio is emitted in the last chunk.
+- Batch generation currently supports non-streaming Python API usage.
 
 ## License
 
