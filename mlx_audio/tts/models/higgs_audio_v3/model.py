@@ -22,7 +22,6 @@ from .prompt import AUDIO_PLACEHOLDER_ID, HiggsAudioV3PromptBuilder, ReferenceCo
 
 ModelConfig = HiggsAudioV3Config
 
-
 def _format_duration(seconds: float) -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
@@ -200,19 +199,50 @@ class Model(nn.Module):
                 arr = arr.mean(axis=-1)
         return arr.reshape(-1).astype(np.float32, copy=False)
 
-    def _encode_reference_audio(self, audio: Any) -> mx.array:
-        if self._codec is None:
-            raise RuntimeError("Codec missing. Load via mlx_audio.tts.utils.load().")
+    def _prepare_reference_waveform(self, audio: Any) -> np.ndarray:
         audio_np = self._normalize_audio(audio)
         if audio_np.shape[0] < self.sample_rate:
             audio_np = np.pad(audio_np, (0, self.sample_rate - audio_np.shape[0]))
+        return np.ascontiguousarray(audio_np, dtype=np.float32)
+
+    def encode_reference_audio(self, audio: Any) -> mx.array:
+        """Encode reference audio into delayed Higgs v3 reference codes.
+
+        The returned array can be reused in ``generate(..., ref_audio_codes=...)``
+        or as ``{"codes": encoded, "text": ...}`` inside ``references``.
+        """
+        if self._codec is None:
+            raise RuntimeError("Codec missing. Load via mlx_audio.tts.utils.load().")
+
+        audio_np = self._prepare_reference_waveform(audio)
         waveform = mx.array(audio_np).reshape(1, -1, 1)
         codes = self._codec.encode(waveform)[0].astype(mx.int32)
-        return apply_delay_pattern(
+        delayed = apply_delay_pattern(
             codes,
             boc_id=self.config.audio_boc_token_id,
             eoc_id=self.config.audio_eoc_token_id,
         )
+        mx.eval(delayed)
+        return delayed
+
+    def _encode_reference_audio(self, audio: Any) -> mx.array:
+        return self.encode_reference_audio(audio)
+
+    def _normalize_reference_codes(self, codes: Any) -> mx.array:
+        normalized = mx.array(codes, dtype=mx.int32)
+
+        if normalized.ndim != 2:
+            raise ValueError(
+                "reference audio codes must be a 2D array with shape "
+                f"[T, {self.config.audio_num_codebooks}], got {normalized.shape}"
+            )
+        if normalized.shape[1] != self.config.audio_num_codebooks:
+            raise ValueError(
+                "reference audio codes must have "
+                f"{self.config.audio_num_codebooks} codebooks, got "
+                f"{normalized.shape[1]}"
+            )
+        return normalized
 
     def _normalize_references(
         self,
@@ -221,13 +251,74 @@ class Model(nn.Module):
         references=None,
         ref_audios=None,
         ref_texts=None,
+        ref_audio_codes=None,
+        ref_audio_codes_list=None,
     ) -> list[ReferenceCodes]:
         audios = _as_list(ref_audios if ref_audios is not None else ref_audio)
+        if ref_audio_codes_list is not None:
+            code_values = _as_list(ref_audio_codes_list)
+        elif ref_audio_codes is not None:
+            code_values = [ref_audio_codes]
+        else:
+            code_values = []
         texts = _as_list(ref_texts if ref_texts is not None else ref_text)
+
+        if audios and code_values:
+            raise ValueError("Use either ref_audio or ref_audio_codes, not both")
+
+        refs = []
+        reference_inputs: list[tuple[str, Any]] = []
+        reference_inputs.extend(("codes", codes) for codes in code_values)
+        reference_inputs.extend(("audio", audio) for audio in audios)
+
+        if texts and len(texts) != len(reference_inputs):
+            raise ValueError(
+                "ref_text must have the same length as ref_audio/ref_audio_codes"
+            )
+        if not texts:
+            texts = [None] * len(reference_inputs)
+
+        for (kind, value), text in zip(reference_inputs, texts):
+            if kind == "codes":
+                refs.append(
+                    ReferenceCodes(
+                        codes=self._normalize_reference_codes(value),
+                        text=str(text) if text is not None else None,
+                    )
+                )
+            else:
+                refs.append(
+                    ReferenceCodes(
+                        codes=self.encode_reference_audio(value),
+                        text=str(text) if text is not None else None,
+                    )
+                )
 
         if references:
             for item in references:
+                if isinstance(item, ReferenceCodes):
+                    refs.append(item)
+                    continue
                 if not isinstance(item, dict):
+                    continue
+                text = item.get("text") or item.get("ref_text")
+                codes = None
+                for key in (
+                    "codes",
+                    "audio_codes",
+                    "ref_audio_codes",
+                    "reference_codes",
+                ):
+                    if key in item and item[key] is not None:
+                        codes = item[key]
+                        break
+                if codes is not None:
+                    refs.append(
+                        ReferenceCodes(
+                            codes=self._normalize_reference_codes(codes),
+                            text=str(text) if text is not None else None,
+                        )
+                    )
                     continue
                 audio = None
                 for key in ("audio", "audio_path", "path", "ref_audio"):
@@ -236,24 +327,12 @@ class Model(nn.Module):
                         break
                 if audio is None:
                     continue
-                audios.append(audio)
-                texts.append(item.get("text") or item.get("ref_text"))
-
-        if not audios:
-            return []
-        if texts and len(texts) != len(audios):
-            raise ValueError("ref_audio and ref_text lists must have the same length")
-        if not texts:
-            texts = [None] * len(audios)
-
-        refs = []
-        for audio, text in zip(audios, texts):
-            refs.append(
-                ReferenceCodes(
-                    codes=self._encode_reference_audio(audio),
-                    text=str(text) if text is not None else None,
+                refs.append(
+                    ReferenceCodes(
+                        codes=self.encode_reference_audio(audio),
+                        text=str(text) if text is not None else None,
+                    )
                 )
-            )
         return refs
 
     def _decode_audio(self, delayed_rows: list[mx.array]) -> mx.array:
@@ -277,6 +356,8 @@ class Model(nn.Module):
         references=None,
         ref_audios=None,
         ref_texts=None,
+        ref_audio_codes=None,
+        ref_audio_codes_list=None,
         max_new_tokens: Optional[int] = None,
         max_new_frames: Optional[int] = None,
         max_tokens: Optional[int] = None,
@@ -308,6 +389,8 @@ class Model(nn.Module):
             references=references,
             ref_audios=ref_audios,
             ref_texts=ref_texts,
+            ref_audio_codes=ref_audio_codes,
+            ref_audio_codes_list=ref_audio_codes_list,
         )
         prompt_embeds, prompt_tokens = self._build_prompt_embeddings(
             text, references_list

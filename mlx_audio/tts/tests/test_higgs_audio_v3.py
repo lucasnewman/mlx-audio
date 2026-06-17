@@ -63,6 +63,20 @@ class FakeTokenizer:
         return [10 + (ord(ch) % 20) for ch in text]
 
 
+class FakeCodec:
+    def __init__(self):
+        self.encode_calls = 0
+
+    def encode(self, waveform):
+        self.encode_calls += 1
+        del waveform
+        codes = mx.array(
+            [[[1, 2, 3, 4], [2, 3, 4, 5], [3, 4, 5, 6]]],
+            dtype=mx.int32,
+        )
+        return codes
+
+
 class TestHiggsAudioV3Config(unittest.TestCase):
     def test_parses_source_config_shape(self):
         cfg = HiggsAudioV3Config.from_dict(
@@ -211,6 +225,99 @@ class TestHiggsAudioV3Model(unittest.TestCase):
         mx.eval(model.parameters())
         hidden = model(mx.zeros((1, 3), dtype=mx.int32))
         self.assertEqual(hidden.shape, (1, 3, cfg.text_config.hidden_size))
+
+    def test_encode_reference_audio_returns_delayed_codes(self):
+        model = Model(_tiny_config())
+        codec = FakeCodec()
+        model._codec = codec
+
+        audio = np.linspace(-0.1, 0.1, 100, dtype=np.float32)
+        encoded = model.encode_reference_audio(audio)
+
+        self.assertEqual(codec.encode_calls, 1)
+        raw_codes = mx.array(
+            [[1, 2, 3, 4], [2, 3, 4, 5], [3, 4, 5, 6]],
+            dtype=mx.int32,
+        )
+        expected = apply_delay_pattern(
+            raw_codes,
+            boc_id=model.config.audio_boc_token_id,
+            eoc_id=model.config.audio_eoc_token_id,
+        )
+        np.testing.assert_array_equal(np.array(encoded), np.array(expected))
+
+    def test_ref_audio_codes_skip_reference_encoding(self):
+        model = Model(_tiny_config())
+        codec = FakeCodec()
+        model._codec = codec
+
+        encoded = mx.ones((4, 4), dtype=mx.int32)
+        refs = model._normalize_references(
+            ref_audio_codes=encoded,
+            ref_text="Reference transcript.",
+        )
+
+        self.assertEqual(codec.encode_calls, 0)
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0].text, "Reference transcript.")
+        np.testing.assert_array_equal(np.array(refs[0].codes), np.ones((4, 4)))
+
+    def test_references_dict_accepts_preencoded_codes(self):
+        model = Model(_tiny_config())
+        codec = FakeCodec()
+        model._codec = codec
+
+        encoded = np.ones((4, 4), dtype=np.int32)
+        refs = model._normalize_references(
+            references=[{"codes": encoded, "text": "Reference transcript."}]
+        )
+
+        self.assertEqual(codec.encode_calls, 0)
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0].text, "Reference transcript.")
+        np.testing.assert_array_equal(np.array(refs[0].codes), encoded)
+
+    def test_ref_audio_codes_list_matches_ref_texts(self):
+        model = Model(_tiny_config())
+        refs = model._normalize_references(
+            ref_audio_codes_list=[
+                mx.ones((4, 4), dtype=mx.int32),
+                mx.zeros((5, 4), dtype=mx.int32),
+            ],
+            ref_texts=["first", "second"],
+        )
+
+        self.assertEqual(len(refs), 2)
+        self.assertEqual([ref.text for ref in refs], ["first", "second"])
+
+    def test_ref_audio_codes_accepts_python_2d_list_as_single_reference(self):
+        model = Model(_tiny_config())
+
+        refs = model._normalize_references(
+            ref_audio_codes=[[1, 2, 3, 4], [2, 3, 4, 5]],
+            ref_text="single",
+        )
+
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0].text, "single")
+        self.assertEqual(refs[0].codes.shape, (2, 4))
+
+    def test_ref_audio_and_ref_audio_codes_are_mutually_exclusive(self):
+        model = Model(_tiny_config())
+
+        with self.assertRaisesRegex(ValueError, "either ref_audio or ref_audio_codes"):
+            model._normalize_references(
+                ref_audio=np.zeros(100, dtype=np.float32),
+                ref_audio_codes=mx.ones((4, 4), dtype=mx.int32),
+            )
+
+    def test_ref_audio_codes_validate_shape(self):
+        model = Model(_tiny_config())
+
+        with self.assertRaisesRegex(ValueError, "must have 4 codebooks"):
+            model._normalize_references(
+                ref_audio_codes=mx.ones((4, 3), dtype=mx.int32),
+            )
 
 
 if __name__ == "__main__":

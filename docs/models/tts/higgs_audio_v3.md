@@ -52,6 +52,21 @@ for result in model.generate(
     audio_write("output.wav", result.audio, result.sample_rate)
 ```
 
+If you reuse the same reference voice across multiple generations, encode it
+once and pass the pre-encoded reference codes:
+
+```python
+reference_codes = model.encode_reference_audio("reference.wav")
+
+for result in model.generate(
+    text="This skips reference audio encoding.",
+    ref_audio_codes=reference_codes,
+    ref_text="Reference transcript.",
+    temperature=1.0,
+):
+    audio_write("output.wav", result.audio, result.sample_rate)
+```
+
 ## Controls
 
 Inline control tokens from the upstream model can be placed directly in the
