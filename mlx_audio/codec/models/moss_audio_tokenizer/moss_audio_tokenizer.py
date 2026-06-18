@@ -16,6 +16,13 @@ DEFAULT_AUDIO_TOKENIZER_REPO = "mlx-community/MOSS-Audio-Tokenizer-Nano"
 
 
 @dataclass
+class AttentionStepCache:
+    keys: mx.array | None = None
+    values: mx.array | None = None
+    offset: int = 0
+
+
+@dataclass
 class AudioTokenizerConfig:
     sample_rate: int = 48000
     sampling_rate: int = 48000
@@ -255,6 +262,37 @@ class MultiheadAttention(nn.Module):
             allowed = allowed & (delta < self.context)
         return mx.where(allowed, 0.0, mx.finfo(dtype).min).astype(dtype)
 
+    def _step_mask(
+        self,
+        *,
+        query_start: int,
+        key_start: int,
+        query_len: int,
+        key_len: int,
+        dtype: mx.Dtype,
+    ) -> mx.array | None:
+        if not self.causal and self.context is None:
+            return None
+        query_positions = mx.arange(
+            int(query_start),
+            int(query_start) + int(query_len),
+            dtype=mx.int32,
+        )
+        key_positions = mx.arange(
+            int(key_start),
+            int(key_start) + int(key_len),
+            dtype=mx.int32,
+        )
+        delta = (
+            query_positions[None, None, :, None] - key_positions[None, None, None, :]
+        )
+        allowed = mx.ones((1, 1, int(query_len), int(key_len)), dtype=mx.bool_)
+        if self.causal:
+            allowed = allowed & (delta >= 0)
+        if self.context is not None:
+            allowed = allowed & (delta < self.context)
+        return mx.where(allowed, 0.0, mx.finfo(dtype).min).astype(dtype)
+
     def __call__(self, x: mx.array, input_lengths: mx.array) -> mx.array:
         batch, time, _ = x.shape
         qkv = self.in_proj(x)
@@ -274,6 +312,65 @@ class MultiheadAttention(nn.Module):
             < input_lengths[:, None, None, None]
         )
         out = mx.where(valid_q, out, mx.zeros((), dtype=out.dtype))
+        out = out.transpose(0, 2, 1, 3).reshape(batch, time, self.embed_dim)
+        return self.out_proj(out)
+
+    def step(self, x: mx.array, cache: AttentionStepCache) -> mx.array:
+        batch, time, _ = x.shape
+        if batch != 1:
+            raise NotImplementedError(
+                "MOSS audio-tokenizer streaming decode supports batch size 1."
+            )
+        if not self.causal:
+            raise NotImplementedError(
+                "MOSS audio-tokenizer streaming decode requires causal attention."
+            )
+        if time == 0:
+            return mx.zeros((batch, 0, self.embed_dim), dtype=x.dtype)
+
+        qkv = self.in_proj(x)
+        qkv = qkv.reshape(batch, time, 3, self.num_heads, self.head_dim)
+        q = qkv[:, :, 0].transpose(0, 2, 1, 3)
+        k = qkv[:, :, 1].transpose(0, 2, 1, 3)
+        v = qkv[:, :, 2].transpose(0, 2, 1, 3)
+        if self.use_rope:
+            q, k = _apply_rope(q, k, max_period=self.max_period, offset=cache.offset)
+
+        if cache.keys is None:
+            keys = k
+            values = v
+            key_start = cache.offset
+        else:
+            keys = mx.concatenate([cache.keys, k], axis=2)
+            values = mx.concatenate([cache.values, v], axis=2)
+            key_start = cache.offset - int(cache.keys.shape[2])
+
+        mask = self._step_mask(
+            query_start=cache.offset,
+            key_start=key_start,
+            query_len=time,
+            key_len=int(keys.shape[2]),
+            dtype=x.dtype,
+        )
+        out = mx.fast.scaled_dot_product_attention(
+            q,
+            keys,
+            values,
+            scale=self.head_dim**-0.5,
+            mask=mask,
+        )
+        cache.offset += int(time)
+        if self.context is None:
+            cache.keys = keys
+            cache.values = values
+        else:
+            keep = max(0, int(self.context) - 1)
+            if keep == 0:
+                cache.keys = None
+                cache.values = None
+            else:
+                cache.keys = keys[:, :, -keep:, :]
+                cache.values = values[:, :, -keep:, :]
         out = out.transpose(0, 2, 1, 3).reshape(batch, time, self.embed_dim)
         return self.out_proj(out)
 
@@ -321,6 +418,15 @@ class TransformerLayer(nn.Module):
         residual = x
         x = self.norm1(x)
         x = residual + self.layer_scale_1(self.self_attn(x, input_lengths))
+        residual = x
+        x = self.norm2(x)
+        x = self.ffn[2](_exact_gelu(self.ffn[0](x)))
+        return residual + self.layer_scale_2(x)
+
+    def step(self, x: mx.array, cache: AttentionStepCache) -> mx.array:
+        residual = x
+        x = self.norm1(x)
+        x = residual + self.layer_scale_1(self.self_attn.step(x, cache))
         residual = x
         x = self.norm2(x)
         x = self.ffn[2](_exact_gelu(self.ffn[0](x)))
@@ -381,6 +487,28 @@ class Transformer(nn.Module):
             x = layer(x, input_lengths)
         return x
 
+    def make_step_cache(self) -> list[AttentionStepCache]:
+        return [AttentionStepCache() for _ in self.layers]
+
+    def step(self, x: mx.array, cache: list[AttentionStepCache]) -> mx.array:
+        if len(cache) != len(self.layers):
+            raise ValueError(
+                f"Expected {len(self.layers)} attention caches, got {len(cache)}"
+            )
+        if self.positional_embedding in {"sin", "sin_rope"}:
+            offset = cache[0].offset if cache else 0
+            positions = mx.arange(offset, offset + x.shape[1], dtype=x.dtype)
+            half = x.shape[-1] // 2
+            scale = self.max_period ** (
+                mx.arange(half, dtype=x.dtype) / max(half - 1, 1)
+            )
+            phase = positions[:, None] / scale[None, :]
+            emb = mx.concatenate([mx.cos(phase), mx.sin(phase)], axis=-1)
+            x = x + self.positional_scale * emb[None, :, :]
+        for layer, layer_cache in zip(self.layers, cache):
+            x = layer.step(x, layer_cache)
+        return x
+
 
 class ProjectedTransformer(nn.Module):
     def __init__(
@@ -414,6 +542,19 @@ class ProjectedTransformer(nn.Module):
     def __call__(self, x: mx.array, input_lengths: mx.array):
         x = self.input_proj(x.transpose(0, 2, 1))
         x = self.transformer(x, input_lengths=input_lengths)
+        return self.output_proj(x).transpose(0, 2, 1), input_lengths
+
+    def make_step_cache(self) -> list[AttentionStepCache]:
+        return self.transformer.make_step_cache()
+
+    def step(
+        self,
+        x: mx.array,
+        input_lengths: mx.array,
+        cache: list[AttentionStepCache],
+    ):
+        x = self.input_proj(x.transpose(0, 2, 1))
+        x = self.transformer.step(x, cache)
         return self.output_proj(x).transpose(0, 2, 1), input_lengths
 
 
@@ -839,6 +980,44 @@ class MossAudioTokenizer(nn.Module):
             audio, audio_lengths = module(audio, audio_lengths)
         return self._restore_channels_from_codec(audio, audio_lengths)
 
+    def _decode_frame_step(
+        self,
+        codes: mx.array,
+        codes_lengths: mx.array,
+        decoder_caches: list[list[AttentionStepCache] | None],
+    ) -> tuple[mx.array, mx.array]:
+        if codes.ndim != 3:
+            raise ValueError(
+                f"Expected codes shape [nq, batch, time], got {codes.shape}"
+            )
+        if codes.shape[1] != 1:
+            raise NotImplementedError(
+                "MOSS audio-tokenizer streaming decode supports batch size 1."
+            )
+        if len(decoder_caches) != len(self.decoder):
+            raise ValueError(
+                f"Expected {len(self.decoder)} decoder caches, got "
+                f"{len(decoder_caches)}"
+            )
+        hidden = self.quantizer.decode_codes(codes.astype(mx.int32))
+        audio, audio_lengths = hidden, codes_lengths
+        for module, module_cache in zip(self.decoder, decoder_caches):
+            if module_cache is None:
+                audio, audio_lengths = module(audio, audio_lengths)
+            else:
+                audio, audio_lengths = module.step(audio, audio_lengths, module_cache)
+        return self._restore_channels_from_codec(audio, audio_lengths)
+
+    def make_streaming_decoder(
+        self,
+        *,
+        num_quantizers: int | None = None,
+    ) -> "MossAudioTokenizerStreamingDecoder":
+        return MossAudioTokenizerStreamingDecoder(
+            self,
+            num_quantizers=num_quantizers or self.num_quantizers,
+        )
+
     def encode_audio(
         self,
         audio: Any,
@@ -885,6 +1064,53 @@ class MossAudioTokenizer(nn.Module):
             num_quantizers=effective_nq,
         )
         audio, audio_lengths = self._decode_frame(batched_codes, code_lengths)
+        mx.eval(audio, audio_lengths)
+        audio_length = int(audio_lengths.tolist()[0])
+        return audio[0, :, :audio_length].T.astype(mx.float32)
+
+
+class MossAudioTokenizerStreamingDecoder:
+    """Single-request streaming decoder for MOSS audio-tokenizer codes."""
+
+    def __init__(
+        self,
+        tokenizer: MossAudioTokenizer,
+        *,
+        num_quantizers: int | None = None,
+    ):
+        self.tokenizer = tokenizer
+        self.num_quantizers = int(num_quantizers or tokenizer.num_quantizers)
+        self.reset()
+
+    def reset(self) -> None:
+        self._decoder_caches: list[list[AttentionStepCache] | None] = []
+        for module in self.tokenizer.decoder:
+            make_cache = getattr(module, "make_step_cache", None)
+            self._decoder_caches.append(
+                make_cache() if make_cache is not None else None
+            )
+
+    def decode_frames(self, audio_codes: mx.array | np.ndarray) -> mx.array:
+        codes = (
+            audio_codes if isinstance(audio_codes, mx.array) else mx.array(audio_codes)
+        )
+        codes = codes.astype(mx.int32)
+        if codes.ndim != 2:
+            raise ValueError(f"Expected codes shape [frames, nq], got {codes.shape}")
+        if codes.shape[0] == 0:
+            return mx.zeros((0, self.tokenizer.channels), dtype=mx.float32)
+        if codes.shape[1] < self.num_quantizers:
+            raise ValueError(
+                f"num_quantizers={self.num_quantizers} exceeds available quantizers"
+            )
+
+        batched_codes = codes[:, : self.num_quantizers].T[:, None, :]
+        code_lengths = mx.array([codes.shape[0]], dtype=mx.int32)
+        audio, audio_lengths = self.tokenizer._decode_frame_step(
+            batched_codes,
+            code_lengths,
+            self._decoder_caches,
+        )
         mx.eval(audio, audio_lengths)
         audio_length = int(audio_lengths.tolist()[0])
         return audio[0, :, :audio_length].T.astype(mx.float32)

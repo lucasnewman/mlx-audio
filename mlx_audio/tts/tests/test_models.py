@@ -8606,6 +8606,67 @@ class TestMossTTSDelayModel(unittest.TestCase):
             np.all(np.array(generation_ids[-1, 1:]) == model.config.audio_pad_code)
         )
 
+    def test_v15_local_generate_streams_chunks(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_v15_local_tiny_config())
+        model.tokenizer = MossDelayFakeTokenizer()
+        calls = {"count": 0}
+        decoded_shapes = []
+
+        class FakeStreamingDecoder:
+            def decode_frames(self, codes):
+                decoded_shapes.append(tuple(codes.shape))
+                return mx.ones((int(codes.shape[0]) * 2, 2), dtype=mx.float32)
+
+        def fake_sample_text(*args, **kwargs):
+            del args, kwargs
+            calls["count"] += 1
+            value = (
+                model.config.audio_assistant_slot_token_id
+                if calls["count"] <= 5
+                else model.config.audio_end_token_id
+            )
+            return mx.array([value], dtype=mx.int32)
+
+        def fake_make_streaming_decoder(**kwargs):
+            del kwargs
+            return FakeStreamingDecoder()
+
+        model._sample_v15_assistant_text_token = fake_sample_text
+        model._make_audio_tokenizer_streaming_decoder = fake_make_streaming_decoder
+
+        chunks = list(
+            model.generate(
+                text="hello",
+                stream=True,
+                max_tokens=8,
+                do_sample=False,
+                streaming_first_chunk_frames=2,
+                streaming_interval=0.24,
+                streaming_context_frames=0,
+            )
+        )
+
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual([chunk.segment_idx for chunk in chunks], [0, 1, 1])
+        self.assertTrue(all(chunk.is_streaming_chunk for chunk in chunks))
+        self.assertFalse(chunks[0].is_final_chunk)
+        self.assertFalse(chunks[1].is_final_chunk)
+        self.assertTrue(chunks[2].is_final_chunk)
+        self.assertEqual([chunk.token_count for chunk in chunks], [2, 3, 0])
+        self.assertEqual([chunk.samples for chunk in chunks], [4, 6, 0])
+        self.assertEqual(decoded_shapes, [(2, 2), (3, 2)])
+
+    def test_non_v15_local_streaming_is_not_supported(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_local_tiny_config())
+        model.tokenizer = MossDelayFakeTokenizer()
+
+        with self.assertRaisesRegex(NotImplementedError, "v1.5 only"):
+            next(model.generate(text="hello", stream=True, max_tokens=1))
+
     def test_local_sanitize_keeps_model_prefix(self):
         from mlx_audio.tts.models.moss_tts import Model
 

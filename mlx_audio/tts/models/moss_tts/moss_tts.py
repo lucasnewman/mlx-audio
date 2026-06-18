@@ -430,6 +430,18 @@ class Model(nn.Module):
             num_quantizers=num_quantizers or self.config.n_vq,
         )
 
+    def _make_audio_tokenizer_streaming_decoder(
+        self,
+        *,
+        num_quantizers: int | None = None,
+        source: str | None = None,
+    ):
+        tokenizer = self._ensure_audio_tokenizer(source=source)
+        make_decoder = getattr(tokenizer, "make_streaming_decoder", None)
+        if make_decoder is None:
+            return None
+        return make_decoder(num_quantizers=num_quantizers or self.config.n_vq)
+
     def _build_inputs_embeds(self, input_ids: mx.array) -> mx.array:
         if self.config.is_v15_local_transformer:
             return self._build_v15_local_inputs_embeds(input_ids)
@@ -893,7 +905,7 @@ class Model(nn.Module):
         start_length = int(seq_len - start_idx)
         return [(start_length, generation_ids[0, start_idx:])]
 
-    def generate_v15_local_ids(
+    def _iter_v15_local_rows(
         self,
         input_ids: mx.array,
         *,
@@ -908,7 +920,7 @@ class Model(nn.Module):
         audio_repetition_penalty: float = 1.0,
         use_kv_cache: bool = True,
         n_vq_for_inference: int | None = None,
-    ) -> list[tuple[int, mx.array]]:
+    ) -> Generator[mx.array, None, None]:
         if input_ids.ndim != 3:
             raise ValueError(f"Expected input_ids rank 3, got {input_ids.shape}")
         if input_ids.shape[0] != 1:
@@ -924,7 +936,7 @@ class Model(nn.Module):
         if not audio_do_sample:
             audio_temperature = 1.0
 
-        batch_size, seq_len, _ = input_ids.shape
+        batch_size = int(input_ids.shape[0])
         cache = self.make_cache() if use_kv_cache else None
         current_model_input_ids = input_ids
         generation_ids = input_ids
@@ -1003,10 +1015,45 @@ class Model(nn.Module):
             generation_ids = mx.concatenate([generation_ids, next_row], axis=1)
             current_model_input_ids = next_row if use_kv_cache else generation_ids
             mx.eval(next_row)
+            yield next_row
+
+    def generate_v15_local_ids(
+        self,
+        input_ids: mx.array,
+        *,
+        max_new_tokens: int = 4096,
+        do_sample: bool = True,
+        text_temperature: float = 1.0,
+        text_top_p: float = 1.0,
+        text_top_k: int = 50,
+        audio_temperature: float = 1.7,
+        audio_top_p: float = 0.8,
+        audio_top_k: int = 25,
+        audio_repetition_penalty: float = 1.0,
+        use_kv_cache: bool = True,
+        n_vq_for_inference: int | None = None,
+    ) -> list[tuple[int, mx.array]]:
+        generation_ids = input_ids
+        for next_row in self._iter_v15_local_rows(
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            text_temperature=text_temperature,
+            text_top_p=text_top_p,
+            text_top_k=text_top_k,
+            audio_temperature=audio_temperature,
+            audio_top_p=audio_top_p,
+            audio_top_k=audio_top_k,
+            audio_repetition_penalty=audio_repetition_penalty,
+            use_kv_cache=use_kv_cache,
+            n_vq_for_inference=n_vq_for_inference,
+        ):
+            generation_ids = mx.concatenate([generation_ids, next_row], axis=1)
 
         audio_start_idx = self._find_last_equal(
             input_ids[0, :, 0], self.config.audio_start_token_id
         )
+        seq_len = int(input_ids.shape[1])
         start_idx = audio_start_idx if audio_start_idx != -1 else int(seq_len)
         start_length = int(seq_len - start_idx - 1) if audio_start_idx != -1 else 0
         return [(start_length, generation_ids[0, start_idx:])]
@@ -1181,6 +1228,174 @@ class Model(nn.Module):
             return mx.zeros((0, 1), dtype=mx.float32), 0
         return mx.concatenate(audio_segments, axis=0), token_count
 
+    def _decode_v15_local_stream_frames(
+        self,
+        frames: Sequence[mx.array],
+        *,
+        start_frame: int,
+        end_frame: int,
+        context_frames: int,
+        samples_per_frame: int,
+        source: str | None = None,
+    ) -> mx.array:
+        context_start = max(0, int(start_frame) - int(context_frames))
+        codes = mx.stack(list(frames[context_start:end_frame]), axis=0).astype(mx.int32)
+        audio = self.decode_audio_token_ids(
+            codes,
+            num_quantizers=self.config.n_vq,
+            source=source,
+        )
+        trim_samples = int(start_frame - context_start) * int(samples_per_frame)
+        if trim_samples > 0:
+            audio = audio[min(trim_samples, int(audio.shape[0])) :]
+        mx.eval(audio)
+        return audio
+
+    def _generate_v15_local_streaming_results(
+        self,
+        input_ids: mx.array,
+        *,
+        started_at: float,
+        prompt_token_count: int,
+        max_new_tokens: int = 4096,
+        do_sample: bool = True,
+        text_temperature: float = 1.0,
+        text_top_p: float = 1.0,
+        text_top_k: int = 50,
+        audio_temperature: float = 1.7,
+        audio_top_p: float = 0.8,
+        audio_top_k: int = 25,
+        audio_repetition_penalty: float = 1.0,
+        use_kv_cache: bool = True,
+        n_vq_for_inference: int | None = None,
+        streaming_interval: float | None = 2.0,
+        streaming_first_chunk_frames: int | None = None,
+        streaming_context_frames: int | None = 8,
+        streaming_use_codec_session: bool = True,
+        audio_tokenizer_source: str | None = None,
+    ) -> Generator[GenerationResult, None, None]:
+        frames_per_second = 12.5
+        samples_per_frame = max(1, int(round(self.sample_rate / frames_per_second)))
+        interval_seconds = (
+            2.0 if streaming_interval is None else float(streaming_interval)
+        )
+        if interval_seconds <= 0:
+            interval_seconds = 2.0
+        steady_chunk_frames = max(1, int(round(interval_seconds * frames_per_second)))
+        if streaming_first_chunk_frames is None:
+            first_chunk_frames = min(4, steady_chunk_frames)
+        else:
+            first_chunk_frames = int(streaming_first_chunk_frames)
+        first_chunk_frames = max(1, first_chunk_frames)
+        context_frame_value = (
+            8 if streaming_context_frames is None else int(streaming_context_frames)
+        )
+        context_frames = max(0, context_frame_value)
+
+        frames: list[mx.array] = []
+        emitted_frames = 0
+        chunk_idx = 0
+        chunk_started_at = started_at
+        streaming_decoder = (
+            self._make_audio_tokenizer_streaming_decoder(
+                num_quantizers=self.config.n_vq,
+                source=audio_tokenizer_source,
+            )
+            if streaming_use_codec_session
+            else None
+        )
+
+        for next_row in self._iter_v15_local_rows(
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            text_temperature=text_temperature,
+            text_top_p=text_top_p,
+            text_top_k=text_top_k,
+            audio_temperature=audio_temperature,
+            audio_top_p=audio_top_p,
+            audio_top_k=audio_top_k,
+            audio_repetition_penalty=audio_repetition_penalty,
+            use_kv_cache=use_kv_cache,
+            n_vq_for_inference=n_vq_for_inference,
+        ):
+            frames.append(next_row[0, 0, 1:].astype(mx.int32))
+            threshold = first_chunk_frames if chunk_idx == 0 else steady_chunk_frames
+            if len(frames) - emitted_frames < threshold:
+                continue
+
+            end_frame = len(frames)
+            if streaming_decoder is None:
+                audio = self._decode_v15_local_stream_frames(
+                    frames,
+                    start_frame=emitted_frames,
+                    end_frame=end_frame,
+                    context_frames=context_frames,
+                    samples_per_frame=samples_per_frame,
+                    source=audio_tokenizer_source,
+                )
+            else:
+                audio = streaming_decoder.decode_frames(
+                    mx.stack(frames[emitted_frames:end_frame], axis=0).astype(mx.int32)
+                )
+            yield self._build_generation_result(
+                audio=audio,
+                started_at=chunk_started_at,
+                token_count=end_frame - emitted_frames,
+                prompt_token_count=prompt_token_count if chunk_idx == 0 else 0,
+                segment_idx=chunk_idx,
+                is_streaming_chunk=True,
+                is_final_chunk=False,
+            )
+            emitted_frames = end_frame
+            chunk_idx += 1
+            chunk_started_at = time.perf_counter()
+
+        if len(frames) > emitted_frames:
+            end_frame = len(frames)
+            if streaming_decoder is None:
+                audio = self._decode_v15_local_stream_frames(
+                    frames,
+                    start_frame=emitted_frames,
+                    end_frame=end_frame,
+                    context_frames=context_frames,
+                    samples_per_frame=samples_per_frame,
+                    source=audio_tokenizer_source,
+                )
+            else:
+                audio = streaming_decoder.decode_frames(
+                    mx.stack(frames[emitted_frames:end_frame], axis=0).astype(mx.int32)
+                )
+            yield self._build_generation_result(
+                audio=audio,
+                started_at=chunk_started_at,
+                token_count=end_frame - emitted_frames,
+                prompt_token_count=prompt_token_count if chunk_idx == 0 else 0,
+                segment_idx=chunk_idx,
+                is_streaming_chunk=True,
+                is_final_chunk=True,
+            )
+        elif chunk_idx > 0:
+            yield self._build_generation_result(
+                audio=mx.zeros((0, 2), dtype=mx.float32),
+                started_at=chunk_started_at,
+                token_count=0,
+                prompt_token_count=0,
+                segment_idx=chunk_idx - 1,
+                is_streaming_chunk=True,
+                is_final_chunk=True,
+            )
+        else:
+            yield self._build_generation_result(
+                audio=mx.zeros((0, 2), dtype=mx.float32),
+                started_at=started_at,
+                token_count=0,
+                prompt_token_count=prompt_token_count,
+                segment_idx=0,
+                is_streaming_chunk=True,
+                is_final_chunk=True,
+            )
+
     def _build_generation_result(
         self,
         *,
@@ -1188,6 +1403,9 @@ class Model(nn.Module):
         started_at: float,
         token_count: int,
         prompt_token_count: int,
+        segment_idx: int = 0,
+        is_streaming_chunk: bool = False,
+        is_final_chunk: bool = False,
     ) -> GenerationResult:
         elapsed = max(time.perf_counter() - started_at, 1e-6)
         samples = int(audio.shape[0]) if audio.ndim > 0 else 0
@@ -1203,7 +1421,7 @@ class Model(nn.Module):
             audio=audio,
             samples=samples,
             sample_rate=self.sample_rate,
-            segment_idx=0,
+            segment_idx=segment_idx,
             token_count=token_count,
             audio_duration=duration_str,
             real_time_factor=(audio_duration_seconds / elapsed if elapsed > 0 else 0.0),
@@ -1217,6 +1435,8 @@ class Model(nn.Module):
             },
             processing_time_seconds=elapsed,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=is_streaming_chunk,
+            is_final_chunk=is_final_chunk,
         )
 
     def generate(
@@ -1230,8 +1450,6 @@ class Model(nn.Module):
         max_tokens: int | None = None,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
-        if stream:
-            raise NotImplementedError("MOSS-TTS streaming is not implemented yet.")
         if self.tokenizer is None:
             raise ValueError("Tokenizer is not initialized.")
 
@@ -1307,6 +1525,44 @@ class Model(nn.Module):
             ]
 
         batch = processor([conversations], mode=normalized_mode)
+        if stream and not self.config.is_v15_local_transformer:
+            raise NotImplementedError(
+                "MOSS-TTS streaming is currently implemented for "
+                "MOSS-TTS-Local-Transformer-v1.5 only."
+            )
+        if stream:
+            yield from self._generate_v15_local_streaming_results(
+                batch["input_ids"],
+                started_at=started_at,
+                prompt_token_count=int(batch["input_ids"].shape[1]),
+                max_new_tokens=int(max_tokens if max_tokens is not None else 4096),
+                do_sample=bool(kwargs.get("do_sample", True)),
+                text_temperature=float(kwargs.get("text_temperature", 1.0)),
+                text_top_p=float(kwargs.get("text_top_p", 1.0)),
+                text_top_k=int(kwargs.get("text_top_k", 50)),
+                audio_temperature=float(
+                    kwargs.get("audio_temperature", kwargs.get("temperature", 1.7))
+                ),
+                audio_top_p=float(kwargs.get("audio_top_p", kwargs.get("top_p", 0.8))),
+                audio_top_k=int(kwargs.get("audio_top_k", kwargs.get("top_k", 25))),
+                audio_repetition_penalty=float(
+                    kwargs.get(
+                        "audio_repetition_penalty",
+                        kwargs.get("repetition_penalty", 1.0),
+                    )
+                ),
+                use_kv_cache=bool(kwargs.get("use_kv_cache", True)),
+                n_vq_for_inference=kwargs.get("n_vq_for_inference"),
+                streaming_interval=kwargs.get("streaming_interval", 2.0),
+                streaming_first_chunk_frames=kwargs.get("streaming_first_chunk_frames"),
+                streaming_context_frames=kwargs.get("streaming_context_frames", 8),
+                streaming_use_codec_session=bool(
+                    kwargs.get("streaming_use_codec_session", True)
+                ),
+                audio_tokenizer_source=kwargs.get("audio_tokenizer_source"),
+            )
+            return
+
         if self.config.is_v15_local_transformer:
             outputs = self.generate_v15_local_ids(
                 batch["input_ids"],

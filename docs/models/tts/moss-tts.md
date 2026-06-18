@@ -31,6 +31,21 @@ model = load("OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", lazy=True)
 
 The v1.5 local checkpoint uses `OpenMOSS-Team/MOSS-Audio-Tokenizer-v2`, 48 kHz output, and fixed 12-codebook RVQ generation.
 
+The v1.5 local checkpoint also supports streamed generation:
+
+```python
+chunks = model.generate(
+    text="Hello, this is streamed MOSS local transformer audio.",
+    language="English",
+    stream=True,
+    streaming_interval=2.0,
+)
+```
+
+The first chunk is emitted after 4 generated RVQ frames by default. Subsequent
+chunks use `streaming_interval` seconds of generated frames. MLX keeps a
+single-stream MOSS-Audio-Tokenizer-v2 decoder session during streaming decode.
+
 For non-English v1.5 prompts, pass `language` when known:
 
 ```python
@@ -56,6 +71,6 @@ audio_write("moss_tts_clone.wav", result.audio, result.sample_rate)
 
 ## Notes
 
-- The model uses 24 kHz audio.
+- The delay-pattern models use 24 kHz audio. The v1.5 local-transformer model
+  uses 48 kHz stereo audio.
 - The full audio tokenizer is required for reference encoding and waveform decoding.
-- Batch generation and streaming are not implemented in the first MLX port.
