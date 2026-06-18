@@ -5475,6 +5475,17 @@ class TestMisoTTSRegistration(unittest.TestCase):
         self.assertEqual(decoder.num_attention_heads, 24)
         self.assertEqual(decoder.num_key_value_heads, 6)
 
+    def test_sesame_rope_materializes_tables_on_init(self):
+        from mlx_audio.tts.models.sesame.attention import Llama3ScaledRoPE
+
+        with patch("mlx_audio.tts.models.sesame.attention.mx.eval") as eval_mock:
+            rope = Llama3ScaledRoPE(dim=8, max_seq_len=4)
+
+        args = eval_mock.call_args.args
+        self.assertEqual(len(args), 2)
+        self.assertIs(args[0], rope._cos_f32)
+        self.assertIs(args[1], rope._sin_f32)
+
     def test_sesame_uses_configured_frame_size_and_prompt_spacing(self):
         from mlx_audio.tts.models.sesame import sesame
 
