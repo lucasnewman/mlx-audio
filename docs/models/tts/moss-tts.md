@@ -1,6 +1,6 @@
 # MOSS-TTS
 
-MOSS-TTS covers OpenMOSS's 8B `MossTTSDelay` v1.5 and v1.0 models plus the 1.7B local-transformer variant. The MLX port uses the upstream Qwen3 backbone weights, RVQ generation path for each variant, and the full `OpenMOSS-Team/MOSS-Audio-Tokenizer`.
+MOSS-TTS covers OpenMOSS's 8B `MossTTSDelay` v1.5 and v1.0 models plus the local-transformer variants. The MLX port uses the upstream Qwen3 backbone weights, RVQ generation path for each variant, and the matching MOSS Audio Tokenizer.
 
 ## Quick Start
 
@@ -23,6 +23,14 @@ For the local-transformer variant, load:
 model = load("OpenMOSS-Team/MOSS-TTS-Local-Transformer", lazy=True)
 ```
 
+For the v1.5 local-transformer checkpoint, load:
+
+```python
+model = load("OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", lazy=True)
+```
+
+The v1.5 local checkpoint uses `OpenMOSS-Team/MOSS-Audio-Tokenizer-v2`, 48 kHz output, and fixed 12-codebook RVQ generation.
+
 For non-English v1.5 prompts, pass `language` when known:
 
 ```python
@@ -33,7 +41,7 @@ result = next(model.generate(
 ))
 ```
 
-The v1.5 delay-pattern checkpoint also accepts inline pause markers such as `[pause 3.2s]`.
+The v1.5 checkpoints accept inline pause markers such as `[pause 3.2s]`.
 
 ## Voice Cloning
 

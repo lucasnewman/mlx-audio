@@ -105,6 +105,61 @@ class TestMossAudioTokenizer(unittest.TestCase):
             self.assertEqual(tokenizer.sample_rate, 24000)
             self.assertEqual(tokenizer.channels, 1)
 
+    def test_same_dimension_projection_keys_force_linear_modules(self):
+        config = AudioTokenizerConfig.from_dict(
+            {
+                "sample_rate": 24000,
+                "sampling_rate": 24000,
+                "downsample_rate": 1,
+                "number_channels": 1,
+                "encoder_kwargs": [
+                    {
+                        "module_type": "Transformer",
+                        "input_dimension": 4,
+                        "output_dimension": 4,
+                        "d_model": 4,
+                        "num_heads": 1,
+                        "num_layers": 1,
+                        "dim_feedforward": 8,
+                        "causal": True,
+                        "norm": "layer_norm",
+                        "positional_embedding": "rope",
+                        "max_period": 10000,
+                        "gating": "none",
+                        "layer_scale": 0.01,
+                        "conv_layout": True,
+                    }
+                ],
+                "decoder_kwargs": [],
+                "quantizer_kwargs": {
+                    "input_dim": 4,
+                    "rvq_dim": 4,
+                    "output_dim": 4,
+                    "num_quantizers": 1,
+                    "codebook_size": 4,
+                    "codebook_dim": 1,
+                },
+            }
+        )
+
+        default_keys = dict(tree_flatten(MossAudioTokenizer(config).parameters()))
+        forced_keys = dict(
+            tree_flatten(
+                MossAudioTokenizer(
+                    config,
+                    projection_keys={
+                        "encoder.0.input_proj.weight",
+                        "encoder.0.output_proj.weight",
+                    },
+                ).parameters()
+            )
+        )
+
+        self.assertNotIn("encoder.0.input_proj.weight", default_keys)
+        self.assertNotIn("encoder.0.output_proj.weight", default_keys)
+        self.assertIn("encoder.0.input_proj.weight", forced_keys)
+        self.assertIn("encoder.0.output_proj.weight", forced_keys)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -392,6 +392,8 @@ class ProjectedTransformer(nn.Module):
         context: int | None,
         conv_layout: bool,
         module_type: str,
+        force_input_projection: bool = False,
+        force_output_projection: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -399,13 +401,13 @@ class ProjectedTransformer(nn.Module):
         self.downsample_ratio = 1
         self.input_proj = (
             nn.Linear(input_dimension, d_model, bias=False)
-            if int(input_dimension) != int(d_model)
+            if bool(force_input_projection) or int(input_dimension) != int(d_model)
             else Identity()
         )
         self.transformer = Transformer(d_model=d_model, context=context, **kwargs)
         self.output_proj = (
             nn.Linear(d_model, output_dimension, bias=False)
-            if int(output_dimension) != int(d_model)
+            if bool(force_output_projection) or int(output_dimension) != int(d_model)
             else Identity()
         )
 
@@ -547,8 +549,13 @@ class ResidualLFQ(nn.Module):
 
 
 class MossAudioTokenizer(nn.Module):
-    def __init__(self, config: AudioTokenizerConfig):
+    def __init__(
+        self,
+        config: AudioTokenizerConfig,
+        projection_keys: set[str] | None = None,
+    ):
         super().__init__()
+        projection_keys = set(projection_keys or ())
         self.config = config
         self.sample_rate = int(config.sample_rate)
         self.sampling_rate = int(config.sampling_rate)
@@ -562,7 +569,7 @@ class MossAudioTokenizer(nn.Module):
         )
         current_frame_rate = float(self.sampling_rate * channel_factor)
         self.encoder = []
-        for module_kwargs in config.encoder_kwargs or []:
+        for module_index, module_kwargs in enumerate(config.encoder_kwargs or []):
             kwargs = dict(module_kwargs)
             module_type = kwargs.get("module_type")
             if module_type == "PatchedPretransform":
@@ -579,6 +586,14 @@ class MossAudioTokenizer(nn.Module):
                     ProjectedTransformer(
                         **kwargs,
                         context=int(round(current_frame_rate * context_duration)),
+                        force_input_projection=(
+                            f"encoder.{module_index}.input_proj.weight"
+                            in projection_keys
+                        ),
+                        force_output_projection=(
+                            f"encoder.{module_index}.output_proj.weight"
+                            in projection_keys
+                        ),
                     )
                 )
             else:
@@ -593,7 +608,7 @@ class MossAudioTokenizer(nn.Module):
         self.num_quantizers = self.quantizer.num_quantizers
 
         self.decoder = []
-        for module_kwargs in config.decoder_kwargs or []:
+        for module_index, module_kwargs in enumerate(config.decoder_kwargs or []):
             kwargs = dict(module_kwargs)
             module_type = kwargs.get("module_type")
             if module_type == "PatchedPretransform":
@@ -610,6 +625,14 @@ class MossAudioTokenizer(nn.Module):
                     ProjectedTransformer(
                         **kwargs,
                         context=int(round(current_frame_rate * context_duration)),
+                        force_input_projection=(
+                            f"decoder.{module_index}.input_proj.weight"
+                            in projection_keys
+                        ),
+                        force_output_projection=(
+                            f"decoder.{module_index}.output_proj.weight"
+                            in projection_keys
+                        ),
                     )
                 )
             else:
@@ -620,8 +643,13 @@ class MossAudioTokenizer(nn.Module):
     def from_pretrained(cls, source: str | Path) -> "MossAudioTokenizer":
         model_dir = _resolve_audio_tokenizer_dir(source)
         config = AudioTokenizerConfig.from_file(model_dir / "config.json")
-        model = cls(config)
         weights = _sanitize_audio_tokenizer_weights(_load_weights_from_dir(model_dir))
+        projection_keys = {
+            key
+            for key in weights
+            if key.endswith(".input_proj.weight") or key.endswith(".output_proj.weight")
+        }
+        model = cls(config, projection_keys=projection_keys)
         model.load_weights(list(weights.items()), strict=True)
         model.eval()
         return model
