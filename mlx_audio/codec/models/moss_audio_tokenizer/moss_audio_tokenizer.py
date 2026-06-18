@@ -623,6 +623,7 @@ class MossAudioTokenizer(nn.Module):
         model = cls(config)
         weights = _sanitize_audio_tokenizer_weights(_load_weights_from_dir(model_dir))
         model.load_weights(list(weights.items()), strict=True)
+        mx.eval(model.parameters())
         model.eval()
         return model
 

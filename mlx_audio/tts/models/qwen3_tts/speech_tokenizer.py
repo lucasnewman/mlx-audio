@@ -197,6 +197,7 @@ class DecoderRotaryEmbedding(nn.Module):
         self.base = base
         inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
         self._inv_freq = inv_freq
+        mx.eval(self._inv_freq)
 
     def __call__(
         self, x: mx.array, position_ids: mx.array
