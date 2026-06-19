@@ -147,7 +147,7 @@ def _rope_safe(rope, x: mx.array, offset: int) -> mx.array:
     decode has B == 1 and is unaffected. Padding the sequence to length 2 and
     slicing keeps the fast kernel while producing the exact correct result.
     """
-    if x.shape[2] == 1:
+    if x.ndim == 4 and x.shape[0] > 1 and x.shape[2] == 1:
         x = mx.concatenate([x, mx.zeros_like(x)], axis=2)
         return rope(x, offset=offset)[:, :, :1, :]
     return rope(x, offset=offset)
@@ -766,6 +766,38 @@ class Qwen3ASRModel(nn.Module):
 
         return [KVCache() for _ in range(self.config.text_config.num_hidden_layers)]
 
+    def _eos_token_ids(self) -> set[int]:
+        """Resolve EOS ids from the loaded tokenizer, with Qwen defaults as fallback."""
+        token_ids: set[int] = set()
+        tokenizer = getattr(self, "_tokenizer", None)
+
+        def add(value):
+            if value is None:
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    add(item)
+                return
+            try:
+                token_ids.add(int(value))
+            except (TypeError, ValueError):
+                return
+
+        if tokenizer is not None:
+            add(getattr(tokenizer, "eos_token_id", None))
+            add(getattr(tokenizer, "eos_token_ids", None))
+
+            convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+            if convert is not None:
+                for token in ("<|im_end|>", "<|endoftext|>"):
+                    token_id = convert(token)
+                    if token_id != getattr(tokenizer, "unk_token_id", None):
+                        add(token_id)
+
+        if not token_ids:
+            token_ids.update((151645, 151643))
+        return token_ids
+
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Sanitize weights from HuggingFace/PyTorch format to MLX format."""
@@ -932,7 +964,7 @@ class Qwen3ASRModel(nn.Module):
             self._preprocess_audio(audio)
         )
         input_ids = self._build_prompt(num_audio_tokens, language, system_prompt)
-        eos_token_ids = [151645, 151643]
+        eos_token_ids = self._eos_token_ids()
 
         # Step 1: Encode audio features
         with tqdm(
@@ -1004,7 +1036,7 @@ class Qwen3ASRModel(nn.Module):
             if gen_pbar is not None:
                 gen_pbar.update(1)
 
-            if token in eos_token_ids:
+            if int(token) in eos_token_ids:
                 break
 
             yield token, logprobs
@@ -1074,13 +1106,21 @@ class Qwen3ASRModel(nn.Module):
         """
         from mlx_lm.models.cache import KVCache
 
-        eos_token_ids = {151645, 151643}
+        eos_token_ids = self._eos_token_ids()
         texts = [""] * len(chunks)
         gen_tokens = [0] * len(chunks)
         prompt_tokens = [0] * len(chunks)
+        processed = [False] * len(chunks)
+        remaining_tokens = max_tokens
+
+        if remaining_tokens <= 0:
+            return texts, gen_tokens, prompt_tokens, processed
 
         pbar = tqdm(total=len(chunks), desc="Processing chunks", disable=not verbose)
         for b0 in range(0, len(chunks), batch_size):
+            if remaining_tokens <= 0:
+                break
+
             group = chunks[b0 : b0 + batch_size]
             pad_to = max(len(c[0]) for c in group)
 
@@ -1116,7 +1156,9 @@ class Qwen3ASRModel(nn.Module):
 
             out_ids = [[] for _ in range(bsz)]
             done = [False] * bsz
-            for _ in range(max_tokens):
+            group_tokens = 0
+            budget_exhausted = False
+            for _ in range(remaining_tokens):
                 # Build and kick off the next step before consuming the current
                 # one, so the GPU runs this step while Python walks the tokens
                 # (overlap pattern from mlx_lm.generate_step).
@@ -1127,13 +1169,20 @@ class Qwen3ASRModel(nn.Module):
                 mx.async_eval(next_y)
 
                 for i, t in enumerate(y.tolist()):
+                    if budget_exhausted:
+                        break
                     if done[i]:
                         continue
+                    processed[b0 + i] = True
                     if t in eos_token_ids:
                         done[i] = True
                     else:
                         out_ids[i].append(t)
-                if all(done):
+                        group_tokens += 1
+                        if group_tokens >= remaining_tokens:
+                            budget_exhausted = True
+                            break
+                if all(done) or budget_exhausted:
                     break
                 y = next_y
 
@@ -1142,9 +1191,10 @@ class Qwen3ASRModel(nn.Module):
                     out_ids[i], skip_special_tokens=True
                 )
                 gen_tokens[b0 + i] = len(out_ids[i])
+            remaining_tokens -= group_tokens
             pbar.update(bsz)
         pbar.close()
-        return texts, gen_tokens, prompt_tokens
+        return texts, gen_tokens, prompt_tokens, processed
 
     def generate(
         self,
@@ -1203,6 +1253,11 @@ class Qwen3ASRModel(nn.Module):
 
         del kwargs
 
+        if batch_size is None:
+            batch_size = 1
+        elif batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+
         start_time = time.time()
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
@@ -1250,8 +1305,8 @@ class Qwen3ASRModel(nn.Module):
         total_generation_tokens = 0
         remaining_tokens = max_tokens
 
-        if batch_size and batch_size > 1 and len(chunks) > 1:
-            texts, gen_toks, prompt_toks = self._generate_chunks_batched(
+        if max_tokens > 0 and batch_size > 1 and len(chunks) > 1:
+            texts, gen_toks, prompt_toks, processed = self._generate_chunks_batched(
                 chunks,
                 max_tokens=max_tokens,
                 sampler=sampler,
@@ -1260,9 +1315,11 @@ class Qwen3ASRModel(nn.Module):
                 batch_size=batch_size,
                 verbose=verbose,
             )
-            for (chunk_audio, offset_sec), text, gt, pt in zip(
-                chunks, texts, gen_toks, prompt_toks
+            for (chunk_audio, offset_sec), text, gt, pt, was_processed in zip(
+                chunks, texts, gen_toks, prompt_toks, processed
             ):
+                if not was_processed:
+                    continue
                 if language is None:
                     language, text = self.extract_language(text)
                 all_texts.append(text)
