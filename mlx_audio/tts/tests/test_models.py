@@ -8044,6 +8044,59 @@ def moss_local_tiny_config(**overrides):
     return moss_delay_tiny_config(**config)
 
 
+def moss_v15_local_tiny_config(**overrides):
+    config = {
+        "model_type": "moss_tts_local",
+        "n_vq": 2,
+        "audio_vocab_size": 8,
+        "audio_codebook_sizes": [8, 8],
+        "audio_pad_token_id": 8,
+        "audio_pad_code": 8,
+        "pad_token_id": 0,
+        "im_start_token_id": 1,
+        "im_end_token_id": 2,
+        "audio_start_token_id": 3,
+        "audio_end_token_id": 4,
+        "audio_user_slot_token_id": 5,
+        "audio_assistant_slot_token_id": 6,
+        "sampling_rate": 48000,
+        "audio_tokenizer_name_or_path": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+        "local_transformer_layers": 1,
+        "local_text_head_mode": "binary",
+        "language_config": {
+            "model_type": "qwen3",
+            "vocab_size": 64,
+            "hidden_size": 16,
+            "num_hidden_layers": 1,
+            "intermediate_size": 32,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 4,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 64,
+            "rope_theta": 10000.0,
+            "tie_word_embeddings": True,
+        },
+        "gpt2_config": {
+            "model_type": "gpt2",
+            "vocab_size": 64,
+            "n_positions": 16,
+            "n_ctx": 16,
+            "n_embd": 16,
+            "n_layer": 1,
+            "n_head": 4,
+            "n_inner": 32,
+            "activation_function": "silu",
+            "layer_norm_epsilon": 1e-6,
+            "scale_attn_weights": True,
+            "position_embedding_type": "rope",
+            "rope_base": 10000.0,
+        },
+    }
+    config.update(overrides)
+    return moss_delay_tiny_config(**config)
+
+
 class TestMossTTSDelayConfig(unittest.TestCase):
     def test_config_parses_v15_delay_checkpoint(self):
         from mlx_audio.tts.models.moss_tts import ModelConfig
@@ -8182,6 +8235,70 @@ class TestMossTTSDelayConfig(unittest.TestCase):
         self.assertEqual(config.model_type, "moss_tts_delay")
         self.assertEqual(config.n_vq, 16)
         self.assertFalse(config.is_local_transformer)
+
+    def test_config_parses_v15_local_transformer_shape(self):
+        from mlx_audio.tts.models.moss_tts import ModelConfig
+
+        config = ModelConfig.from_dict(
+            {
+                "model_type": "moss_tts_local",
+                "architectures": ["MossTTSLocalModel"],
+                "n_vq": 12,
+                "audio_vocab_size": 1024,
+                "audio_codebook_sizes": [1024] * 12,
+                "audio_pad_token_id": 1024,
+                "audio_pad_code": 1024,
+                "audio_start_token_id": 151669,
+                "audio_end_token_id": 151670,
+                "audio_user_slot_token_id": 151654,
+                "audio_assistant_slot_token_id": 151656,
+                "sampling_rate": 48000,
+                "audio_tokenizer_name_or_path": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+                "local_transformer_layers": 1,
+                "local_text_head_mode": "binary",
+                "language_config": {
+                    "model_type": "qwen3",
+                    "vocab_size": 151936,
+                    "hidden_size": 2560,
+                    "num_hidden_layers": 36,
+                    "intermediate_size": 9728,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "rms_norm_eps": 1e-6,
+                    "max_position_embeddings": 32768,
+                    "rope_theta": 1000000,
+                    "tie_word_embeddings": True,
+                },
+                "gpt2_config": {
+                    "model_type": "gpt2",
+                    "vocab_size": 151936,
+                    "n_embd": 2560,
+                    "n_head": 32,
+                    "n_inner": 9728,
+                    "n_layer": 1,
+                    "n_positions": 10240,
+                    "n_ctx": 10240,
+                    "activation_function": "silu",
+                    "layer_norm_epsilon": 1e-6,
+                    "position_embedding_type": "rope",
+                    "rope_base": 1000000.0,
+                },
+            }
+        )
+
+        self.assertTrue(config.is_v15_local_transformer)
+        self.assertTrue(config.is_local_transformer)
+        self.assertFalse(config.is_legacy_local_transformer)
+        self.assertEqual(config.n_vq, 12)
+        self.assertEqual(config.sampling_rate, 48000)
+        self.assertEqual(config.audio_start_token_id, 151669)
+        self.assertEqual(config.audio_end_token_id, 151670)
+        self.assertEqual(
+            config.audio_tokenizer_pretrained_name_or_path,
+            "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+        )
+        self.assertEqual(config.local_gpt2_config().n_positions, 13)
 
 
 class TestMossTTSDelayProcessor(unittest.TestCase):
@@ -8342,6 +8459,57 @@ class TestMossTTSDelayProcessor(unittest.TestCase):
             ),
         )
 
+    def test_v15_local_generation_prompt_uses_direct_reference_rows(self):
+        from mlx_audio.tts.models.moss_tts.processor import MossTTSLocalV15Processor
+
+        config = moss_v15_local_tiny_config()
+        processor = MossTTSLocalV15Processor(MossDelayFakeTokenizer(), config)
+        reference_codes = mx.array([[1, 2], [3, 4]], dtype=mx.int32)
+
+        batch = processor(
+            [
+                processor.build_user_message(
+                    text="hello",
+                    reference=[reference_codes],
+                    language="English",
+                    scene="ignored",
+                )
+            ],
+            mode="generation",
+        )
+
+        rows = np.array(batch["input_ids"][0])
+        non_pad_audio_rows = rows[~np.all(rows[:, 1:] == config.audio_pad_code, axis=1)]
+        np.testing.assert_array_equal(
+            non_pad_audio_rows[:, 1:], np.array([[1, 2], [3, 4]])
+        )
+        self.assertTrue(
+            np.all(non_pad_audio_rows[:, 0] == config.audio_user_slot_token_id)
+        )
+        np.testing.assert_array_equal(
+            rows[-1],
+            np.array(
+                [
+                    config.audio_start_token_id,
+                    config.audio_pad_code,
+                    config.audio_pad_code,
+                ]
+            ),
+        )
+
+    def test_v15_local_processor_rejects_wrong_rvq_depth(self):
+        from mlx_audio.tts.models.moss_tts.processor import MossTTSLocalV15Processor
+
+        config = moss_v15_local_tiny_config()
+        processor = MossTTSLocalV15Processor(MossDelayFakeTokenizer(), config)
+
+        with self.assertRaisesRegex(ValueError, "Expected n_vq=2"):
+            processor(
+                [processor.build_user_message(text="hello")],
+                mode="generation",
+                n_vq=1,
+            )
+
 
 class TestMossTTSDelayModel(unittest.TestCase):
     def test_build_inputs_embeds_shape(self):
@@ -8397,6 +8565,118 @@ class TestMossTTSDelayModel(unittest.TestCase):
         self.assertEqual(text_logits.shape, (1, 3, 64))
         self.assertEqual(audio_0_logits.shape, (1, 3, 9))
         self.assertEqual(audio_1_logits.shape, (1, 3, 9))
+
+    def test_v15_local_forward_head_shapes(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_v15_local_tiny_config())
+        input_ids = mx.array([[[1, 8, 8], [3, 8, 8], [6, 1, 2]]], dtype=mx.int32)
+
+        text_logits, audio_0_logits, audio_1_logits = model(
+            input_ids,
+            head_indices=[0, 1, 2],
+        )
+
+        self.assertEqual(text_logits.shape, (1, 3, 2))
+        self.assertEqual(audio_0_logits.shape, (1, 3, 8))
+        self.assertEqual(audio_1_logits.shape, (1, 3, 8))
+
+    def test_v15_local_generation_respects_fixed_depth_and_stop_token(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_v15_local_tiny_config())
+        input_ids = mx.array([[[1, 8, 8], [3, 8, 8]]], dtype=mx.int32)
+        calls = {"count": 0}
+
+        def fake_sample_text(*args, **kwargs):
+            del args, kwargs
+            calls["count"] += 1
+            value = (
+                model.config.audio_assistant_slot_token_id
+                if calls["count"] == 1
+                else model.config.audio_end_token_id
+            )
+            return mx.array([value], dtype=mx.int32)
+
+        model._sample_v15_assistant_text_token = fake_sample_text
+
+        outputs = model.generate_v15_local_ids(
+            input_ids,
+            max_new_tokens=4,
+            do_sample=False,
+        )
+
+        start_length, generation_ids = outputs[0]
+        self.assertEqual(start_length, 0)
+        self.assertEqual(generation_ids.shape[0], 2)
+        self.assertEqual(
+            int(generation_ids[-1, 0].item()),
+            model.config.audio_assistant_slot_token_id,
+        )
+        self.assertFalse(
+            np.all(np.array(generation_ids[-1, 1:]) == model.config.audio_pad_code)
+        )
+
+    def test_v15_local_generate_streams_chunks(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_v15_local_tiny_config())
+        model.tokenizer = MossDelayFakeTokenizer()
+        calls = {"count": 0}
+        decoded_shapes = []
+
+        class FakeStreamingDecoder:
+            def decode_frames(self, codes):
+                decoded_shapes.append(tuple(codes.shape))
+                return mx.ones((int(codes.shape[0]) * 2, 2), dtype=mx.float32)
+
+        def fake_sample_text(*args, **kwargs):
+            del args, kwargs
+            calls["count"] += 1
+            value = (
+                model.config.audio_assistant_slot_token_id
+                if calls["count"] <= 5
+                else model.config.audio_end_token_id
+            )
+            return mx.array([value], dtype=mx.int32)
+
+        def fake_make_streaming_decoder(**kwargs):
+            del kwargs
+            return FakeStreamingDecoder()
+
+        model._sample_v15_assistant_text_token = fake_sample_text
+        model._make_audio_tokenizer_streaming_decoder = fake_make_streaming_decoder
+
+        chunks = list(
+            model.generate(
+                text="hello",
+                stream=True,
+                max_tokens=8,
+                do_sample=False,
+                streaming_first_chunk_frames=2,
+                streaming_interval=0.24,
+                streaming_context_frames=0,
+            )
+        )
+
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual([chunk.segment_idx for chunk in chunks], [0, 1, 1])
+        self.assertTrue(all(chunk.is_streaming_chunk for chunk in chunks))
+        self.assertFalse(chunks[0].is_final_chunk)
+        self.assertFalse(chunks[1].is_final_chunk)
+        self.assertTrue(chunks[2].is_final_chunk)
+        self.assertEqual([chunk.token_count for chunk in chunks], [2, 3, 0])
+        self.assertEqual([chunk.samples for chunk in chunks], [4, 6, 0])
+        self.assertEqual(decoded_shapes, [(2, 2), (3, 2)])
+
+    def test_non_v15_local_streaming_is_not_supported(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_local_tiny_config())
+        model.tokenizer = MossDelayFakeTokenizer()
+
+        with self.assertRaisesRegex(NotImplementedError, "v1.5 only"):
+            next(model.generate(text="hello", stream=True, max_tokens=1))
 
     def test_local_sanitize_keeps_model_prefix(self):
         from mlx_audio.tts.models.moss_tts import Model
