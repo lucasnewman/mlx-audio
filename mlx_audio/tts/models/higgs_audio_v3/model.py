@@ -22,6 +22,7 @@ from .prompt import AUDIO_PLACEHOLDER_ID, HiggsAudioV3PromptBuilder, ReferenceCo
 
 ModelConfig = HiggsAudioV3Config
 
+
 def _format_duration(seconds: float) -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
