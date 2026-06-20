@@ -38,9 +38,9 @@ def main():
     ap.add_argument("--out", default="./confucius4-model")
     ap.add_argument(
         "--quantize",
-        choices=["none", "int8"],
+        choices=["none", "int8", "int4"],
         default="none",
-        help="int8: 8-bit (group 64) the T2S body matmuls; semantic_head kept fp32",
+        help="int8/int4: quantize (group 64) the T2S body matmuls; semantic_head kept fp32",
     )
     a = ap.parse_args()
     out = Path(a.out)
@@ -62,7 +62,8 @@ def main():
     t2s_pt = hf_hub_download(
         "netease-youdao/Confucius4-TTS", filename="t2s_model.safetensors"
     )
-    if a.quantize == "int8":
+    qbits = {"int8": 8, "int4": 4}.get(a.quantize, 8)
+    if a.quantize != "none":
         Wt = mx.load(t2s_pt)
         body = {
             f"transformer.h.{i}.{n}.weight"
@@ -72,14 +73,14 @@ def main():
         qd = {}
         for k, v in Wt.items():
             if k in body:  # GPT-2 Conv1D [in,out] -> [out,in] for quantized_matmul
-                wq, sc, bs = mx.quantize(mx.transpose(v), group_size=64, bits=8)
+                wq, sc, bs = mx.quantize(mx.transpose(v), group_size=64, bits=qbits)
                 qd[k] = wq
                 qd[k[:-7] + ".scales"] = sc
                 qd[k[:-7] + ".biases"] = bs
             else:
                 qd[k] = v
         mx.save_safetensors(str(out / "t2s_model.safetensors"), qd)
-        print(f"saved t2s_model.safetensors (int8 body: {len(body)} matmuls)")
+        print(f"saved t2s_model.safetensors ({a.quantize} body: {len(body)} matmuls)")
     else:
         save("t2s_model.safetensors", safetensors.torch.load_file(t2s_pt))
 
@@ -183,6 +184,21 @@ def main():
     )
     shutil.copy(tok_json, ck / "tokenizer.json")
     print("saved checkpoints/tokenizer.json")
+
+    import json
+
+    (out / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "confucius4",
+                "sample_rate": 22050,
+                "quant_bits": qbits,
+                "quant_group_size": 64,
+            },
+            indent=2,
+        )
+    )
+    print("saved config.json")
     print("DONE ->", out)
 
 

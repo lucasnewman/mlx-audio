@@ -52,8 +52,9 @@ def layernorm(x, w, b, eps=1e-5):
 
 
 class T2SMLX:
-    def __init__(self, ckpt=None):
-        self.W = mx.load(ckpt or find_ckpt())  # dict[str, mx.array] F32
+    def __init__(self, ckpt=None, group_size=64, bits=8):
+        self.W = mx.load(ckpt or find_ckpt())  # dict[str, mx.array]
+        self.qgs, self.qbits = group_size, bits  # for quantized_matmul (int8/int4)
 
     # ---- embeddings ----
     def semantic_embed(self, ids):
@@ -75,8 +76,8 @@ class T2SMLX:
                 W[sk],
                 W[k[:-7] + ".biases"],
                 transpose=True,
-                group_size=64,
-                bits=8,
+                group_size=self.qgs,
+                bits=self.qbits,
             )
         return x @ W[k]
 
@@ -154,8 +155,8 @@ class T2SMLX:
                     W["semantic_head.scales"],
                     W["semantic_head.biases"],
                     transpose=True,
-                    group_size=64,
-                    bits=8,
+                    group_size=self.qgs,
+                    bits=self.qbits,
                 )
                 + W["semantic_head.bias"]
             )

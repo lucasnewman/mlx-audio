@@ -39,6 +39,8 @@ class ModelConfig(BaseModelArgs):
     model_path: str = ""
     sample_rate: int = 22050
     model_type: str = "confucius4"
+    quant_bits: int = 8  # bits used if T2S weights are quantized (int8/int4)
+    quant_group_size: int = 64
 
 
 def _ref_mel(audio16k):
@@ -64,7 +66,11 @@ class Model(nn.Module):
         d = Path(config.model_path)
         self.w2v = W2VBertMLX(str(d / "w2vbert_mlx.safetensors"))
         self.prefix = T2SPrefixMLX(str(d / "t2s_model.safetensors"))
-        self.t2s = T2SMLX(str(d / "t2s_model.safetensors"))
+        self.t2s = T2SMLX(
+            str(d / "t2s_model.safetensors"),
+            group_size=config.quant_group_size,
+            bits=config.quant_bits,
+        )
         self.s2a = S2AEstimator(str(d / "s2a_mlx.safetensors"))
         self.voc = BigVGANMLX(str(d / "bigvgan_mlx.safetensors"))
         self.stats = np.load(str(d / "w2v_stats.npz"))
