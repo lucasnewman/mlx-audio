@@ -13,21 +13,23 @@ import numpy as np
 FRAME, HOP, NFFT, MEL_FLOOR = 400, 160, 512, 1.192092955078125e-07
 
 
-def fbank_160(audio: np.ndarray, mel_filters: np.ndarray, window: np.ndarray) -> np.ndarray:
+def fbank_160(
+    audio: np.ndarray, mel_filters: np.ndarray, window: np.ndarray
+) -> np.ndarray:
     """audio (T,) float 16kHz -> (1, num_frames//2, 160)."""
-    wav = audio.astype(np.float64) * (2 ** 15)
+    wav = audio.astype(np.float64) * (2**15)
     nfr = 1 + (len(wav) - FRAME) // HOP
     melT = mel_filters.T
     out = np.empty((nfr, 80), dtype=np.float64)
     for i in range(nfr):
-        b = wav[i * HOP:i * HOP + FRAME].copy()
-        b = b - b.mean()                                   # remove_dc_offset
+        b = wav[i * HOP : i * HOP + FRAME].copy()
+        b = b - b.mean()  # remove_dc_offset
         buf = np.zeros(NFFT)
-        buf[1:FRAME] = b[1:] - 0.97 * b[:-1]               # preemphasis
+        buf[1:FRAME] = b[1:] - 0.97 * b[:-1]  # preemphasis
         buf[0] = b[0] * 0.03
         buf[:FRAME] *= window
         spec = np.abs(np.fft.rfft(buf, NFFT)) ** 2
         out[i] = np.log(np.maximum(MEL_FLOOR, melT @ spec))
-    out = (out - out.mean(0)) / np.sqrt(out.var(0, ddof=1) + 1e-7)   # per-bin CMVN
+    out = (out - out.mean(0)) / np.sqrt(out.var(0, ddof=1) + 1e-7)  # per-bin CMVN
     n = out.shape[0] - (out.shape[0] % 2)
     return out[:n].reshape(n // 2, 160)[None].astype(np.float32)

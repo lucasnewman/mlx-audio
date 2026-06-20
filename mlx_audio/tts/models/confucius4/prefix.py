@@ -9,6 +9,7 @@ so the T2S decode no longer needs the torch prefix. Weights read from
 t2s_model.safetensors (text_projector.*, speaker_encoder.*, text_position_embedding.*).
 """
 import mlx.core as mx
+
 from .t2s import find_ckpt
 
 EPS = 1e-12
@@ -32,8 +33,8 @@ def reflect_pad(x, p):
     if p == 0:
         return x
     T = x.shape[1]
-    li = p - mx.arange(p)                      # [p, p-1, ..., 1]
-    ri = (T - 2) - mx.arange(p)                # [T-2, T-3, ..., T-1-p]
+    li = p - mx.arange(p)  # [p, p-1, ..., 1]
+    ri = (T - 2) - mx.arange(p)  # [T-2, T-3, ..., T-1-p]
     left = mx.take(x, li, axis=1)
     right = mx.take(x, ri, axis=1)
     return mx.concatenate([left, x, right], axis=1)
@@ -57,15 +58,32 @@ class T2SPrefixMLX:
 
     # ---------- text path ----------
     def text_emb(self, token_ids):
-        e = self.g("text_projector.embed.weight")[token_ids]              # (1,T,4096)
-        e = silu(lin(e, self.g("text_projector.text_projection_fc1.weight"), self.g("text_projector.text_projection_fc1.bias")))
-        e = lin(e, self.g("text_projector.text_projection_fc2.weight"), self.g("text_projector.text_projection_fc2.bias"))  # (1,T,1280)
+        e = self.g("text_projector.embed.weight")[token_ids]  # (1,T,4096)
+        e = silu(
+            lin(
+                e,
+                self.g("text_projector.text_projection_fc1.weight"),
+                self.g("text_projector.text_projection_fc1.bias"),
+            )
+        )
+        e = lin(
+            e,
+            self.g("text_projector.text_projection_fc2.weight"),
+            self.g("text_projector.text_projection_fc2.bias"),
+        )  # (1,T,1280)
         T = token_ids.shape[1]
         return e + self.g("text_position_embedding.embedding.weight")[:T][None]
 
     # ---------- ECAPA speaker encoder ----------
     def _tdnn(self, x, p, dilation=1):
-        return relu(conv_same(x, self.g(p + ".conv.weight"), self.g(p + ".conv.bias"), dilation=dilation))
+        return relu(
+            conv_same(
+                x,
+                self.g(p + ".conv.weight"),
+                self.g(p + ".conv.bias"),
+                dilation=dilation,
+            )
+        )
 
     def _res2net(self, x, p, dilation, scale=8):
         chunks = mx.split(x, scale, axis=2)
@@ -83,9 +101,11 @@ class T2SPrefixMLX:
         return mx.concatenate(outs, axis=2)
 
     def _se(self, x, p):
-        s = x.mean(axis=1, keepdims=True)                                 # (B,1,C)
+        s = x.mean(axis=1, keepdims=True)  # (B,1,C)
         s = relu(conv_same(s, self.g(p + ".conv1.weight"), self.g(p + ".conv1.bias")))
-        s = mx.sigmoid(conv_same(s, self.g(p + ".conv2.weight"), self.g(p + ".conv2.bias")))
+        s = mx.sigmoid(
+            conv_same(s, self.g(p + ".conv2.weight"), self.g(p + ".conv2.bias"))
+        )
         return x * s
 
     def _se_res2net(self, x, p, dilation):
@@ -97,7 +117,7 @@ class T2SPrefixMLX:
         return h + residual
 
     def _stats(self, x, w):
-        mean = (w * x).sum(axis=1)                                        # (B,C)
+        mean = (w * x).sum(axis=1)  # (B,C)
         std = mx.sqrt(mx.maximum((w * (x - mean[:, None]) ** 2).sum(axis=1), EPS))
         return mean, std
 
@@ -105,14 +125,24 @@ class T2SPrefixMLX:
         B, T, C = x.shape
         m = mx.full((B, T, 1), 1.0 / T)
         mean, std = self._stats(x, m)
-        att_in = mx.concatenate([x, mx.broadcast_to(mean[:, None], (B, T, C)),
-                                 mx.broadcast_to(std[:, None], (B, T, C))], axis=2)
+        att_in = mx.concatenate(
+            [
+                x,
+                mx.broadcast_to(mean[:, None], (B, T, C)),
+                mx.broadcast_to(std[:, None], (B, T, C)),
+            ],
+            axis=2,
+        )
         h = self._tdnn(att_in, "speaker_encoder.asp.tdnn")
         h = mx.tanh(h)
-        h = conv_same(h, self.g("speaker_encoder.asp.conv.weight"), self.g("speaker_encoder.asp.conv.bias"))
+        h = conv_same(
+            h,
+            self.g("speaker_encoder.asp.conv.weight"),
+            self.g("speaker_encoder.asp.conv.bias"),
+        )
         att = mx.softmax(h, axis=1)
         mean, std = self._stats(x, att)
-        return mx.concatenate([mean, std], axis=1)[:, None]               # (B,1,2C)
+        return mx.concatenate([mean, std], axis=1)[:, None]  # (B,1,2C)
 
     def cond_emb(self, cond_vec):
         """cond_vec (1,Tf,1024) -> (1,1,1280)."""
@@ -125,5 +155,7 @@ class T2SPrefixMLX:
         x = mx.concatenate(feats, axis=2)
         x = self._tdnn(x, "speaker_encoder.mfa")
         x = self._asp(x)
-        x = conv_same(x, self.g("speaker_encoder.fc.weight"), self.g("speaker_encoder.fc.bias"))
-        return x                                                          # (1,1,1280)
+        x = conv_same(
+            x, self.g("speaker_encoder.fc.weight"), self.g("speaker_encoder.fc.bias")
+        )
+        return x  # (1,1,1280)

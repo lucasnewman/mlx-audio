@@ -12,8 +12,9 @@ GPT-2 Conv1D layout [in,out]).
 import glob
 import math
 import os
-import numpy as np
+
 import mlx.core as mx
+import numpy as np
 
 _WEIGHTS = os.path.join(os.path.dirname(__file__), "..", "weights")
 
@@ -23,8 +24,10 @@ N_HEADS = 20
 D_MODEL = 1280
 HEAD_DIM = D_MODEL // N_HEADS
 
-_CKPT_GLOB = ("/Users/tmduc3/.cache/huggingface/hub/"
-              "models--netease-youdao--Confucius4-TTS/snapshots/*/t2s_model.safetensors")
+_CKPT_GLOB = (
+    "/Users/tmduc3/.cache/huggingface/hub/"
+    "models--netease-youdao--Confucius4-TTS/snapshots/*/t2s_model.safetensors"
+)
 
 
 def find_ckpt():
@@ -39,7 +42,7 @@ def find_ckpt():
 
 def gelu_new(x):
     # GPT-2 'gelu_new' (tanh approximation), matches HF
-    return 0.5 * x * (1.0 + mx.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * x ** 3)))
+    return 0.5 * x * (1.0 + mx.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * x**3)))
 
 
 def layernorm(x, w, b, eps=1e-5):
@@ -55,7 +58,7 @@ class T2SMLX:
     # ---- embeddings ----
     def semantic_embed(self, ids):
         """ids: mx int array (B,T) -> (B,T,D) with learned semantic position added."""
-        se = self.W["semantic_embedding.weight"][ids]                 # (B,T,D)
+        se = self.W["semantic_embedding.weight"][ids]  # (B,T,D)
         T = ids.shape[-1]
         pos = self.W["semantic_position_embedding.embedding.weight"][:T]  # (T,D)
         return se + pos[None]
@@ -65,11 +68,13 @@ class T2SMLX:
         W = self.W
         p = f"transformer.h.{i}."
         h = layernorm(x, W[p + "ln_1.weight"], W[p + "ln_1.bias"])
-        qkv = h @ W[p + "attn.c_attn.weight"] + W[p + "attn.c_attn.bias"]   # (B,T,3D)
+        qkv = h @ W[p + "attn.c_attn.weight"] + W[p + "attn.c_attn.bias"]  # (B,T,3D)
         B, T, _ = qkv.shape
         q, k, v = mx.split(qkv, 3, axis=-1)
+
         def heads(t):
             return t.reshape(B, T, N_HEADS, HEAD_DIM).transpose(0, 2, 1, 3)
+
         q, k, v = heads(q), heads(k), heads(v)
         if cache is not None and cache[0] is not None:
             k = mx.concatenate([cache[0], k], axis=2)
@@ -93,7 +98,9 @@ class T2SMLX:
         caches=None means full causal pass (no cache); else incremental."""
         B, T, _ = inputs_embeds.shape
         if caches is None and T > 1:
-            mask = mx.triu(mx.full((T, T), -1e9, dtype=inputs_embeds.dtype), k=1)[None, None]
+            mask = mx.triu(mx.full((T, T), -1e9, dtype=inputs_embeds.dtype), k=1)[
+                None, None
+            ]
         elif caches is None:
             mask = None
         else:
@@ -105,7 +112,9 @@ class T2SMLX:
             c = caches[i] if caches is not None else None
             x, nc = self._block(x, i, mask, c)
             out_caches.append(nc)
-        h = layernorm(x, self.W["transformer.ln_f.weight"], self.W["transformer.ln_f.bias"])
+        h = layernorm(
+            x, self.W["transformer.ln_f.weight"], self.W["transformer.ln_f.bias"]
+        )
         return h, out_caches
 
     def _prefill_mask(self, T, dtype):
@@ -129,23 +138,37 @@ class T2SMLX:
         logits = np.array(logits, dtype=np.float64)
         if gen and rep_pen != 1.0:
             g = np.array(list(set(gen)))
-            logits[g] = np.where(logits[g] > 0, logits[g] / rep_pen, logits[g] * rep_pen)
+            logits[g] = np.where(
+                logits[g] > 0, logits[g] / rep_pen, logits[g] * rep_pen
+            )
         logits = logits / temperature
         if top_k and top_k < logits.shape[0]:
             kth = np.partition(logits, -top_k)[-top_k]
             logits[logits < kth] = -np.inf
         order = np.argsort(logits)[::-1]
         sp = logits[order]
-        probs = np.exp(sp - sp.max()); probs /= probs.sum()
+        probs = np.exp(sp - sp.max())
+        probs /= probs.sum()
         keep = np.cumsum(probs) <= top_p
         keep[0] = True
         sp[~keep] = -np.inf
-        full = np.full_like(logits, -np.inf); full[order] = sp
-        p = np.exp(full - np.nanmax(full)); p /= p.sum()
+        full = np.full_like(logits, -np.inf)
+        full[order] = sp
+        p = np.exp(full - np.nanmax(full))
+        p /= p.sum()
         return int(rng.choice(len(p), p=p))
 
-    def generate(self, cond_emb, text_emb, max_new=512, temperature=0.8,
-                 top_k=30, top_p=0.8, rep_pen=10.0, seed=0):
+    def generate(
+        self,
+        cond_emb,
+        text_emb,
+        max_new=512,
+        temperature=0.8,
+        top_k=30,
+        top_p=0.8,
+        rep_pen=10.0,
+        seed=0,
+    ):
         """KV-cached autoregressive sampling. cond_emb (1,1,D), text_emb (1,Tt,D).
         Returns (semantic_codes int[T], lm_latent float[1,T,D]) for S2A."""
         rng = np.random.default_rng(seed)
@@ -164,15 +187,17 @@ class T2SMLX:
             cur.append(tok)
             if tok == EOS:
                 break
-            e = self._sem_token_embed(tok, pos); pos += 1
+            e = self._sem_token_embed(tok, pos)
+            pos += 1
             h, caches = self.transformer(e, caches=caches)
             logits = self._head(h)[0, -1]
             mx.eval(logits)
-        gen_raw = cur[1:]                                  # includes EOS if emitted
+        gen_raw = cur[1:]  # includes EOS if emitted
         scodes = [BOS] + gen_raw
-        hful, _ = self.transformer(mx.concatenate(
-            [prefix, self.semantic_embed(mx.array([scodes]))], axis=1))   # post ln_f
-        latent = hful[:, 1 + Tt:-2]
+        hful, _ = self.transformer(
+            mx.concatenate([prefix, self.semantic_embed(mx.array([scodes]))], axis=1)
+        )  # post ln_f
+        latent = hful[:, 1 + Tt : -2]
         mx.eval(latent)
         return np.array(scodes[1:-1], dtype=np.int64), np.array(latent)
 
@@ -184,5 +209,7 @@ class T2SMLX:
         for i in range(N_LAYERS):
             x, nc = self._block(x, i, mask, (None, None))
             out_caches.append(nc)
-        h = layernorm(x, self.W["transformer.ln_f.weight"], self.W["transformer.ln_f.bias"])
+        h = layernorm(
+            x, self.W["transformer.ln_f.weight"], self.W["transformer.ln_f.bias"]
+        )
         return h, out_caches
