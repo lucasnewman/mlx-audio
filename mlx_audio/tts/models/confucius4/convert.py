@@ -8,7 +8,6 @@ torch is used ONLY here (conversion), never at inference.
 """
 import argparse
 import glob
-import re
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +36,12 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="./confucius4-model")
+    ap.add_argument(
+        "--quantize",
+        choices=["none", "int8"],
+        default="none",
+        help="int8: 8-bit (group 64) the T2S body matmuls; semantic_head kept fp32",
+    )
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -51,11 +56,32 @@ def main():
         )
         print("saved", name, len(d))
 
-    # T2S (F32 safetensors, mx-loadable as-is) -> copy
+    # T2S GPT-2 weights. With --quantize int8, 8-bit (group 64) the body
+    # matmuls (attn/mlp); keep semantic_head + norms + embeddings fp32 — this
+    # preserves token-selection fidelity (8-bit head audibly degrades it).
     t2s_pt = hf_hub_download(
         "netease-youdao/Confucius4-TTS", filename="t2s_model.safetensors"
     )
-    save("t2s_model.safetensors", safetensors.torch.load_file(t2s_pt))
+    if a.quantize == "int8":
+        Wt = mx.load(t2s_pt)
+        body = {
+            f"transformer.h.{i}.{n}.weight"
+            for i in range(24)
+            for n in ("attn.c_attn", "attn.c_proj", "mlp.c_fc", "mlp.c_proj")
+        }
+        qd = {}
+        for k, v in Wt.items():
+            if k in body:  # GPT-2 Conv1D [in,out] -> [out,in] for quantized_matmul
+                wq, sc, bs = mx.quantize(mx.transpose(v), group_size=64, bits=8)
+                qd[k] = wq
+                qd[k[:-7] + ".scales"] = sc
+                qd[k[:-7] + ".biases"] = bs
+            else:
+                qd[k] = v
+        mx.save_safetensors(str(out / "t2s_model.safetensors"), qd)
+        print(f"saved t2s_model.safetensors (int8 body: {len(body)} matmuls)")
+    else:
+        save("t2s_model.safetensors", safetensors.torch.load_file(t2s_pt))
 
     # S2A (.pt, fold weight_norm)
     s2a_pt = hf_hub_download("netease-youdao/Confucius4-TTS", filename="s2a_model.pt")
@@ -110,7 +136,7 @@ def main():
     print("saved w2v_stats.npz")
 
     # CAMPPlus: sanitize via mlx-audio's CAMPPlus then save (no torch at inference)
-    from mlx.utils import tree_flatten, tree_unflatten
+    from mlx.utils import tree_unflatten
 
     from mlx_audio.tts.models.chatterbox.s3gen.xvector import CAMPPlus
 
@@ -146,6 +172,17 @@ def main():
         window=win.astype(np.float32),
     )
     print("saved fbank_filters.npz")
+
+    # tokenizer (loaded torch-free at runtime via tokenizers.Tokenizer.from_file)
+    import shutil
+
+    ck = out / "checkpoints"
+    ck.mkdir(exist_ok=True)
+    tok_json = hf_hub_download(
+        "netease-youdao/Confucius4-TTS", filename="tokenizer.json"
+    )
+    shutil.copy(tok_json, ck / "tokenizer.json")
+    print("saved checkpoints/tokenizer.json")
     print("DONE ->", out)
 
 

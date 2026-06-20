@@ -63,12 +63,31 @@ class T2SMLX:
         pos = self.W["semantic_position_embedding.embedding.weight"][:T]  # (T,D)
         return se + pos[None]
 
+    # GPT-2 Conv1D matmul x@W (W stored [in,out]); uses 8-bit quantized_matmul
+    # when the weight has been quantized (sibling .scales/.biases present).
+    def _cw(self, x, k):
+        W = self.W
+        sk = k[:-7] + ".scales"
+        if sk in W:
+            return mx.quantized_matmul(
+                x,
+                W[k],
+                W[sk],
+                W[k[:-7] + ".biases"],
+                transpose=True,
+                group_size=64,
+                bits=8,
+            )
+        return x @ W[k]
+
     # ---- one GPT-2 block (optional KV cache) ----
     def _block(self, x, i, mask, cache=None):
         W = self.W
         p = f"transformer.h.{i}."
         h = layernorm(x, W[p + "ln_1.weight"], W[p + "ln_1.bias"])
-        qkv = h @ W[p + "attn.c_attn.weight"] + W[p + "attn.c_attn.bias"]  # (B,T,3D)
+        qkv = (
+            self._cw(h, p + "attn.c_attn.weight") + W[p + "attn.c_attn.bias"]
+        )  # (B,T,3D)
         B, T, _ = qkv.shape
         q, k, v = mx.split(qkv, 3, axis=-1)
 
@@ -86,11 +105,11 @@ class T2SMLX:
         attn = mx.softmax(scores, axis=-1)
         o = attn @ v
         o = o.transpose(0, 2, 1, 3).reshape(B, T, D_MODEL)
-        o = o @ W[p + "attn.c_proj.weight"] + W[p + "attn.c_proj.bias"]
+        o = self._cw(o, p + "attn.c_proj.weight") + W[p + "attn.c_proj.bias"]
         x = x + o
         h2 = layernorm(x, W[p + "ln_2.weight"], W[p + "ln_2.bias"])
-        h2 = gelu_new(h2 @ W[p + "mlp.c_fc.weight"] + W[p + "mlp.c_fc.bias"])
-        h2 = h2 @ W[p + "mlp.c_proj.weight"] + W[p + "mlp.c_proj.bias"]
+        h2 = gelu_new(self._cw(h2, p + "mlp.c_fc.weight") + W[p + "mlp.c_fc.bias"])
+        h2 = self._cw(h2, p + "mlp.c_proj.weight") + W[p + "mlp.c_proj.bias"]
         return x + h2, new_cache
 
     def transformer(self, inputs_embeds, caches=None):
@@ -125,8 +144,22 @@ class T2SMLX:
         return self._head(h)
 
     def _head(self, h_lnf):
-        h = layernorm(h_lnf, self.W["final_norm.weight"], self.W["final_norm.bias"])
-        return h @ self.W["semantic_head.weight"].T + self.W["semantic_head.bias"]
+        W = self.W
+        h = layernorm(h_lnf, W["final_norm.weight"], W["final_norm.bias"])
+        if "semantic_head.scales" in W:
+            return (
+                mx.quantized_matmul(
+                    h,
+                    W["semantic_head.weight"],
+                    W["semantic_head.scales"],
+                    W["semantic_head.biases"],
+                    transpose=True,
+                    group_size=64,
+                    bits=8,
+                )
+                + W["semantic_head.bias"]
+            )
+        return h @ W["semantic_head.weight"].T + W["semantic_head.bias"]
 
     def _sem_token_embed(self, tok, pos):
         """single semantic token id at absolute semantic position -> (1,1,D)."""
