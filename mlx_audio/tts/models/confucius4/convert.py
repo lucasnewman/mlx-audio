@@ -112,7 +112,37 @@ def main():
         if k.startswith("feature_projection.")
         or (k.startswith("encoder.layers.") and int(k.split(".")[2]) <= 16)
     }
-    save("w2vbert_mlx.safetensors", keep)
+    if a.quantize != "none":
+        # quantize per-layer ffn + attn linears (feature_projection kept fp32:
+        # in=160 not divisible by group 64, and it is tiny anyway)
+        wlin = {
+            f"encoder.layers.{i}.{n}.weight"
+            for i in range(17)
+            for n in (
+                "ffn1.intermediate_dense",
+                "ffn1.output_dense",
+                "ffn2.intermediate_dense",
+                "ffn2.output_dense",
+                "self_attn.linear_q",
+                "self_attn.linear_k",
+                "self_attn.linear_v",
+                "self_attn.linear_out",
+            )
+        }
+        qd = {}
+        for k, v in keep.items():
+            arr = mx.array(v.detach().cpu().numpy().astype(np.float32))
+            if k in wlin:
+                wq, sc, bs = mx.quantize(arr, group_size=64, bits=qbits)
+                qd[k] = wq
+                qd[k[:-7] + ".scales"] = sc
+                qd[k[:-7] + ".biases"] = bs
+            else:
+                qd[k] = arr
+        mx.save_safetensors(str(out / "w2vbert_mlx.safetensors"), qd)
+        print(f"saved w2vbert_mlx.safetensors ({a.quantize} linears: {len(wlin)})")
+    else:
+        save("w2vbert_mlx.safetensors", keep)
 
     # w2v stats
     st = torch.load(

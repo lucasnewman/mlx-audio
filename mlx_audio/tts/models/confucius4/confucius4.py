@@ -64,7 +64,11 @@ class Model(nn.Module):
         self.config = config
         self.sample_rate = config.sample_rate
         d = Path(config.model_path)
-        self.w2v = W2VBertMLX(str(d / "w2vbert_mlx.safetensors"))
+        self.w2v = W2VBertMLX(
+            str(d / "w2vbert_mlx.safetensors"),
+            group_size=config.quant_group_size,
+            bits=config.quant_bits,
+        )
         self.prefix = T2SPrefixMLX(str(d / "t2s_model.safetensors"))
         self.t2s = T2SMLX(
             str(d / "t2s_model.safetensors"),

@@ -34,39 +34,53 @@ def swish(x):
 
 
 class W2VBertMLX:
-    def __init__(self, st=ST):
+    def __init__(self, st=ST, group_size=64, bits=8):
         self.W = mx.load(st)
-        # precompute relative position index for attention (built per call by length)
+        self.qgs, self.qbits = group_size, bits  # for optional int8/int4 linears
 
     def g(self, k):
         return self.W[k]
 
+    # Linear (weight [out,in]); 8-bit quantized_matmul when sibling .scales present.
+    def _lin(self, x, wk, bk=None):
+        W = self.W
+        sk = wk[:-7] + ".scales"
+        if sk in W:
+            y = mx.quantized_matmul(
+                x,
+                W[wk],
+                W[sk],
+                W[wk[:-7] + ".biases"],
+                transpose=True,
+                group_size=self.qgs,
+                bits=self.qbits,
+            )
+        else:
+            y = x @ W[wk].T
+        return y + W[bk] if bk is not None else y
+
     def _ffn(self, x, p):
         h = swish(
-            lin(
-                x,
-                self.g(p + ".intermediate_dense.weight"),
-                self.g(p + ".intermediate_dense.bias"),
+            self._lin(
+                x, p + ".intermediate_dense.weight", p + ".intermediate_dense.bias"
             )
         )
-        return lin(
-            h, self.g(p + ".output_dense.weight"), self.g(p + ".output_dense.bias")
-        )
+        return self._lin(h, p + ".output_dense.weight", p + ".output_dense.bias")
 
     def _attn(self, x, p):
         B, T, _ = x.shape
         q = (
-            lin(x, self.g(p + ".linear_q.weight"), self.g(p + ".linear_q.bias"))
+            self._lin(x, p + ".linear_q.weight", p + ".linear_q.bias")
             .reshape(B, T, NH, HD)
             .transpose(0, 2, 1, 3)
         )
         k = (
-            lin(x, self.g(p + ".linear_k.weight"), self.g(p + ".linear_k.bias"))
+            self._lin(x, p + ".linear_k.weight", p + ".linear_k.bias")
             .reshape(B, T, NH, HD)
             .transpose(0, 2, 1, 3)
         )
         v = (
-            lin(x, self.g(p + ".linear_v.weight"), self.g(p + ".linear_v.bias"))
+            self._lin(x, p + ".linear_v.weight", p + ".linear_v.bias")
             .reshape(B, T, NH, HD)
             .transpose(0, 2, 1, 3)
         )
@@ -80,7 +94,7 @@ class W2VBertMLX:
         scores = scores + rel
         a = mx.softmax(scores, axis=-1) @ v  # (B,NH,T,HD)
         a = a.transpose(0, 2, 1, 3).reshape(B, T, H)
-        return lin(a, self.g(p + ".linear_out.weight"), self.g(p + ".linear_out.bias"))
+        return self._lin(a, p + ".linear_out.weight", p + ".linear_out.bias")
 
     def _conv(self, x, p):
         B, T, _ = x.shape
