@@ -9,7 +9,6 @@ final_norm + semantic_head. Prefix (speaker/text encoder) van do torch tinh o
 B1 de co lap phep toan GPT-2. Weight doc thang tu t2s_model.safetensors (F32,
 GPT-2 Conv1D layout [in,out]).
 """
-import glob
 import math
 import os
 
@@ -24,20 +23,16 @@ N_HEADS = 20
 D_MODEL = 1280
 HEAD_DIM = D_MODEL // N_HEADS
 
-_CKPT_GLOB = (
-    "/Users/tmduc3/.cache/huggingface/hub/"
-    "models--netease-youdao--Confucius4-TTS/snapshots/*/t2s_model.safetensors"
-)
-
 
 def find_ckpt():
+    # In normal use the Model passes an explicit path; this default is only for
+    # standalone use with a sibling weights/ dir.
     local = os.path.join(_WEIGHTS, "t2s_model.safetensors")
     if os.path.exists(local):
         return local
-    hits = glob.glob(_CKPT_GLOB)
-    if not hits:
-        raise FileNotFoundError(f"{local} or {_CKPT_GLOB}")
-    return hits[0]
+    raise FileNotFoundError(
+        f"{local} not found; pass an explicit checkpoint path (see convert.py)."
+    )
 
 
 def gelu_new(x):
