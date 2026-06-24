@@ -67,6 +67,25 @@ for result in model.generate(
     audio_write("output.wav", result.audio, result.sample_rate)
 ```
 
+Batch generation can reuse the same pre-encoded reference across multiple
+texts:
+
+```python
+reference_codes = model.encode_reference_audio("reference.wav")
+texts = [
+    "The first line uses the cloned voice.",
+    "The second line is generated in the same batch.",
+]
+
+for result in model.batch_generate(
+    texts=texts,
+    ref_audio_codes=reference_codes,
+    ref_text="Reference transcript.",
+    temperature=1.0,
+):
+    audio_write(f"output_{result.sequence_idx}.wav", result.audio, result.sample_rate)
+```
+
 ## Controls
 
 Inline control tokens from the upstream model can be placed directly in the

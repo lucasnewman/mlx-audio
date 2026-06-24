@@ -94,6 +94,23 @@ def sample_independent(
     return mx.random.categorical(logits, axis=-1).astype(mx.int32)
 
 
+def sample_batch(
+    logits_bnv: mx.array,
+    *,
+    temperature: float,
+    top_p: Optional[float],
+    top_k: Optional[int],
+) -> mx.array:
+    if logits_bnv.ndim != 3:
+        raise ValueError(f"logits_bnv must be [B, N, V], got {logits_bnv.shape}")
+    if temperature <= 1e-5 or (top_k is not None and int(top_k) == 1):
+        return mx.argmax(logits_bnv, axis=-1).astype(mx.int32)
+    logits = logits_bnv / float(temperature)
+    logits = _apply_top_k(logits, top_k)
+    logits = _apply_top_p(logits, top_p)
+    return mx.random.categorical(logits, axis=-1).astype(mx.int32)
+
+
 def step(
     logits_nv: mx.array,
     state: HiggsSamplerState,
