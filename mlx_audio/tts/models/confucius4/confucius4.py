@@ -123,6 +123,13 @@ class Model(nn.Module):
         audio = audio.astype(np.float32)
         if audio.ndim > 1:
             audio = audio.mean(1)
+        if sr != 16000:
+            # fbank_160, CAMPPlus and _ref_mel all assume a 16 kHz stream;
+            # without this a 44.1/48 kHz ref is misread as 16 kHz and the
+            # downstream mel is off by sr/16000, producing garbled audio.
+            import librosa
+
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
 
         feats = self._fbank(audio, self._mel, self._win)
         h17 = np.array(self.w2v.hidden17(mx.array(feats)))
