@@ -11,6 +11,7 @@ from mlx_audio.tts.models.higgs_audio_v3.generation import (
     HiggsSamplerState,
     apply_delay_pattern,
     reverse_delay_pattern,
+    sample_batch,
     step,
 )
 from mlx_audio.tts.models.higgs_audio_v3.model import Model
@@ -76,6 +77,10 @@ class FakeCodec:
         )
         return codes
 
+    def decode(self, codes):
+        length = int(codes.shape[0]) * 10
+        return mx.ones((length,), dtype=mx.float32)
+
 
 class TestHiggsAudioV3Config(unittest.TestCase):
     def test_parses_source_config_shape(self):
@@ -139,6 +144,13 @@ class TestHiggsAudioV3DelayPattern(unittest.TestCase):
 
 
 class TestHiggsAudioV3Sampler(unittest.TestCase):
+    def test_batch_sampler_greedy_shape(self):
+        logits = mx.zeros((2, 4, 10))
+        logits[:, :, 3] = 1.0
+        out = sample_batch(logits, temperature=0.0, top_p=None, top_k=None)
+        self.assertEqual(out.shape, (2, 4))
+        np.testing.assert_array_equal(np.array(out), np.full((2, 4), 3))
+
     def test_ramp_in_forces_later_codebooks_to_boc(self):
         state = HiggsSamplerState(num_codebooks=4)
         logits = mx.zeros((4, 10))
@@ -318,6 +330,111 @@ class TestHiggsAudioV3Model(unittest.TestCase):
             model._normalize_references(
                 ref_audio_codes=mx.ones((4, 3), dtype=mx.int32),
             )
+
+    def test_supports_tts_batch_for_reference_cloning(self):
+        model = Model(_tiny_config())
+
+        self.assertTrue(
+            model.supports_tts_batch(
+                ref_audio=np.zeros(100, dtype=np.float32),
+                ref_text="Reference transcript.",
+            )
+        )
+        self.assertFalse(model.supports_tts_batch(stream=True))
+        self.assertFalse(model.supports_tts_batch(voice="speaker"))
+        self.assertFalse(model.supports_tts_batch(speed=1.2))
+
+    def test_batch_generate_reuses_shared_reference_audio(self):
+        model = Model(_tiny_config())
+        model._prompt_builder = HiggsAudioV3PromptBuilder(FakeTokenizer())
+        codec = FakeCodec()
+        model._codec = codec
+        mx.eval(model.parameters())
+
+        results = list(
+            model.batch_generate(
+                ["first", "second"],
+                ref_audio=np.zeros(100, dtype=np.float32),
+                ref_text="Reference transcript.",
+                max_new_tokens=5,
+                temperature=0.0,
+                top_k=1,
+                fade_in_ms=0.0,
+                fade_out_ms=0.0,
+            )
+        )
+
+        self.assertEqual(codec.encode_calls, 1)
+        self.assertEqual([result.sequence_idx for result in results], [0, 1])
+        self.assertEqual(len(results), 2)
+        self.assertTrue(
+            all(result.sample_rate == model.sample_rate for result in results)
+        )
+        self.assertTrue(all(result.token_count <= 5 for result in results))
+
+    def test_batch_generate_accepts_preencoded_reference_codes(self):
+        model = Model(_tiny_config())
+        model._prompt_builder = HiggsAudioV3PromptBuilder(FakeTokenizer())
+        codec = FakeCodec()
+        model._codec = codec
+        mx.eval(model.parameters())
+
+        ref_codes = mx.ones((4, 4), dtype=mx.int32)
+        results = list(
+            model.batch_generate(
+                ["first", "second"],
+                ref_audio_codes=ref_codes,
+                ref_text="Reference transcript.",
+                max_new_tokens=5,
+                temperature=0.0,
+                top_k=1,
+                fade_in_ms=0.0,
+                fade_out_ms=0.0,
+            )
+        )
+
+        self.assertEqual(codec.encode_calls, 0)
+        self.assertEqual([result.sequence_idx for result in results], [0, 1])
+
+    def test_batch_generate_matches_serial_for_different_prompt_lengths(self):
+        model = Model(_tiny_config())
+        model._prompt_builder = HiggsAudioV3PromptBuilder(FakeTokenizer())
+        model._codec = FakeCodec()
+        mx.eval(model.parameters())
+
+        texts = [
+            "short",
+            "this is a much longer text input for the second batch item",
+        ]
+        ref_codes = mx.ones((4, 4), dtype=mx.int32)
+        common_kwargs = {
+            "ref_audio_codes": ref_codes,
+            "ref_text": "Reference transcript.",
+            "max_new_tokens": 5,
+            "temperature": 0.0,
+            "top_k": 1,
+            "fade_in_ms": 0.0,
+            "fade_out_ms": 0.0,
+        }
+
+        serial = [next(model.generate(text, **common_kwargs)) for text in texts]
+        batch = list(model.batch_generate(texts, **common_kwargs))
+
+        self.assertEqual([result.sequence_idx for result in batch], [0, 1])
+        self.assertEqual(
+            [result.token_count for result in batch],
+            [result.token_count for result in serial],
+        )
+        self.assertEqual(
+            [result.samples for result in batch],
+            [result.samples for result in serial],
+        )
+
+    def test_batch_generate_rejects_streaming(self):
+        model = Model(_tiny_config())
+
+        with self.assertRaisesRegex(NotImplementedError, "batch streaming"):
+            list(model.batch_generate(["text"], stream=True))
 
 
 if __name__ == "__main__":

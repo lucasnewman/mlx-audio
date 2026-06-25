@@ -66,6 +66,25 @@ result = next(model.generate(
 audio_write("cloned.wav", result.audio, result.sample_rate)
 ```
 
+Batch generation can reuse the same pre-encoded reference across multiple texts:
+
+```python
+reference_codes = model.encode_reference_audio("reference.wav")
+texts = [
+    "The first line uses the cloned voice.",
+    "The second line is generated in the same batch.",
+]
+
+for result in model.batch_generate(
+    texts=texts,
+    ref_audio_codes=reference_codes,
+    ref_text="Reference transcript.",
+    temperature=1.0,
+    max_new_tokens=2048,
+):
+    audio_write(f"cloned_{result.sequence_idx}.wav", result.audio, result.sample_rate)
+```
+
 Reference audio and text can be repeated:
 
 ```bash
