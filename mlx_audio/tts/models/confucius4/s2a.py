@@ -68,9 +68,26 @@ class S2AEstimator:
             self.g(prefix + ".time_mlp.2.bias"),
         )
 
+    def _extend_freqs(self, T):
+        # freqs_cis is precomputed only up to 4096 positions; a long ref mel
+        # (T_ref + target > 4096 frames) would slice short and crash _rope's
+        # reshape. RoPE angle is linear in position (angle(p)=p*theta), so we
+        # recover theta from row 1 and append the missing rows, leaving the
+        # original 4096 rows byte-identical.
+        import numpy as np
+
+        f = np.array(self.freqs)  # (P0, hd//2, 2)
+        P0 = f.shape[0]
+        theta = np.arctan2(f[1, :, 1], f[1, :, 0])
+        extra = np.arange(P0, T)[:, None] * theta[None, :]
+        tail = np.stack([np.cos(extra), np.sin(extra)], -1).astype(f.dtype)
+        self.freqs = mx.array(np.concatenate([f, tail], 0))
+
     def _rope(self, x):
         # x (B,T,nh,hd) interleaved pairs
         B, T, nh, hd = x.shape
+        if T > self.freqs.shape[0]:
+            self._extend_freqs(T)
         xs = x.reshape(B, T, nh, hd // 2, 2)
         c = self.freqs[:T, :, 0].reshape(1, T, 1, hd // 2)
         s = self.freqs[:T, :, 1].reshape(1, T, 1, hd // 2)
