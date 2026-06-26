@@ -537,6 +537,14 @@ class Model(nn.Module):
             return False
         return True
 
+    def supports_tts_continuous_batch(self, **kwargs) -> bool:
+        return self.supports_tts_batch(**kwargs)
+
+    def create_tts_batch_session(self, options):
+        from .continuous_batching import HiggsAudioV3BatchSession
+
+        return HiggsAudioV3BatchSession(self, options)
+
     def batch_generate(
         self,
         texts: list[str],
