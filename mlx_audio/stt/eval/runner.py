@@ -229,7 +229,9 @@ def _limit_iterable(iterable: Iterable[T], limit: Optional[int]) -> Iterator[T]:
 
 
 def _batched(iterable: Iterable[T], batch_size: int) -> Iterator[list[T]]:
-    return (list(batch) for batch in itertools.batched(iterable, batch_size))
+    iterator = iter(iterable)
+    while batch := list(itertools.islice(iterator, batch_size)):
+        yield batch
 
 
 def _transcribe_sample(
