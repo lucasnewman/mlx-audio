@@ -67,9 +67,8 @@ def get_most_attended_frame(cross_qk: List[mx.array], alignment_heads: mx.array)
     Returns:
         Frame index that receives highest average attention for the last token.
     """
-    weights = mx.stack(
-        [cross_qk[layer][0, head, -1, :] for layer, head in alignment_heads.tolist()]
-    )
+    heads_list = alignment_heads.tolist()
+    weights = mx.stack([cross_qk[layer][0, head, -1, :] for layer, head in heads_list])
 
     avg_attention = weights.mean(axis=0)
     most_attended = int(mx.argmax(avg_attention).item())
