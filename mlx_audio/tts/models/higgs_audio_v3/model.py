@@ -7,15 +7,16 @@ from typing import Any, Iterator, Optional
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.cache import make_prompt_cache
+from mlx_lm.models.cache import BatchKVCache, make_prompt_cache
 from mlx_lm.models.qwen3 import Qwen3Model
 
-from ..base import GenerationResult
+from ..base import BatchGenerationResult, GenerationResult
 from .config import HiggsAudioV3Config
 from .generation import (
     HiggsSamplerState,
     apply_delay_pattern,
     reverse_delay_pattern,
+    sample_batch,
     step,
 )
 from .prompt import AUDIO_PLACEHOLDER_ID, HiggsAudioV3PromptBuilder, ReferenceCodes
@@ -348,6 +349,393 @@ class Model(nn.Module):
         audio = self._codec.decode(raw_codes)
         return audio.astype(mx.float32).reshape(-1)
 
+    def _apply_fades(
+        self,
+        audio: mx.array,
+        *,
+        fade_in_ms: float,
+        fade_out_ms: float,
+    ) -> mx.array:
+        audio_np = np.array(audio).astype(np.float32, copy=False)
+        n_in = int(fade_in_ms * self.sample_rate / 1000.0)
+        n_out = int(fade_out_ms * self.sample_rate / 1000.0)
+        if n_in > 0 and audio_np.size > n_in:
+            audio_np[:n_in] *= np.linspace(0.0, 1.0, n_in, dtype=np.float32)
+        if n_out > 0 and audio_np.size > n_out:
+            audio_np[-n_out:] *= np.linspace(1.0, 0.0, n_out, dtype=np.float32)
+        return mx.array(audio_np)
+
+    @staticmethod
+    def _normalize_batch_arg(name: str, value: Any, batch_size: int) -> list[Any]:
+        if value is None:
+            return [None] * batch_size
+        if isinstance(value, (list, tuple)):
+            if len(value) != batch_size:
+                raise ValueError(
+                    f"{name} length ({len(value)}) must match texts length "
+                    f"({batch_size})"
+                )
+            return list(value)
+        return [value] * batch_size
+
+    @staticmethod
+    def _all_equal_hashable(values: list[Any]) -> bool:
+        if not values:
+            return True
+        first = values[0]
+        if not isinstance(first, (str, Path, int, float, bool, type(None))):
+            return False
+        return all(value == first for value in values[1:])
+
+    def _normalize_batch_references(
+        self,
+        *,
+        batch_size: int,
+        ref_audio=None,
+        ref_text=None,
+        references=None,
+        ref_audios=None,
+        ref_texts=None,
+        ref_audio_codes=None,
+        ref_audio_codes_list=None,
+    ) -> list[list[ReferenceCodes]]:
+        ref_audio_items = self._normalize_batch_arg(
+            "ref_audios",
+            ref_audios if ref_audios is not None else ref_audio,
+            batch_size,
+        )
+        ref_text_items = self._normalize_batch_arg(
+            "ref_texts",
+            ref_texts if ref_texts is not None else ref_text,
+            batch_size,
+        )
+
+        has_explicit_shared_ref = ref_audios is None and ref_texts is None
+        has_equal_per_item_refs = self._all_equal_hashable(
+            ref_audio_items
+        ) and self._all_equal_hashable(ref_text_items)
+        if references is None and (has_explicit_shared_ref or has_equal_per_item_refs):
+            shared_refs = self._normalize_references(
+                ref_audio=ref_audio_items[0],
+                ref_text=ref_text_items[0],
+                ref_audio_codes=ref_audio_codes,
+                ref_audio_codes_list=ref_audio_codes_list,
+            )
+            return [shared_refs] * batch_size
+
+        if ref_audio_codes is not None or ref_audio_codes_list is not None:
+            shared_code_refs = self._normalize_references(
+                ref_audio_codes=ref_audio_codes,
+                ref_audio_codes_list=ref_audio_codes_list,
+            )
+            return [
+                [
+                    ReferenceCodes(
+                        codes=reference.codes,
+                        text=(
+                            str(ref_text_items[index])
+                            if ref_text_items[index] is not None
+                            else reference.text
+                        ),
+                    )
+                    for reference in shared_code_refs
+                ]
+                for index in range(batch_size)
+            ]
+
+        return [
+            self._normalize_references(
+                ref_audio=ref_audio_items[index],
+                ref_text=ref_text_items[index],
+                references=references,
+            )
+            for index in range(batch_size)
+        ]
+
+    def _step_batch_sampler(
+        self,
+        logits_batch: mx.array,
+        states: list[HiggsSamplerState],
+        *,
+        temperature: float,
+        top_p: Optional[float],
+        top_k: Optional[int],
+    ) -> list[mx.array]:
+        sampled = sample_batch(
+            logits_batch,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+        )
+        mx.eval(sampled)
+        first_codes = sampled[:, 0].tolist()
+        codebook_positions = mx.arange(self.config.audio_num_codebooks, dtype=mx.int32)
+
+        rows = []
+        for index, state in enumerate(states):
+            codes = sampled[index]
+            if state.delay_count < state.num_codebooks:
+                next_codebook = state.delay_count + 1
+                if next_codebook < state.num_codebooks:
+                    tail_mask = codebook_positions >= next_codebook
+                    codes = mx.where(
+                        tail_mask,
+                        mx.array(self.config.audio_boc_token_id, dtype=mx.int32),
+                        codes,
+                    )
+                state.delay_count += 1
+            elif state.eoc_countdown is not None:
+                state.eoc_countdown -= 1
+                if state.eoc_countdown <= 0:
+                    state.generation_done = True
+            elif int(first_codes[index]) == self.config.audio_eoc_token_id:
+                if state.num_codebooks <= 2:
+                    state.generation_done = True
+                else:
+                    state.eoc_countdown = state.num_codebooks - 2
+
+            if not state.generation_done:
+                state.last_codes = codes
+            rows.append(codes)
+        return rows
+
+    def _resolve_generation_limit(
+        self,
+        *,
+        max_new_tokens: Optional[int],
+        max_new_frames: Optional[int],
+        max_tokens: Optional[int],
+    ) -> int:
+        limit = max_new_tokens
+        if limit is None:
+            limit = max_new_frames
+        if limit is None:
+            limit = max_tokens
+        if limit is None:
+            limit = 2048
+        return int(limit)
+
+    def supports_tts_batch(
+        self,
+        *,
+        stream: bool = False,
+        voice: Optional[str] = None,
+        instruct: Optional[str] = None,
+        speed: Optional[float] = 1.0,
+        gender: Optional[str] = None,
+        pitch: Optional[float] = 1.0,
+        **kwargs,
+    ) -> bool:
+        del kwargs
+        if stream:
+            return False
+        if voice is not None or instruct is not None:
+            return False
+        if gender not in (None, "male"):
+            return False
+        if speed not in (None, 1.0) or pitch not in (None, 1.0):
+            return False
+        return True
+
+    def supports_tts_continuous_batch(self, **kwargs) -> bool:
+        return self.supports_tts_batch(**kwargs)
+
+    def create_tts_batch_session(self, options):
+        from .continuous_batching import HiggsAudioV3BatchSession
+
+        return HiggsAudioV3BatchSession(self, options)
+
+    def batch_generate(
+        self,
+        texts: list[str],
+        voices: Optional[list[Optional[str]]] = None,
+        instructs: Optional[list[Optional[str]]] = None,
+        speeds: Optional[list[Optional[float]]] = None,
+        genders: Optional[list[Optional[str]]] = None,
+        pitches: Optional[list[Optional[float]]] = None,
+        ref_audio=None,
+        ref_text=None,
+        references=None,
+        ref_audios=None,
+        ref_texts=None,
+        ref_audio_codes=None,
+        ref_audio_codes_list=None,
+        max_new_tokens: Optional[int] = None,
+        max_new_frames: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        temperature: float = 1.0,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        seed: Optional[int] = None,
+        fade_in_ms: float = 30.0,
+        fade_out_ms: float = 15.0,
+        stream: bool = False,
+        **kwargs,
+    ) -> Iterator[BatchGenerationResult]:
+        del kwargs
+        if stream:
+            raise NotImplementedError(
+                "Higgs Audio v3 batch streaming is not implemented."
+            )
+
+        batch_size = len(texts)
+        if batch_size == 0:
+            return
+
+        voices = self._normalize_batch_arg("voices", voices, batch_size)
+        instructs = self._normalize_batch_arg("instructs", instructs, batch_size)
+        speeds = self._normalize_batch_arg("speeds", speeds, batch_size)
+        genders = self._normalize_batch_arg("genders", genders, batch_size)
+        pitches = self._normalize_batch_arg("pitches", pitches, batch_size)
+
+        for index in range(batch_size):
+            if voices[index] is not None:
+                raise ValueError(
+                    "Higgs Audio v3 batch_generate does not support voices"
+                )
+            if instructs[index] is not None:
+                raise ValueError(
+                    "Higgs Audio v3 batch_generate does not support instructs"
+                )
+            if genders[index] not in (None, "male"):
+                raise ValueError(
+                    "Higgs Audio v3 batch_generate does not support gender"
+                )
+            if speeds[index] not in (None, 1.0) or pitches[index] not in (None, 1.0):
+                raise ValueError(
+                    "Higgs Audio v3 batch_generate does not support speed or pitch"
+                )
+
+        if seed is not None:
+            mx.random.seed(int(seed))
+
+        limit = self._resolve_generation_limit(
+            max_new_tokens=max_new_tokens,
+            max_new_frames=max_new_frames,
+            max_tokens=max_tokens,
+        )
+        start = time.perf_counter()
+
+        references_by_sequence = self._normalize_batch_references(
+            batch_size=batch_size,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            references=references,
+            ref_audios=ref_audios,
+            ref_texts=ref_texts,
+            ref_audio_codes=ref_audio_codes,
+            ref_audio_codes_list=ref_audio_codes_list,
+        )
+
+        states = []
+        prompt_embeddings = []
+        prompt_lengths = []
+        for sequence_idx, text in enumerate(texts):
+            prompt_embeds, _prompt_tokens = self._build_prompt_embeddings(
+                text,
+                references_by_sequence[sequence_idx],
+            )
+            mx.eval(prompt_embeds)
+            prompt_embeddings.append(prompt_embeds)
+            prompt_lengths.append(int(prompt_embeds.shape[1]))
+
+            states.append(
+                {
+                    "sequence_idx": sequence_idx,
+                    "sampler": HiggsSamplerState(
+                        num_codebooks=self.config.audio_num_codebooks
+                    ),
+                    "delayed_rows": [],
+                }
+            )
+
+        max_prompt_length = max(prompt_lengths)
+        left_padding = [max_prompt_length - length for length in prompt_lengths]
+        padded_prompt_embeddings = []
+        for prompt_embeds, pad in zip(prompt_embeddings, left_padding):
+            if pad:
+                prompt_embeds = mx.pad(prompt_embeds, [(0, 0), (pad, 0), (0, 0)])
+            padded_prompt_embeddings.append(prompt_embeds)
+        prompt_batch = mx.concatenate(padded_prompt_embeddings, axis=0)
+        batch_cache = [BatchKVCache(left_padding) for _ in self.layers]
+        dummy = mx.zeros((batch_size, max_prompt_length), dtype=mx.int32)
+        hidden = self.backbone(dummy, cache=batch_cache, input_embeddings=prompt_batch)
+        last_hidden_batch = hidden[:, -1, :]
+        mx.eval(last_hidden_batch)
+
+        active = list(range(batch_size))
+        for _ in range(limit):
+            if not active:
+                break
+
+            logits_batch = self._audio_logits(last_hidden_batch)
+            sampler_states = [states[index]["sampler"] for index in active]
+            sampled_rows = self._step_batch_sampler(
+                logits_batch,
+                sampler_states,
+                temperature=float(temperature),
+                top_p=top_p,
+                top_k=top_k,
+            )
+
+            next_active = []
+            next_codes = []
+            keep_positions = []
+            for active_position, (state_index, codes) in enumerate(
+                zip(active, sampled_rows)
+            ):
+                state = states[state_index]
+                state["delayed_rows"].append(codes)
+                if not state["sampler"].generation_done:
+                    keep_positions.append(active_position)
+                    next_active.append(state_index)
+                    next_codes.append(codes)
+
+            if not next_active:
+                active = []
+                break
+
+            if len(next_active) != len(active):
+                keep = mx.array(keep_positions, dtype=mx.int32)
+                for layer_cache in batch_cache:
+                    layer_cache.filter(keep)
+
+            codes_batch = mx.stack(next_codes, axis=0)
+            next_embed = self._embed_audio_codes(codes_batch)[:, None, :]
+            decode_dummy = mx.zeros((len(next_active), 1), dtype=mx.int32)
+            hidden = self.backbone(
+                decode_dummy,
+                cache=batch_cache,
+                input_embeddings=next_embed,
+            )
+            last_hidden_batch = hidden[:, -1, :]
+            mx.eval(last_hidden_batch)
+            active = next_active
+
+        for state in states:
+            audio = self._decode_audio(state["delayed_rows"])
+            mx.eval(audio)
+            audio = self._apply_fades(
+                audio,
+                fade_in_ms=fade_in_ms,
+                fade_out_ms=fade_out_ms,
+            )
+            mx.eval(audio)
+
+            elapsed = time.perf_counter() - start
+            samples = int(audio.shape[0])
+            duration_s = samples / self.sample_rate if self.sample_rate else 0.0
+            yield BatchGenerationResult(
+                audio=audio,
+                sequence_idx=state["sequence_idx"],
+                samples=samples,
+                sample_rate=self.sample_rate,
+                token_count=len(state["delayed_rows"]),
+                audio_duration=_format_duration(duration_s),
+                processing_time_seconds=elapsed,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+            )
+
     def generate(
         self,
         text: str,
@@ -375,13 +763,11 @@ class Model(nn.Module):
         if seed is not None:
             mx.random.seed(int(seed))
 
-        limit = max_new_tokens
-        if limit is None:
-            limit = max_new_frames
-        if limit is None:
-            limit = max_tokens
-        if limit is None:
-            limit = 2048
+        limit = self._resolve_generation_limit(
+            max_new_tokens=max_new_tokens,
+            max_new_frames=max_new_frames,
+            max_tokens=max_tokens,
+        )
 
         start = time.perf_counter()
         references_list = self._normalize_references(
@@ -430,17 +816,14 @@ class Model(nn.Module):
 
         audio = self._decode_audio(delayed_rows)
         mx.eval(audio)
-        audio_np = np.array(audio).astype(np.float32, copy=False)
-
-        n_in = int(fade_in_ms * self.sample_rate / 1000.0)
-        n_out = int(fade_out_ms * self.sample_rate / 1000.0)
-        if n_in > 0 and audio_np.size > n_in:
-            audio_np[:n_in] *= np.linspace(0.0, 1.0, n_in, dtype=np.float32)
-        if n_out > 0 and audio_np.size > n_out:
-            audio_np[-n_out:] *= np.linspace(1.0, 0.0, n_out, dtype=np.float32)
+        audio = self._apply_fades(
+            audio,
+            fade_in_ms=fade_in_ms,
+            fade_out_ms=fade_out_ms,
+        )
+        mx.eval(audio)
 
         elapsed = time.perf_counter() - start
-        audio = mx.array(audio_np)
         samples = int(audio.shape[0])
         duration_s = samples / self.sample_rate if self.sample_rate else 0.0
         token_count = len(delayed_rows)
