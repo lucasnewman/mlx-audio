@@ -1,6 +1,4 @@
-# Copyright (c) 2026 Hert4 (https://github.com/Hert4)
-# MLX port of Confucius4-TTS (netease-youdao, Apache-2.0).
-# Licensed under the Apache License, Version 2.0.
+# Copyright © 2023-2024 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 """T2S (Text2Semantic) GPT-2 core ported to MLX.
 

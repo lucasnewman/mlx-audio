@@ -1,10 +1,8 @@
-# Copyright (c) 2026 Hert4 (https://github.com/Hert4)
-# MLX port of Confucius4-TTS (netease-youdao, Apache-2.0).
-# Licensed under the Apache License, Version 2.0.
+# Copyright © 2023-2024 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 """Confucius4-TTS: multilingual, cross-lingual, zero-shot voice-cloning TTS in MLX.
 
 Pipeline: w2v-bert semantic features + CAMPPlus speaker emb -> T2S (GPT-2) ->
-S2A flow-matching (DiT+WaveNet) -> BigVGAN vocoder. All MLX; frontend DSP numpy.
+S2A flow-matching (DiT+WaveNet) -> BigVGAN vocoder. All MLX; ref-mel DSP numpy.
 """
 import time
 from dataclasses import dataclass
@@ -43,19 +41,55 @@ class ModelConfig(BaseModelArgs):
     quant_group_size: int = 64
 
 
+def _slaney_mel(sr, n_fft, n_mels):
+    """librosa.filters.mel(htk=False, norm="slaney") reimplemented in numpy."""
+    n_freqs = n_fft // 2 + 1
+    fftfreqs = np.linspace(0, sr / 2, n_freqs)
+    f_sp, min_log_hz = 200.0 / 3, 1000.0
+    min_log_mel = min_log_hz / f_sp
+    logstep = np.log(6.4) / 27.0
+
+    def hz_to_mel(f):
+        f = np.asarray(f, dtype=float)
+        mel = f / f_sp
+        log = f >= min_log_hz
+        mel[log] = min_log_mel + np.log(f[log] / min_log_hz) / logstep
+        return mel
+
+    def mel_to_hz(m):
+        f = f_sp * m
+        log = m >= min_log_mel
+        f[log] = min_log_hz * np.exp(logstep * (m[log] - min_log_mel))
+        return f
+
+    mpts = np.linspace(0.0, hz_to_mel([sr / 2])[0], n_mels + 2)
+    fpts = mel_to_hz(mpts)
+    fdiff = np.diff(fpts)
+    ramps = fpts[:, None] - fftfreqs[None, :]
+    w = np.zeros((n_mels, n_freqs))
+    for i in range(n_mels):
+        lower = -ramps[i] / fdiff[i]
+        upper = ramps[i + 2] / fdiff[i + 1]
+        w[i] = np.maximum(0, np.minimum(lower, upper))
+    w *= (2.0 / (fpts[2 : n_mels + 2] - fpts[:n_mels]))[:, None]  # slaney norm
+    return w.astype(np.float32)
+
+
+_REF_MEL_FB = _slaney_mel(22050, 1024, 80)
+
+
 def _ref_mel(audio16k):
-    import librosa
+    from mlx_audio.utils import resample_audio
 
     SR, NFFT, HOP, WIN = 22050, 1024, 256, 1024
-    a = librosa.resample(audio16k, orig_sr=16000, target_sr=SR)
-    mb = librosa.filters.mel(sr=SR, n_fft=NFFT, n_mels=80, fmin=0, fmax=None)
+    a = np.asarray(resample_audio(audio16k, 16000, SR))
     hann = np.hanning(WIN + 1)[:-1].astype(np.float32)
     pad = (NFFT - HOP) // 2
     y = np.pad(a, (pad, pad), mode="reflect")
     nfr = 1 + (len(y) - NFFT) // HOP
     fr = np.stack([y[i * HOP : i * HOP + NFFT] * hann for i in range(nfr)], 0)
     spec = np.sqrt(np.abs(np.fft.rfft(fr, NFFT, axis=1)).T ** 2 + 1e-9)
-    return np.log(np.clip(mb @ spec, 1e-5, None)).T[None].astype(np.float32)
+    return np.log(np.clip(_REF_MEL_FB @ spec, 1e-5, None)).T[None].astype(np.float32)
 
 
 class Model(nn.Module):
@@ -93,7 +127,7 @@ class Model(nn.Module):
 
         self._fbank = fbank_160
         ff = np.load(str(d / "fbank_filters.npz"))
-        self._mel, self._win = ff["mel"], ff["window"]
+        self._mel, self._win = mx.array(ff["mel"]), mx.array(ff["window"])
         self._tok = Tokenizer.from_file(str(d / "checkpoints" / "tokenizer.json"))
 
     def sanitize(self, weights):
@@ -116,23 +150,17 @@ class Model(nn.Module):
         seed: int = 0,
         **kwargs,
     ):
-        import soundfile as sf
+        from mlx_audio.utils import load_audio
 
         t0 = time.time()
-        audio, sr = sf.read(ref_audio)
-        audio = audio.astype(np.float32)
-        if audio.ndim > 1:
-            audio = audio.mean(1)
-        if sr != 16000:
-            # fbank_160, CAMPPlus and _ref_mel all assume a 16 kHz stream;
-            # without this a 44.1/48 kHz ref is misread as 16 kHz and the
-            # downstream mel is off by sr/16000, producing garbled audio.
-            import librosa
+        # load_audio decodes via audio_io and resamples to 16 kHz mono with the
+        # repo resampler; fbank_160, CAMPPlus and _ref_mel all assume 16 kHz.
+        # Without the resample a 44.1/48 kHz ref is misread as 16 kHz and the
+        # downstream mel is off by sr/16000, producing garbled audio.
+        audio = np.asarray(load_audio(ref_audio, sample_rate=16000))
 
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
-
-        feats = self._fbank(audio, self._mel, self._win)
-        h17 = np.array(self.w2v.hidden17(mx.array(feats)))
+        feats = self._fbank(mx.array(audio), self._mel, self._win)
+        h17 = np.array(self.w2v.hidden17(feats))
         cond_vec = mx.array((h17 - self.stats["mean"]) / self.stats["std"])
         style = mx.array(np.array(self.camp.inference(mx.array(audio))).reshape(1, 192))
         ref_mel = mx.array(_ref_mel(audio))
