@@ -3,6 +3,7 @@ import unittest
 import mlx.core as mx
 import numpy as np
 
+from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.tts.models.higgs_audio_v3.config import (
     HiggsAudioV3Config,
     HiggsAudioV3TextConfig,
@@ -343,6 +344,13 @@ class TestHiggsAudioV3Model(unittest.TestCase):
         self.assertFalse(model.supports_tts_batch(stream=True))
         self.assertFalse(model.supports_tts_batch(voice="speaker"))
         self.assertFalse(model.supports_tts_batch(speed=1.2))
+        self.assertTrue(
+            model.supports_tts_continuous_batch(
+                ref_audio=np.zeros(100, dtype=np.float32),
+                ref_text="Reference transcript.",
+            )
+        )
+        self.assertFalse(model.supports_tts_continuous_batch(stream=True))
 
     def test_batch_generate_reuses_shared_reference_audio(self):
         model = Model(_tiny_config())
@@ -435,6 +443,82 @@ class TestHiggsAudioV3Model(unittest.TestCase):
 
         with self.assertRaisesRegex(NotImplementedError, "batch streaming"):
             list(model.batch_generate(["text"], stream=True))
+
+    def test_continuous_batch_session_matches_serial(self):
+        model = Model(_tiny_config())
+        model._prompt_builder = HiggsAudioV3PromptBuilder(FakeTokenizer())
+        model._codec = FakeCodec()
+        mx.eval(model.parameters())
+
+        texts = [
+            "short",
+            "this is a much longer text input for the second batch item",
+        ]
+        ref_audio = np.zeros(100, dtype=np.float32)
+        ref_text = "Reference transcript."
+        common_kwargs = {
+            "ref_audio": ref_audio,
+            "ref_text": ref_text,
+            "max_new_tokens": 5,
+            "temperature": 0.0,
+            "top_k": 1,
+            "fade_in_ms": 30.0,
+            "fade_out_ms": 15.0,
+        }
+        serial = [next(model.generate(text, **common_kwargs)) for text in texts]
+
+        session = model.create_tts_batch_session(
+            TTSBatchOptions(
+                temperature=0.0,
+                top_p=None,
+                top_k=1,
+                max_tokens=5,
+                max_batch_size=2,
+            )
+        )
+        self.assertEqual(session.available_slots, 2)
+        session.add(
+            [
+                TTSBatchItem(
+                    sequence_id=index,
+                    text=text,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                )
+                for index, text in enumerate(texts)
+            ]
+        )
+
+        events = []
+        while not session.idle:
+            events.extend(session.step())
+
+        events = sorted(events, key=lambda event: event.sequence_id)
+        self.assertEqual([event.sequence_id for event in events], [0, 1])
+        self.assertTrue(all(event.done for event in events))
+        self.assertEqual(
+            [event.token_count for event in events],
+            [result.token_count for result in serial],
+        )
+        self.assertEqual(
+            [event.samples for event in events],
+            [result.samples for result in serial],
+        )
+
+    def test_continuous_batch_session_rejects_streaming(self):
+        model = Model(_tiny_config())
+
+        self.assertFalse(model.supports_tts_continuous_batch(stream=True))
+
+    def test_continuous_batch_session_cancels_pending(self):
+        model = Model(_tiny_config())
+        session = model.create_tts_batch_session(TTSBatchOptions(max_tokens=5))
+
+        session.add([TTSBatchItem(sequence_id=1, text="cancel me")])
+        session.cancel(1)
+
+        self.assertTrue(session.idle)
+        self.assertEqual(session.step(), [])
 
 
 if __name__ == "__main__":
