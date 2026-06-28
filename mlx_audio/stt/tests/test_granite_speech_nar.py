@@ -21,6 +21,7 @@ REPO = os.environ.get(
     "GRANITE_NAR_MLX_REPO",
     "mlx-community/granite-speech-4.1-2b-nar-mlx",
 )
+RUN_STT_INTEGRATION_ENV = "MLX_AUDIO_RUN_STT_INTEGRATION"
 WAV_FILENAME = os.environ.get("GRANITE_NAR_TEST_WAV", "multilingual_sample.wav")
 
 # Multilingual (English + French) reference transcript produced by the upstream
@@ -42,8 +43,12 @@ GOLD_TRANSCRIPT = (
 SIMILARITY_THRESHOLD = 0.98
 
 
+@pytest.mark.requires_weights
 def test_generate_matches_upstream_transcript():
     """Loads the model via mlx-audio's canonical path and asserts transcript similarity."""
+    if not os.environ.get(RUN_STT_INTEGRATION_ENV):
+        pytest.skip(f"set {RUN_STT_INTEGRATION_ENV}=1 to run STT integration tests")
+
     try:
         from huggingface_hub import hf_hub_download
 
