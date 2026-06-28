@@ -230,7 +230,6 @@ class HiggsAudioV3BatchSession:
             input_embeddings=next_embed,
         )
         self._last_hidden_batch = hidden[:, -1, :]
-        mx.eval(self._last_hidden_batch)
         self._active = still_active
         return events
 

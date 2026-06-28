@@ -467,7 +467,6 @@ class Model(nn.Module):
             top_p=top_p,
             top_k=top_k,
         )
-        mx.eval(sampled)
         first_codes = sampled[:, 0].tolist()
         codebook_positions = mx.arange(self.config.audio_num_codebooks, dtype=mx.int32)
 
@@ -709,7 +708,6 @@ class Model(nn.Module):
                 input_embeddings=next_embed,
             )
             last_hidden_batch = hidden[:, -1, :]
-            mx.eval(last_hidden_batch)
             active = next_active
 
         for state in states:
