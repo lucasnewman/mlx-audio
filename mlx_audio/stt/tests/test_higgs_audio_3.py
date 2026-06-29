@@ -13,7 +13,9 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
-from mlx_audio.stt.models.higgs_audio_3 import Model, ModelConfig
+from mlx_audio.base import BaseModelArgs
+from mlx_audio.stt.models.higgs_audio_3 import AudioEncoderConfig, Model, ModelConfig
+from mlx_audio.stt.models.higgs_audio_3.audio import AudioFeatureExtractor
 from mlx_audio.stt.models.higgs_audio_3.higgs_audio_3 import (
     HiggsAudioEncoder,
     HiggsAudioFeatureProjector,
@@ -57,10 +59,21 @@ def _tiny_model() -> Model:
 
 def test_config_parses_nested():
     cfg = ModelConfig.from_dict(_tiny_config())
+    assert isinstance(cfg, BaseModelArgs)
+    assert isinstance(cfg.audio_encoder_config, AudioEncoderConfig)
     assert cfg.audio_encoder_config.d_model == 16
     assert cfg.text_config.num_hidden_layers == 2
     assert cfg.projector_temporal_downsample == 2
     assert cfg.audio_in_token_idx == 40
+
+
+def test_feature_extractor_returns_mel_array():
+    fx = AudioFeatureExtractor(num_mel_bins=128)
+    wav = mx.zeros(16000)
+    mel = fx(wav)
+    assert isinstance(mel, mx.array)
+    assert mel.shape[0] == 1
+    assert mel.shape[1] == 128
 
 
 def test_encoder_halves_time_dim():

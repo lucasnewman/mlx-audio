@@ -1,10 +1,11 @@
-import inspect
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from mlx_audio.base import BaseModelArgs
+
 
 @dataclass
-class AudioEncoderConfig:
+class AudioEncoderConfig(BaseModelArgs):
     num_mel_bins: int = 128
     encoder_layers: int = 32
     encoder_attention_heads: int = 20
@@ -18,19 +19,9 @@ class AudioEncoderConfig:
     frame_rate: int = 25
     model_type: str = "higgs_audio_encoder"
 
-    @classmethod
-    def from_dict(cls, params: Dict[str, Any]) -> "AudioEncoderConfig":
-        return cls(
-            **{
-                k: v
-                for k, v in params.items()
-                if k in inspect.signature(cls).parameters
-            }
-        )
-
 
 @dataclass
-class TextConfig:
+class TextConfig(BaseModelArgs):
     model_type: str = "qwen3"
     vocab_size: int = 151936
     hidden_size: int = 2048
@@ -48,19 +39,9 @@ class TextConfig:
     attention_dropout: float = 0.0
     tie_word_embeddings: bool = True
 
-    @classmethod
-    def from_dict(cls, params: Dict[str, Any]) -> "TextConfig":
-        return cls(
-            **{
-                k: v
-                for k, v in params.items()
-                if k in inspect.signature(cls).parameters
-            }
-        )
-
 
 @dataclass
-class ModelConfig:
+class ModelConfig(BaseModelArgs):
     audio_encoder_config: AudioEncoderConfig = field(default_factory=AudioEncoderConfig)
     text_config: TextConfig = field(default_factory=TextConfig)
     model_type: str = "higgs_audio_3"
@@ -81,24 +62,9 @@ class ModelConfig:
     split_vads: bool = False
 
     def __post_init__(self):
-        if self.audio_encoder_config is None:
-            self.audio_encoder_config = AudioEncoderConfig()
-        elif isinstance(self.audio_encoder_config, dict):
+        if isinstance(self.audio_encoder_config, dict):
             self.audio_encoder_config = AudioEncoderConfig.from_dict(
                 self.audio_encoder_config
             )
-
-        if self.text_config is None:
-            self.text_config = TextConfig()
-        elif isinstance(self.text_config, dict):
+        if isinstance(self.text_config, dict):
             self.text_config = TextConfig.from_dict(self.text_config)
-
-    @classmethod
-    def from_dict(cls, params: Dict[str, Any]) -> "ModelConfig":
-        return cls(
-            **{
-                k: v
-                for k, v in params.items()
-                if k in inspect.signature(cls).parameters
-            }
-        )

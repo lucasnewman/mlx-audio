@@ -12,6 +12,7 @@ from mlx_lm.models.qwen3 import Qwen3Model
 
 from mlx_audio.stt.models.base import STTOutput
 
+from .audio import AudioFeatureExtractor
 from .config import AudioEncoderConfig, ModelConfig
 
 DEFAULT_PROMPT = "Transcribe the speech. Output only the spoken words in lowercase with no punctuation."
@@ -153,38 +154,11 @@ class Model(nn.Module):
         )
 
         self.audio_in_token_idx = config.audio_in_token_idx
-        self._processor = None
+        self.feature_extractor = AudioFeatureExtractor(
+            num_mel_bins=config.audio_encoder_config.num_mel_bins,
+            sample_rate=config.sample_rate,
+        )
         self._vad_backend = None
-        self._init_mel_constants()
-
-    def _init_mel_constants(self) -> None:
-        n_mels = self.config.audio_encoder_config.num_mel_bins
-        n_fft = 400
-        hop_length = 160
-        sample_rate = self.config.sample_rate
-
-        self._mel_n_fft = n_fft
-        self._mel_hop_length = hop_length
-        self._mel_window = np.hanning(n_fft + 1)[:-1].astype(np.float32)
-
-        fmax = sample_rate / 2.0
-        n_freqs = n_fft // 2 + 1
-        mel_max = 2595.0 * np.log10(1.0 + fmax / 700.0)
-        mel_points = np.linspace(0.0, mel_max, n_mels + 2)
-        hz_points = 700.0 * (10.0 ** (mel_points / 2595.0) - 1.0)
-        bin_points = np.floor((n_fft + 1) * hz_points / sample_rate).astype(int)
-
-        f = np.arange(n_freqs, dtype=np.float32)
-        filterbank = np.zeros((n_mels, n_freqs), dtype=np.float32)
-        for m in range(1, n_mels + 1):
-            lower, center, upper = bin_points[m - 1], bin_points[m], bin_points[m + 1]
-            if center > lower:
-                mask = (f >= lower) & (f < center)
-                filterbank[m - 1, mask] = (f[mask] - lower) / (center - lower)
-            if upper > center:
-                mask = (f >= center) & (f < upper)
-                filterbank[m - 1, mask] = (upper - f[mask]) / (upper - center)
-        self._mel_filterbank = filterbank
 
     @property
     def layers(self):
@@ -250,7 +224,7 @@ class Model(nn.Module):
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
         import transformers
-        from transformers import AutoTokenizer, WhisperFeatureExtractor
+        from transformers import AutoTokenizer
 
         prev = transformers.logging.get_verbosity()
         transformers.logging.set_verbosity_error()
@@ -258,33 +232,13 @@ class Model(nn.Module):
             model._tokenizer = AutoTokenizer.from_pretrained(
                 str(model_path), trust_remote_code=True
             )
-            model._feature_extractor = WhisperFeatureExtractor(
-                feature_size=model.config.audio_encoder_config.num_mel_bins
-            )
         finally:
             transformers.logging.set_verbosity(prev)
         return model
 
-    def _extract_features(self, wav: np.ndarray) -> mx.array:
-        n_fft = self._mel_n_fft
-        hop_length = self._mel_hop_length
-        pad = n_fft // 2
-        audio = np.pad(wav.astype(np.float32), (pad, pad), mode="reflect")
-        n_frames = (len(audio) - n_fft) // hop_length + 1
-        frames = np.lib.stride_tricks.as_strided(
-            audio,
-            shape=(n_frames, n_fft),
-            strides=(audio.strides[0] * hop_length, audio.strides[0]),
-        ).copy()
-        windowed = frames * self._mel_window[np.newaxis, :]
-        spec = np.fft.rfft(windowed, n=n_fft)
-        power = spec.real**2 + spec.imag**2
-        mel_spec = power @ self._mel_filterbank.T
-        log_mel = np.log10(np.clip(mel_spec, 1e-10, None))
-        log_mel = np.maximum(log_mel, log_mel.max() - 8.0)
-        log_mel = (log_mel + 4.0) / 4.0
+    def _extract_features(self, wav: mx.array) -> mx.array:
         dtype = self.audio_tower.conv1.weight.dtype
-        return mx.array(log_mel.T[np.newaxis], dtype=dtype)
+        return self.feature_extractor(wav).astype(dtype)
 
     def _get_vad_backend(self):
         if self._vad_backend is None:
@@ -317,7 +271,8 @@ class Model(nn.Module):
         for c in chunks:
             if len(c) < max_frames:
                 c = np.pad(c, (0, max_frames - len(c)))
-            feature_list.append(self.get_audio_features(self._extract_features(c)))
+            mel = self._extract_features(mx.array(c, dtype=mx.float32))
+            feature_list.append(self.get_audio_features(mel))
 
         tok = self._tokenizer
 
@@ -386,10 +341,8 @@ class Model(nn.Module):
         from mlx_lm.generate import generate_step
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
-        if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
-            raise RuntimeError(
-                "Tokenizer/FeatureExtractor not initialized. Call post_load_hook first."
-            )
+        if not hasattr(self, "_tokenizer"):
+            raise RuntimeError("Tokenizer not initialized. Call post_load_hook first.")
 
         start_time = time.time()
         input_ids, inputs_embeds, prompt_tokens = self.get_input_embeddings(
