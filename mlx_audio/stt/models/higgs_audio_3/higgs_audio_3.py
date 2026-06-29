@@ -154,6 +154,7 @@ class Model(nn.Module):
 
         self.audio_in_token_idx = config.audio_in_token_idx
         self._processor = None
+        self._vad_backend = None
         self._init_mel_constants()
 
     def _init_mel_constants(self) -> None:
@@ -285,16 +286,22 @@ class Model(nn.Module):
         dtype = self.audio_tower.conv1.weight.dtype
         return mx.array(log_mel.T[np.newaxis], dtype=dtype)
 
+    def _get_vad_backend(self):
+        if self._vad_backend is None:
+            from .vad import SileroVADBackend
+
+            self._vad_backend = SileroVADBackend(sample_rate=self.sample_rate)
+        return self._vad_backend
+
     def _chunk_waveform(self, wav: np.ndarray) -> List[np.ndarray]:
+        from .vad import vad_chunk_ranges
+
         chunk = int(self.config.chunk_size_seconds * self.sample_rate)
-        if len(wav) <= chunk:
-            return [wav]
-        chunks = []
-        pos = 0
-        while pos < len(wav):
-            chunks.append(wav[pos : pos + chunk])
-            pos += chunk
-        return chunks
+        backend = self._get_vad_backend() if self.config.vad_cut else None
+        ranges = vad_chunk_ranges(
+            wav, chunk, backend=backend, split_vads=self.config.split_vads
+        )
+        return [wav[s:e] for s, e in ranges]
 
     def get_input_embeddings(
         self,

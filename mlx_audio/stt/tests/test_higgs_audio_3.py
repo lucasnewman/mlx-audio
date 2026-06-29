@@ -96,6 +96,7 @@ def test_forward_logits_shape():
 
 def test_get_input_embeddings_merges_audio():
     m = _tiny_model()
+    m.config.vad_cut = False
     m._tokenizer = _StubTokenizer(m.config.audio_in_token_idx)
     wav = np.zeros(16000, dtype=np.float32)
     ids, embeds, plen = m.get_input_embeddings(wav)
@@ -103,6 +104,40 @@ def test_get_input_embeddings_merges_audio():
     assert embeds.shape[1] > len(ids)
     assert embeds.shape[2] == m.config.text_config.hidden_size
     assert plen == embeds.shape[1]
+
+
+def test_vad_chunk_ranges_fallback_when_no_backend():
+    from mlx_audio.stt.models.higgs_audio_3.vad import vad_chunk_ranges
+
+    wav = np.zeros(10 * 16000, dtype=np.float32)
+    ranges = vad_chunk_ranges(wav, chunk_samples=4 * 16000, backend=None)
+    assert ranges == [(0, 64000), (64000, 128000), (128000, 160000)]
+
+
+def test_vad_chunk_ranges_respects_cuts():
+    from mlx_audio.stt.models.higgs_audio_3 import vad as vad_mod
+
+    class _StubBackend:
+        def speech_ranges(self, wav):
+            return [(16000, 48000), (96000, 144000)]
+
+    wav = np.zeros(10 * 16000, dtype=np.float32)
+    chunk = 4 * 16000
+
+    merged = vad_mod.vad_chunk_ranges(
+        wav, chunk, backend=_StubBackend(), split_vads=False
+    )
+    # start of first cut clamped to 0, last cut extended to the full length
+    assert merged[0][0] == 0
+    assert merged[-1][1] == 10 * 16000
+    assert all(e - s <= chunk for s, e in merged)
+
+    split = vad_mod.vad_chunk_ranges(
+        wav, chunk, backend=_StubBackend(), split_vads=True
+    )
+    # split_vads keeps only the detected speech ranges (sub-chunked)
+    assert split[0][0] == 16000
+    assert split[-1][1] == 144000
 
 
 def test_sanitize_remaps_and_transposes():

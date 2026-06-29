@@ -1,5 +1,5 @@
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 
@@ -61,10 +61,10 @@ class TextConfig:
 
 @dataclass
 class ModelConfig:
-    audio_encoder_config: AudioEncoderConfig = None
-    text_config: TextConfig = None
+    audio_encoder_config: AudioEncoderConfig = field(default_factory=AudioEncoderConfig)
+    text_config: TextConfig = field(default_factory=TextConfig)
     model_type: str = "higgs_audio_3"
-    model_path: str = None
+    model_path: Optional[str] = None
     audio_adapter_type: str = "stack"
     projector_type: str = "mlp"
     projector_temporal_downsample: int = 2
@@ -77,6 +77,8 @@ class ModelConfig:
     chunk_size_seconds: float = 4.0
     pad_token_id: int = 151643
     sample_rate: int = 16000
+    vad_cut: bool = True
+    split_vads: bool = False
 
     def __post_init__(self):
         if self.audio_encoder_config is None:
