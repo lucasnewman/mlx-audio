@@ -310,6 +310,100 @@ class TestZonos2Model(unittest.TestCase):
         mx.eval(logits)
         self.assertEqual(logits.shape, (1, 3, 2, 6))
 
+    def test_streaming_yields_chunks_and_final_marker(self):
+        model = Model(_tiny_config())
+        decode_calls = []
+
+        def fake_decode(delayed_rows, eos_frame, frame_limit=None):
+            del eos_frame
+            decode_calls.append((len(delayed_rows), frame_limit))
+            frames = int(frame_limit) if frame_limit is not None else len(delayed_rows)
+            return mx.ones((max(0, frames) * 512,), dtype=mx.float32)
+
+        model._decode_audio = fake_decode
+        results = list(
+            model.generate(
+                "stream",
+                max_tokens=5,
+                stream=True,
+                streaming_interval=512 / model.sample_rate,
+                ignore_eos=True,
+                temperature=0.0,
+            )
+        )
+        self.assertGreaterEqual(len(results), 2)
+        self.assertTrue(all(result.is_streaming_chunk for result in results))
+        self.assertTrue(results[-1].is_final_chunk)
+        self.assertTrue(any(call[1] is not None for call in decode_calls[:-1]))
+        self.assertGreater(sum(result.samples for result in results), 0)
+
+    def test_batch_generate_yields_one_result_per_text(self):
+        model = Model(_tiny_config())
+        decode_calls = []
+
+        def fake_decode(delayed_rows, eos_frame, frame_limit=None):
+            decode_calls.append((len(delayed_rows), eos_frame, frame_limit))
+            return mx.ones((len(delayed_rows) * 512,), dtype=mx.float32)
+
+        model._decode_audio = fake_decode
+        results = list(
+            model.batch_generate(
+                ["a", "longer text"],
+                max_tokens=3,
+                ignore_eos=True,
+                temperature=0.0,
+            )
+        )
+        self.assertEqual([result.sequence_idx for result in results], [0, 1])
+        self.assertEqual([result.token_count for result in results], [3, 3])
+        self.assertEqual([result.samples for result in results], [1536, 1536])
+        self.assertFalse(any(result.is_streaming_chunk for result in results))
+        self.assertEqual(len(decode_calls), 2)
+
+    def test_batch_generate_offsets_speaker_position_after_left_padding(self):
+        model = Model(_tiny_config())
+        texts = ["a", "longer text"]
+        prompt_rows = [
+            model._build_prompt_rows(
+                text,
+                speaking_rate_bucket=None,
+                quality_buckets=None,
+                speaker_conditioned=True,
+                clean_speaker_background=False,
+                accurate_mode=True,
+            )[0]
+            for text in texts
+        ]
+        _, left_padding = model._batch_prompt(prompt_rows)
+        captured_positions = []
+        original_inject = model._inject_speaker
+
+        def capture_inject(x, speaker_embedding, speaker_token_position):
+            if speaker_token_position is not None:
+                captured_positions.append(speaker_token_position)
+            return original_inject(x, speaker_embedding, speaker_token_position)
+
+        def fake_decode(delayed_rows, eos_frame, frame_limit=None):
+            del eos_frame, frame_limit
+            return mx.ones((len(delayed_rows) * 512,), dtype=mx.float32)
+
+        model._inject_speaker = capture_inject
+        model._decode_audio = fake_decode
+        speaker_embedding = mx.zeros(
+            (model.config.speaker_embedding_dim,), dtype=mx.float32
+        )
+        list(
+            model.batch_generate(
+                texts,
+                speaker_embedding=speaker_embedding,
+                max_tokens=1,
+                ignore_eos=True,
+                temperature=0.0,
+                text_normalization=False,
+            )
+        )
+        self.assertEqual(captured_positions[0], left_padding)
+
 
 class TestZonos2SpeakerEncoder(unittest.TestCase):
     def test_sanitize_root_conv_weights_transposes_to_mlx_layout(self):
