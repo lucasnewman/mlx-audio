@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Sequence
 
 import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
-from mlx_lm.models.cache import make_prompt_cache
+from mlx_lm.models.cache import BatchKVCache, make_prompt_cache
 from mlx_lm.models.switch_layers import SwitchGLU
 
-from ..base import GenerationResult
+from ..base import BatchGenerationResult, GenerationResult
 from .config import Zonos2Config
 from .generation import (
     TTSSamplingParams,
@@ -469,16 +469,13 @@ class Model(nn.Module):
         self,
         x: mx.array,
         speaker_embedding: Optional[mx.array],
-        speaker_token_position: Optional[int],
+        speaker_token_position: Any,
     ) -> mx.array:
         if (
             speaker_embedding is None
             or speaker_token_position is None
             or self.speaker_projection is None
         ):
-            return x
-        pos = int(speaker_token_position)
-        if pos < 0 or pos >= x.shape[1]:
             return x
         emb = speaker_embedding
         if self.speaker_lda_projection is not None:
@@ -493,17 +490,29 @@ class Model(nn.Module):
                 projected = mx.broadcast_to(projected, (x.shape[0], projected.shape[1]))
             else:
                 raise ValueError("speaker batch size does not match input batch size")
-        return mx.concatenate(
-            [x[:, :pos, :], projected[:, None, :], x[:, pos + 1 :, :]],
-            axis=1,
-        )
+        if isinstance(speaker_token_position, int):
+            pos = int(speaker_token_position)
+            if pos < 0 or pos >= x.shape[1]:
+                return x
+            return mx.concatenate(
+                [x[:, :pos, :], projected[:, None, :], x[:, pos + 1 :, :]],
+                axis=1,
+            )
+        positions = mx.array(speaker_token_position, dtype=mx.int32)
+        if positions.ndim == 0:
+            positions = mx.broadcast_to(positions[None], (x.shape[0],))
+        if positions.shape[0] != x.shape[0]:
+            raise ValueError("speaker token positions must match input batch size")
+        valid = (positions >= 0) & (positions < x.shape[1])
+        mask = (mx.arange(x.shape[1])[None, :] == positions[:, None]) & valid[:, None]
+        return mx.where(mask[..., None], projected[:, None, :], x)
 
     def _forward_hidden(
         self,
         input_ids: mx.array,
         cache=None,
         speaker_embedding: Optional[mx.array] = None,
-        speaker_token_position: Optional[int] = None,
+        speaker_token_position: Any = None,
     ) -> mx.array:
         h = self.multi_embedder(input_ids)
         h = self._inject_speaker(h, speaker_embedding, speaker_token_position)
@@ -537,7 +546,7 @@ class Model(nn.Module):
         input_ids: mx.array,
         cache=None,
         speaker_embedding: Optional[mx.array] = None,
-        speaker_token_position: Optional[int] = None,
+        speaker_token_position: Any = None,
     ) -> mx.array:
         return self.compute_logits(
             self._forward_hidden(
@@ -557,14 +566,23 @@ class Model(nn.Module):
         return self._dac
 
     def _decode_audio(
-        self, delayed_rows: list[list[int]], eos_frame: Optional[int]
+        self,
+        delayed_rows: list[list[int]],
+        eos_frame: Optional[int],
+        frame_limit: Optional[int] = None,
     ) -> mx.array:
         if not delayed_rows:
             return mx.zeros((0,), dtype=mx.float32)
         raw = mx.array(delayed_rows, dtype=mx.int32)
         codes = shear_up(raw, self.config.audio_pad_id)
         if eos_frame is not None:
-            codes = codes[: max(0, int(eos_frame))]
+            limit = max(0, int(eos_frame))
+        elif frame_limit is not None:
+            limit = max(0, min(int(frame_limit), codes.shape[0]))
+        else:
+            limit = None
+        if limit is not None:
+            codes = codes[:limit]
         if codes.size == 0:
             return mx.zeros((0,), dtype=mx.float32)
         codes = mx.clip(codes, 0, self.config.codebook_size - 1)
@@ -576,6 +594,97 @@ class Model(nn.Module):
         mx.eval(audio)
         return audio
 
+    def _make_generation_result(
+        self,
+        audio: mx.array,
+        *,
+        token_count: int,
+        prompt_tokens: int,
+        elapsed: float,
+        segment_idx: int = 0,
+        is_streaming_chunk: bool = False,
+        is_final_chunk: bool = False,
+    ) -> GenerationResult:
+        samples = int(audio.shape[0])
+        duration_s = samples / self.sample_rate if self.sample_rate else 0.0
+        elapsed = max(float(elapsed), 1e-9)
+        return GenerationResult(
+            audio=audio,
+            samples=samples,
+            sample_rate=self.sample_rate,
+            segment_idx=segment_idx,
+            token_count=int(token_count),
+            audio_duration=format_duration(duration_s),
+            real_time_factor=round(elapsed / duration_s, 3) if duration_s else 0.0,
+            prompt={
+                "tokens": int(prompt_tokens),
+                "completion_tokens": int(token_count),
+                "tokens-per-sec": (
+                    round((int(prompt_tokens) + int(token_count)) / elapsed, 2)
+                    if elapsed > 0
+                    else 0.0
+                ),
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": round(samples / elapsed, 2) if elapsed > 0 else 0.0,
+            },
+            processing_time_seconds=elapsed,
+            peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=is_streaming_chunk,
+            is_final_chunk=is_final_chunk,
+        )
+
+    def _make_batch_generation_result(
+        self,
+        audio: mx.array,
+        *,
+        sequence_idx: int,
+        token_count: int,
+        elapsed: float,
+        is_streaming_chunk: bool = False,
+        is_final_chunk: bool = False,
+    ) -> BatchGenerationResult:
+        samples = int(audio.shape[0])
+        duration_s = samples / self.sample_rate if self.sample_rate else 0.0
+        return BatchGenerationResult(
+            audio=audio,
+            sequence_idx=int(sequence_idx),
+            samples=samples,
+            sample_rate=self.sample_rate,
+            token_count=int(token_count),
+            audio_duration=format_duration(duration_s),
+            processing_time_seconds=max(float(elapsed), 1e-9),
+            peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=is_streaming_chunk,
+            is_final_chunk=is_final_chunk,
+        )
+
+    def _build_prompt_rows(
+        self,
+        text: str,
+        *,
+        speaking_rate_bucket: int | None,
+        quality_buckets: dict[str, int | None] | list[int | None] | None,
+        speaker_conditioned: bool,
+        clean_speaker_background: bool,
+        accurate_mode: bool,
+    ) -> tuple[list[list[int]], Optional[int]]:
+        rows = self._prompt_builder.build_list(
+            text,
+            speaking_rate_bucket=speaking_rate_bucket,
+            quality_buckets=self._resolve_quality_buckets(quality_buckets),
+        )
+        speaker_token_position = None
+        if speaker_conditioned:
+            prefix = self._prompt_builder.speaker_marker_prefix(
+                clean_speaker_background=clean_speaker_background,
+                accurate_mode=accurate_mode,
+            )
+            rows = prefix + rows
+            speaker_token_position = 0
+        return rows, speaker_token_position
+
     def _build_prompt(
         self,
         text: str,
@@ -586,20 +695,157 @@ class Model(nn.Module):
         clean_speaker_background: bool,
         accurate_mode: bool,
     ) -> tuple[mx.array, Optional[int]]:
-        rows = self._prompt_builder.build_list(
+        rows, speaker_token_position = self._build_prompt_rows(
             text,
             speaking_rate_bucket=speaking_rate_bucket,
-            quality_buckets=self._resolve_quality_buckets(quality_buckets),
+            quality_buckets=quality_buckets,
+            speaker_conditioned=speaker_embedding is not None,
+            clean_speaker_background=clean_speaker_background,
+            accurate_mode=accurate_mode,
         )
-        speaker_token_position = None
-        if speaker_embedding is not None:
-            prefix = self._prompt_builder.speaker_marker_prefix(
-                clean_speaker_background=clean_speaker_background,
-                accurate_mode=accurate_mode,
-            )
-            rows = prefix + rows
-            speaker_token_position = 0
         return mx.array(rows, dtype=mx.int32)[None, :, :], speaker_token_position
+
+    def _batch_prompt(
+        self, prompt_rows: Sequence[list[list[int]]]
+    ) -> tuple[mx.array, list[int]]:
+        max_len = max(len(rows) for rows in prompt_rows)
+        pad_row = [self.config.audio_pad_id] * self.config.n_codebooks + [
+            int(self.config.text_vocab)
+        ]
+        left_padding = [max_len - len(rows) for rows in prompt_rows]
+        padded = [
+            [pad_row.copy() for _ in range(pad_count)] + rows
+            for pad_count, rows in zip(left_padding, prompt_rows, strict=True)
+        ]
+        return mx.array(padded, dtype=mx.int32), left_padding
+
+    def _stack_speaker_embeddings(
+        self, speaker_embeddings: Any, batch_size: int
+    ) -> mx.array:
+        if isinstance(speaker_embeddings, (str, Path)):
+            raise ValueError(
+                "speaker_embeddings must be a per-sequence list or a [B, D] array; "
+                "use speaker_embedding for a shared path"
+            )
+        if isinstance(speaker_embeddings, (list, tuple)):
+            if len(speaker_embeddings) != batch_size:
+                raise ValueError(
+                    f"speaker_embeddings length ({len(speaker_embeddings)}) must "
+                    f"match texts length ({batch_size})"
+                )
+            embeddings = []
+            for embedding in speaker_embeddings:
+                if embedding is None:
+                    raise ValueError(
+                        "ZONOS2 batch generation does not support mixed speaker-conditioned "
+                        "and unconditioned rows"
+                    )
+                loaded = self._load_speaker_embedding(embedding)
+                if loaded is None:
+                    raise ValueError("speaker_embeddings entries must not be None")
+                embeddings.append(loaded)
+            return mx.concatenate(embeddings, axis=0)
+
+        arr = mx.array(speaker_embeddings, dtype=mx.float32)
+        if arr.ndim != 2:
+            raise ValueError(f"speaker_embeddings must be 2-D, got {arr.shape}")
+        if arr.shape != (batch_size, self.config.speaker_embedding_dim):
+            raise ValueError(
+                "speaker_embeddings must have shape "
+                f"({batch_size}, {self.config.speaker_embedding_dim}), got {arr.shape}"
+            )
+        return arr
+
+    def _resolve_batch_speaker_embeddings(
+        self,
+        *,
+        batch_size: int,
+        speaker_embedding: Any,
+        speaker_embeddings: Any,
+        ref_audio: Any,
+        ref_audios: Optional[Sequence[Any]],
+        ref_audio_sample_rate: int | None,
+        ref_audio_sample_rates: Optional[Sequence[int | None]],
+    ) -> Optional[mx.array]:
+        shared_inputs = sum(item is not None for item in (speaker_embedding, ref_audio))
+        per_sequence_inputs = sum(
+            item is not None for item in (speaker_embeddings, ref_audios)
+        )
+        if shared_inputs + per_sequence_inputs > 1:
+            raise ValueError(
+                "provide only one of speaker_embedding, speaker_embeddings, "
+                "ref_audio, or ref_audios"
+            )
+        if speaker_embedding is not None:
+            embedding = self._load_speaker_embedding(speaker_embedding)
+            if embedding is None:
+                return None
+            return mx.broadcast_to(embedding, (batch_size, embedding.shape[-1]))
+        if speaker_embeddings is not None:
+            return self._stack_speaker_embeddings(speaker_embeddings, batch_size)
+        if ref_audio is not None:
+            embedding = self.extract_speaker_embedding(
+                ref_audio,
+                sample_rate=ref_audio_sample_rate,
+            )
+            return mx.broadcast_to(embedding, (batch_size, embedding.shape[-1]))
+        if ref_audios is not None:
+            if len(ref_audios) != batch_size:
+                raise ValueError(
+                    f"ref_audios length ({len(ref_audios)}) must match texts length "
+                    f"({batch_size})"
+                )
+            if (
+                ref_audio_sample_rates is not None
+                and len(ref_audio_sample_rates) != batch_size
+            ):
+                raise ValueError(
+                    "ref_audio_sample_rates length must match texts length "
+                    f"({batch_size})"
+                )
+            embeddings = []
+            for idx, item in enumerate(ref_audios):
+                if item is None:
+                    raise ValueError(
+                        "ZONOS2 batch generation does not support mixed speaker-conditioned "
+                        "and unconditioned rows"
+                    )
+                sample_rate = (
+                    ref_audio_sample_rates[idx]
+                    if ref_audio_sample_rates is not None
+                    else ref_audio_sample_rate
+                )
+                embeddings.append(
+                    self.extract_speaker_embedding(item, sample_rate=sample_rate)
+                )
+            return mx.concatenate(embeddings, axis=0)
+        return None
+
+    def _sample_batch_frames(
+        self,
+        last_logits: mx.array,
+        states: Sequence[Zonos2GenerationState],
+        params: TTSSamplingParams,
+        finished: Sequence[bool],
+        *,
+        step: int,
+        seed: Optional[int],
+    ) -> list[list[int]]:
+        mx.eval(last_logits)
+        text_vocab = int(self.config.text_vocab)
+        inactive_frame = [self.config.eoa_id] * self.config.n_codebooks + [text_vocab]
+        frames = []
+        for idx, state in enumerate(states):
+            if finished[idx]:
+                frames.append(inactive_frame)
+                continue
+            sample_key = (
+                mx.random.key(int(seed) + step * len(states) + idx)
+                if seed is not None
+                else None
+            )
+            frames.append(sample_frame(last_logits[idx], state, params, key=sample_key))
+        return frames
 
     def generate(
         self,
@@ -627,15 +873,12 @@ class Model(nn.Module):
         accurate_mode: bool = True,
         text_normalization: bool = True,
         stream: bool = False,
+        streaming_interval: float = 2.0,
         verbose: bool = False,
         **kwargs,
     ) -> Iterator[GenerationResult]:
         ref_audio_sample_rate = kwargs.pop("ref_audio_sample_rate", None)
         del voice, speed, ref_text, verbose, kwargs
-        if stream:
-            raise NotImplementedError(
-                "ZONOS2 streaming is deferred until non-streaming parity is verified"
-            )
         limit = max_new_tokens if max_new_tokens is not None else max_tokens
         if limit is None:
             limit = 1024
@@ -684,6 +927,16 @@ class Model(nn.Module):
             eoa_id=self.config.eoa_id,
             text_vocab=int(self.config.text_vocab),
         )
+        prompt_tokens = int(prompt.shape[1])
+        samples_per_frame = 512
+        frames_per_chunk = max(
+            1,
+            int(float(streaming_interval) * self.sample_rate / samples_per_frame),
+        )
+        decode_delay = max(0, self.config.n_codebooks - 1)
+        emitted_samples = 0
+        chunk_token_start = 0
+        chunk_start = time.perf_counter()
 
         for step in range(int(limit)):
             sample_key = mx.random.key(int(seed) + step) if seed is not None else None
@@ -691,40 +944,220 @@ class Model(nn.Module):
             state.append(frame, ignore_eos=params.ignore_eos)
             if state.finished:
                 break
+
+            if stream:
+                complete_frames = max(0, len(state.generated) - decode_delay)
+                ready_frames = complete_frames - (emitted_samples // samples_per_frame)
+                if ready_frames >= frames_per_chunk:
+                    audio_prefix = self._decode_audio(
+                        state.generated,
+                        eos_frame=None,
+                        frame_limit=complete_frames,
+                    )
+                    if int(audio_prefix.shape[0]) > emitted_samples:
+                        audio_chunk = audio_prefix[emitted_samples:]
+                        mx.eval(audio_chunk)
+                        elapsed = time.perf_counter() - chunk_start
+                        yield self._make_generation_result(
+                            audio_chunk,
+                            token_count=len(state.generated) - chunk_token_start,
+                            prompt_tokens=prompt_tokens,
+                            elapsed=elapsed,
+                            segment_idx=0,
+                            is_streaming_chunk=True,
+                            is_final_chunk=False,
+                        )
+                        emitted_samples = int(audio_prefix.shape[0])
+                        chunk_token_start = len(state.generated)
+                        chunk_start = time.perf_counter()
+                        mx.clear_cache()
+
             next_ids = mx.array(frame, dtype=mx.int32)[None, None, :]
             logits = self(next_ids, cache=cache)
             last_logits = logits[0, -1]
 
         audio = self._decode_audio(state.generated, state.eos_frame)
-        mx.async_eval(audio)
+        if stream:
+            if int(audio.shape[0]) > emitted_samples:
+                audio = audio[emitted_samples:]
+            else:
+                audio = mx.zeros((0,), dtype=mx.float32)
+            mx.async_eval(audio)
+            yield self._make_generation_result(
+                audio,
+                token_count=len(state.generated) - chunk_token_start,
+                prompt_tokens=prompt_tokens,
+                elapsed=time.perf_counter() - chunk_start,
+                segment_idx=0,
+                is_streaming_chunk=True,
+                is_final_chunk=True,
+            )
+            return
 
-        elapsed = time.perf_counter() - start
-        samples = int(audio.shape[0])
-        duration_s = samples / self.sample_rate if self.sample_rate else 0.0
-        token_count = len(state.generated)
-        yield GenerationResult(
-            audio=audio,
-            samples=samples,
-            sample_rate=self.sample_rate,
+        mx.async_eval(audio)
+        yield self._make_generation_result(
+            audio,
+            token_count=len(state.generated),
+            prompt_tokens=prompt_tokens,
+            elapsed=time.perf_counter() - start,
             segment_idx=0,
-            token_count=token_count,
-            audio_duration=format_duration(duration_s),
-            real_time_factor=round(elapsed / duration_s, 3) if duration_s else 0.0,
-            prompt={
-                "tokens": int(prompt.shape[1]),
-                "completion_tokens": token_count,
-                "tokens-per-sec": (
-                    round((int(prompt.shape[1]) + token_count) / elapsed, 2)
-                    if elapsed > 0
-                    else 0.0
-                ),
-            },
-            audio_samples={
-                "samples": samples,
-                "samples-per-sec": round(samples / elapsed, 2) if elapsed > 0 else 0.0,
-            },
-            processing_time_seconds=elapsed,
-            peak_memory_usage=mx.get_peak_memory() / 1e9,
             is_streaming_chunk=False,
             is_final_chunk=False,
         )
+
+    def batch_generate(
+        self,
+        texts: list[str],
+        voices: Optional[list[Optional[str]]] = None,
+        speed: float = 1.0,
+        lang_code: str = "en_us",
+        ref_audio: Any = None,
+        ref_audios: Optional[list[Any]] = None,
+        ref_text: Any = None,
+        max_tokens: Optional[int] = None,
+        max_new_tokens: Optional[int] = None,
+        temperature: float = 1.15,
+        top_p: float = 0.0,
+        top_k: int = 106,
+        min_p: float = 0.18,
+        repetition_window: int = 50,
+        repetition_penalty: float = 1.2,
+        repetition_codebooks: int = 8,
+        seed: Optional[int] = None,
+        ignore_eos: bool = False,
+        speaking_rate_bucket: Optional[int] = None,
+        quality_buckets: dict[str, int | None] | list[int | None] | None = None,
+        speaker_embedding: Any = None,
+        speaker_embeddings: Any = None,
+        clean_speaker_background: bool = False,
+        accurate_mode: bool = True,
+        text_normalization: bool = True,
+        stream: bool = False,
+        verbose: bool = False,
+        **kwargs,
+    ) -> Iterator[BatchGenerationResult]:
+        if isinstance(texts, str):
+            raise TypeError("texts must be a list of strings")
+        if stream:
+            raise NotImplementedError("ZONOS2 batch streaming is not implemented")
+        batch_size = len(texts)
+        if batch_size == 0:
+            return
+        if voices is not None and len(voices) != batch_size:
+            raise ValueError(
+                f"voices length ({len(voices)}) must match texts length ({batch_size})"
+            )
+        if voices is not None and any(voice is not None for voice in voices):
+            raise ValueError("ZONOS2 batch_generate does not support voices")
+
+        ref_audio_sample_rate = kwargs.pop("ref_audio_sample_rate", None)
+        ref_audio_sample_rates = kwargs.pop("ref_audio_sample_rates", None)
+        del speed, ref_text, verbose, kwargs
+
+        limit = max_new_tokens if max_new_tokens is not None else max_tokens
+        if limit is None:
+            limit = 1024
+
+        start = time.perf_counter()
+        normalized_texts = [
+            self._normalize_text(
+                text, language=lang_code, text_normalization=text_normalization
+            )
+            for text in texts
+        ]
+        speaker_emb = self._resolve_batch_speaker_embeddings(
+            batch_size=batch_size,
+            speaker_embedding=speaker_embedding,
+            speaker_embeddings=speaker_embeddings,
+            ref_audio=ref_audio,
+            ref_audios=ref_audios,
+            ref_audio_sample_rate=ref_audio_sample_rate,
+            ref_audio_sample_rates=ref_audio_sample_rates,
+        )
+        prompt_rows = []
+        prompt_speaker_positions: list[Optional[int]] = []
+        for text in normalized_texts:
+            rows, speaker_pos = self._build_prompt_rows(
+                text,
+                speaking_rate_bucket=speaking_rate_bucket,
+                quality_buckets=quality_buckets,
+                speaker_conditioned=speaker_emb is not None,
+                clean_speaker_background=clean_speaker_background,
+                accurate_mode=accurate_mode,
+            )
+            prompt_rows.append(rows)
+            prompt_speaker_positions.append(speaker_pos)
+        prompt, left_padding = self._batch_prompt(prompt_rows)
+        speaker_token_positions = None
+        if speaker_emb is not None:
+            speaker_token_positions = [
+                left_padding[idx] + int(prompt_speaker_positions[idx] or 0)
+                for idx in range(batch_size)
+            ]
+        mx.eval(prompt)
+        if speaker_emb is not None:
+            mx.eval(speaker_emb)
+
+        cache = [BatchKVCache(left_padding) for _ in self.layers]
+        logits = self(
+            prompt,
+            cache=cache,
+            speaker_embedding=speaker_emb,
+            speaker_token_position=speaker_token_positions,
+        )
+        last_logits = logits[:, -1]
+        params = TTSSamplingParams(
+            temperature=float(temperature),
+            top_k=int(top_k),
+            top_p=float(top_p),
+            min_p=float(min_p),
+            max_tokens=int(limit),
+            ignore_eos=bool(ignore_eos),
+            repetition_window=int(repetition_window),
+            repetition_penalty=float(repetition_penalty),
+            repetition_codebooks=int(repetition_codebooks),
+            seed=seed,
+        )
+        states = [
+            Zonos2GenerationState(
+                n_codebooks=self.config.n_codebooks,
+                eoa_id=self.config.eoa_id,
+                text_vocab=int(self.config.text_vocab),
+            )
+            for _ in range(batch_size)
+        ]
+        finished = [False] * batch_size
+
+        for step in range(int(limit)):
+            frames = self._sample_batch_frames(
+                last_logits,
+                states,
+                params,
+                finished,
+                step=step,
+                seed=seed,
+            )
+            for idx, frame in enumerate(frames):
+                if finished[idx]:
+                    continue
+                states[idx].append(frame, ignore_eos=params.ignore_eos)
+                finished[idx] = states[idx].finished
+            if all(finished):
+                break
+
+            next_ids = mx.array(frames, dtype=mx.int32)[:, None, :]
+            logits = self(next_ids, cache=cache)
+            last_logits = logits[:, -1]
+
+        elapsed = time.perf_counter() - start
+        for idx, state in enumerate(states):
+            audio = self._decode_audio(state.generated, state.eos_frame)
+            mx.async_eval(audio)
+            yield self._make_batch_generation_result(
+                audio,
+                sequence_idx=idx,
+                token_count=len(state.generated),
+                elapsed=elapsed,
+                is_streaming_chunk=False,
+                is_final_chunk=False,
+            )

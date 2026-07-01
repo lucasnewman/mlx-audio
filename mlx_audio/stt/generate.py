@@ -12,6 +12,7 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_reduce
 
+from mlx_audio.stt.models.base import STTOutput
 from mlx_audio.stt.utils import load_model
 
 
@@ -303,8 +304,6 @@ def generate_transcription(
     Returns:
         segments: The generated transcription segments.
     """
-    from .models.base import STTOutput
-
     if model is None:
         raise ValueError("Model path or model instance must be provided.")
 
@@ -404,7 +403,9 @@ def generate_transcription(
         print(f"\033[94mPeak memory:\033[0m {mx.get_peak_memory() / 1e9:.2f} GB")
 
     # Create output directory if it doesn't exist
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
 
     # Check for segments (Whisper) or sentences (Parakeet)
     has_segments = hasattr(segments, "segments") and segments.segments is not None

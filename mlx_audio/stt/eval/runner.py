@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import inspect
+import itertools
 import json
 import time
 import wave
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional, TypeVar, Union
+from typing import Any, Iterable, Optional, TypeVar, Union
 
 import mlx.nn as nn
 from tqdm import tqdm
@@ -228,13 +229,8 @@ def _limit_iterable(iterable: Iterable[T], limit: Optional[int]) -> Iterator[T]:
 
 
 def _batched(iterable: Iterable[T], batch_size: int) -> Iterator[list[T]]:
-    batch: list[T] = []
-    for item in iterable:
-        batch.append(item)
-        if len(batch) >= batch_size:
-            yield batch
-            batch = []
-    if batch:
+    iterator = iter(iterable)
+    while batch := list(itertools.islice(iterator, batch_size)):
         yield batch
 
 
