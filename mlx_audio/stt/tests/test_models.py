@@ -1287,7 +1287,7 @@ class TestMossTranscribeDiarizeModel(unittest.TestCase):
         )
 
     def test_audio_span_ids_include_time_markers(self):
-        model = object.__new__(self.Model)
+        model = self.Model.__new__(self.Model)
         model.config = SimpleNamespace(audio_token_id=151671)
         model.audio_tokens_per_second = 12.5
         model.time_marker_every_seconds = 5
