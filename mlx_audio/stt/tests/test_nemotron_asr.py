@@ -15,6 +15,10 @@ import pytest
 
 from mlx_audio.stt.models.nemotron_asr import Model, ModelConfig
 from mlx_audio.stt.models.nemotron_asr import tokenizer as tok
+from mlx_audio.stt.models.nemotron_asr.audio import (
+    iter_log_mel_spectrogram,
+    log_mel_spectrogram,
+)
 from mlx_audio.stt.models.nemotron_asr.conformer import create_chunked_limited_mask
 
 
@@ -91,6 +95,20 @@ def test_chunked_limited_mask():
     assert visible[2].tolist() == [True, True, True, True, False, False]
     # frame 5 (chunk 2): chunks 1 and 2 -> frames 2..5 (chunk 0 now out of left window)
     assert visible[5].tolist() == [False, False, True, True, True, True]
+
+
+def test_chunked_log_mel_matches_full():
+    args = ModelConfig.from_dict(_tiny_config()).config.preprocessor
+    audio = mx.array(
+        (np.random.randn(args.sample_rate * 2 + 123) * 0.1).astype(np.float32)
+    )
+
+    full = log_mel_spectrogram(audio, args)
+    chunked = mx.concatenate(
+        list(iter_log_mel_spectrogram(audio, args, chunk_frames=37)),
+        axis=1,
+    )
+    np.testing.assert_allclose(np.array(chunked), np.array(full), rtol=1e-3, atol=1e-3)
 
 
 def test_encoder_and_prompt_shapes():
