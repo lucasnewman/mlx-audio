@@ -24,7 +24,7 @@ from mlx_audio.stt.utils import load_audio
 from mlx_audio.utils import from_dict
 
 from . import tokenizer as tok
-from .audio import log_mel_spectrogram
+from .audio import iter_log_mel_spectrogram, log_mel_spectrogram
 from .config import (
     ConformerArgs,
     JointArgs,
@@ -91,6 +91,25 @@ class Model(nn.Module):
         self.decoder = PredictNetwork(config.decoder)
         self.joint = JointNetwork(config.joint)
 
+    def _prepare_audio(
+        self, audio: Union[str, Path, mx.array], dtype: mx.Dtype
+    ) -> mx.array:
+        if isinstance(audio, (str, Path)):
+            return load_audio(audio, self.preprocessor_config.sample_rate, dtype=dtype)
+        return audio.astype(dtype) if audio.dtype != dtype else audio
+
+    def _mel_chunk_frames(self, chunk_duration: float) -> int:
+        if chunk_duration <= 0:
+            raise ValueError("chunk_duration must be positive")
+        return max(
+            int(
+                chunk_duration
+                * self.preprocessor_config.sample_rate
+                / self.preprocessor_config.hop_length
+            ),
+            1,
+        )
+
     # ------------------------------------------------------------------ prompt
     def _resolve_prompt_index(self, language: Optional[str]) -> int:
         lang = language or self.default_language
@@ -121,6 +140,24 @@ class Model(nn.Module):
         """Greedy RNN-T decode of a single mel spectrogram (1, T, F) or (T, F)."""
         if mel.ndim == 2:
             mel = mx.expand_dims(mel, 0)
+
+        if (
+            mel.shape[0] == 1
+            and self.encoder_config.att_context_style == "chunked_limited"
+        ):
+            from .streaming import stream_encode
+
+            result = None
+            for result in self._decode_prompted_chunks(
+                stream_encode(
+                    self,
+                    mel,
+                    language or self.default_language,
+                    att_context_size=att_context_size,
+                )
+            ):
+                pass
+            return result or sentences_to_result([])
 
         encoded, lengths = self.encoder(
             mel, att_context_size=att_context_size or self.default_att_context_size
@@ -186,6 +223,7 @@ class Model(nn.Module):
         *,
         language: Optional[str] = None,
         att_context_size: Optional[list] = None,
+        chunk_duration: Optional[float] = 30.0,
         dtype: mx.Dtype = mx.float32,
         verbose: bool = False,
         **kwargs,
@@ -195,16 +233,24 @@ class Model(nn.Module):
         kwargs.pop("generation_stream", None)
         kwargs.pop("max_tokens", None)
 
-        if isinstance(audio, (str, Path)):
-            audio_data = load_audio(
-                audio, self.preprocessor_config.sample_rate, dtype=dtype
-            )
-        else:
-            audio_data = audio.astype(dtype) if audio.dtype != dtype else audio
+        audio_data = self._prepare_audio(audio, dtype)
 
-        mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
-        result = self.decode(mel, language=language, att_context_size=att_context_size)
-        mx.clear_cache()
+        if chunk_duration is None:
+            mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
+            result = self.decode(
+                mel, language=language, att_context_size=att_context_size
+            )
+            mx.clear_cache()
+        else:
+            result = None
+            for result in self._stream_generate_audio_data(
+                audio_data,
+                language=language,
+                chunk_duration=chunk_duration,
+                att_context_size=att_context_size,
+            ):
+                pass
+            result = result or sentences_to_result([])
 
         if verbose:
             print(result.text)
@@ -217,6 +263,8 @@ class Model(nn.Module):
         *,
         language: Optional[str] = None,
         chunk_frames: Optional[int] = None,
+        chunk_duration: float = 30.0,
+        att_context_size: Optional[list] = None,
         dtype: mx.Dtype = mx.float32,
         **kwargs,
     ):
@@ -226,16 +274,44 @@ class Model(nn.Module):
         per-layer attention/conv caches and incremental subsampling (O(n), no
         recompute). Token-identical to :meth:`generate` at the native chunk size.
         """
-        from .streaming import stream_encode
+        audio_data = self._prepare_audio(audio, dtype)
+        yield from self._stream_generate_audio_data(
+            audio_data,
+            language=language,
+            chunk_frames=chunk_frames,
+            chunk_duration=chunk_duration,
+            att_context_size=att_context_size,
+        )
 
-        if isinstance(audio, (str, Path)):
-            audio_data = load_audio(
-                audio, self.preprocessor_config.sample_rate, dtype=dtype
-            )
-        else:
-            audio_data = audio.astype(dtype) if audio.dtype != dtype else audio
-        mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
+    def _stream_generate_audio_data(
+        self,
+        audio_data: mx.array,
+        *,
+        language: Optional[str] = None,
+        chunk_frames: Optional[int] = None,
+        chunk_duration: float = 30.0,
+        att_context_size: Optional[list] = None,
+    ):
+        from .streaming import stream_encode_chunks
 
+        mel_chunks = iter_log_mel_spectrogram(
+            audio_data,
+            self.preprocessor_config,
+            chunk_frames=self._mel_chunk_frames(chunk_duration),
+        )
+        prompted_chunks = stream_encode_chunks(
+            self,
+            mel_chunks,
+            language or self.default_language,
+            chunk_frames=chunk_frames,
+            att_context_size=att_context_size,
+        )
+        try:
+            yield from self._decode_prompted_chunks(prompted_chunks)
+        finally:
+            mx.clear_cache()
+
+    def _decode_prompted_chunks(self, prompted_chunks):
         frame_sec = (
             self.encoder_config.subsampling_factor
             * self.preprocessor_config.hop_length
@@ -246,9 +322,7 @@ class Model(nn.Module):
         hypothesis: list[AlignedToken] = []
         global_time = 0
 
-        for prompted in stream_encode(
-            self, mel, language or self.default_language, chunk_frames
-        ):
+        for prompted in prompted_chunks:
             chunk_len = prompted.shape[1]
             time = 0
             new_symbols = 0
@@ -285,4 +359,4 @@ class Model(nn.Module):
                     new_symbols = 0
             global_time += chunk_len
             yield sentences_to_result(tokens_to_sentences(hypothesis))
-        mx.clear_cache()
+            mx.clear_cache()

@@ -6,6 +6,7 @@ from . import (
     granite_speech_nar,
     lasr_ctc,
     moss_music,
+    moss_transcribe_diarize,
     parakeet,
     qwen3_asr,
     sensevoice,
