@@ -10,6 +10,7 @@ general music QA prompts.
 | Repo | Precision | Size |
 | ------ | ----------- | ------ |
 | [`OpenMOSS-Team/MOSS-Music-8B-Thinking`](https://huggingface.co/OpenMOSS-Team/MOSS-Music-8B-Thinking) | bf16 | ~16.9 GiB |
+| [`OpenMOSS-Team/MOSS-Music-8B-Instruct`](https://huggingface.co/OpenMOSS-Team/MOSS-Music-8B-Instruct) | bf16 | ~16.9 GiB |
 | [`mlx-community/MOSS-Music-8B-Thinking-8bit`](https://huggingface.co/mlx-community/MOSS-Music-8B-Thinking-8bit) | 8-bit | ~9.5 GiB |
 | [`mlx-community/MOSS-Music-8B-Thinking-6bit`](https://huggingface.co/mlx-community/MOSS-Music-8B-Thinking-6bit) | 6-bit | ~7.6 GiB |
 | [`mlx-community/MOSS-Music-8B-Thinking-4bit`](https://huggingface.co/mlx-community/MOSS-Music-8B-Thinking-4bit) | 4-bit | ~5.6 GiB |
