@@ -28,6 +28,7 @@ MODEL_REMAPPING = {
     "qwen2_audio": "qwen2_audio",
     "mega_asr": "mega_asr",
     "higgs_audio_3": "higgs_audio_3",
+    "moss_music": "moss_music",
 }
 
 
