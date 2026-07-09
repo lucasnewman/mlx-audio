@@ -23,7 +23,7 @@ def _stream_block(block, x, pos_enc, attn_cache, conv_cache, left_cache, conv_le
     kv = xn if attn_cache is None else mx.concatenate([attn_cache, xn], axis=1)
     pos_emb = pos_enc.pos_emb_for(kv.shape[1], x.dtype)
     residual = residual + block.self_attn.stream(xn, kv, pos_emb)
-    attn_next = kv[:, -left_cache:]
+    attn_next = kv[:, -left_cache:] if left_cache > 0 else kv[:, :0]
 
     # cache-aware causal conv: prepend conv cache instead of zero-padding
     xc = block.norm_conv(residual)
@@ -42,14 +42,16 @@ def _stream_block(block, x, pos_enc, attn_cache, conv_cache, left_cache, conv_le
     return block.norm_out(residual), attn_next, conv_next
 
 
-def stream_encode(model, mel, language, chunk_frames=None):
-    """Yield post-prompt encoder frames (1, c, d) per chunk, cache-aware.
+def stream_encode_chunks(
+    model, mel_chunks, language, chunk_frames=None, att_context_size=None
+):
+    """Yield post-prompt encoder frames from one or more mel chunks.
 
-    Frame-identical to ``encoder(...)`` + ``apply_prompt(...)`` at the native chunk
-    size (right_context + 1).
+    The encoder/conv/subsampling caches persist across input mel chunks, so callers
+    can keep STFT memory bounded without resetting model context at chunk boundaries.
     """
     enc = model.encoder
-    acs = model.default_att_context_size
+    acs = att_context_size or model.default_att_context_size
     left_cache = int(acs[0])
     right = int(acs[1])
     cf = chunk_frames or (right + 1)
@@ -57,25 +59,30 @@ def stream_encode(model, mel, language, chunk_frames=None):
     chunk_mel = cf * sf
     conv_left = enc.args.conv_kernel_size - 1
 
-    if mel.ndim == 2:
-        mel = mx.expand_dims(mel, 0)
-    total = mel.shape[1]
     n = len(enc.layers)
     attn_cache = [None] * n
     conv_cache = [None] * n
     mel_cache = None
     emitted = 0
     consumed = 0
+    pending = None
 
-    while consumed < total:
-        m = mel[:, consumed : consumed + chunk_mel]
+    def append_pending(chunk):
+        nonlocal pending
+        if chunk.ndim == 2:
+            chunk = mx.expand_dims(chunk, 0)
+        if chunk.shape[1] == 0:
+            return
+        pending = chunk if pending is None else mx.concatenate([pending, chunk], axis=1)
+
+    def encode_mel_chunk(m, is_final):
+        nonlocal mel_cache, emitted, consumed
         cache_len = 0 if mel_cache is None else mel_cache.shape[1]
         win = m if mel_cache is None else mx.concatenate([mel_cache, m], axis=1)
         win_len = win.shape[1]
         sub = enc.pre_encode(win, mx.array([win_len], dtype=mx.int32))[0]  # (1, k, d)
 
         end = consumed + m.shape[1]
-        is_final = end >= total
         base = (consumed - cache_len) // sf
         lo = emitted - base
         hi = sub.shape[1] if is_final else (end // sf - base)
@@ -84,7 +91,7 @@ def stream_encode(model, mel, language, chunk_frames=None):
 
         if hi <= lo:
             emitted = base + max(lo, hi)
-            continue
+            return
         emitted = base + hi
         h = sub[:, lo:hi]
         for li, block in enumerate(enc.layers):
@@ -98,3 +105,47 @@ def stream_encode(model, mel, language, chunk_frames=None):
                 conv_left,
             )
         yield model.apply_prompt(h, language)
+
+    def encode_ready(is_final):
+        nonlocal pending
+        while pending is not None and pending.shape[1] > 0:
+            if pending.shape[1] < chunk_mel and not is_final:
+                break
+
+            take = min(chunk_mel, pending.shape[1])
+            if is_final and pending.shape[1] <= chunk_mel:
+                take = pending.shape[1]
+
+            m = pending[:, :take]
+            pending = pending[:, take:]
+            is_final_chunk = is_final and pending.shape[1] == 0
+            yield from encode_mel_chunk(m, is_final_chunk)
+
+    iterator = iter(mel_chunks)
+    try:
+        current = next(iterator)
+    except StopIteration:
+        return
+
+    for next_chunk in iterator:
+        append_pending(current)
+        yield from encode_ready(is_final=False)
+        current = next_chunk
+
+    append_pending(current)
+    yield from encode_ready(is_final=True)
+
+
+def stream_encode(model, mel, language, chunk_frames=None, att_context_size=None):
+    """Yield post-prompt encoder frames (1, c, d) per chunk, cache-aware.
+
+    Frame-identical to ``encoder(...)`` + ``apply_prompt(...)`` at the native chunk
+    size (right_context + 1).
+    """
+    yield from stream_encode_chunks(
+        model,
+        [mel],
+        language,
+        chunk_frames=chunk_frames,
+        att_context_size=att_context_size,
+    )

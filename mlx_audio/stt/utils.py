@@ -18,6 +18,7 @@ MODEL_REMAPPING = {
     "voxtral_realtime": "voxtral_realtime",
     "vibevoice": "vibevoice_asr",
     "qwen3_asr": "qwen3_asr",
+    "moss_transcribe_diarize": "moss_transcribe_diarize",
     "fun_asr_nano": "fun_asr_nano",
     "canary": "canary",
     "moonshine": "moonshine",
@@ -27,6 +28,7 @@ MODEL_REMAPPING = {
     "qwen2_audio": "qwen2_audio",
     "mega_asr": "mega_asr",
     "higgs_audio_3": "higgs_audio_3",
+    "moss_music": "moss_music",
 }
 
 
