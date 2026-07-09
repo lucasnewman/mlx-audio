@@ -186,17 +186,8 @@ class MossBackbone(nn.Module):
         batch_size, seq_len, hidden_dim = inputs_embeds.shape
         flat_embeds = inputs_embeds.reshape(-1, hidden_dim)
         audio_indices = np.where(np.array(is_audio).reshape(-1))[0]
-
-        result = []
-        audio_idx = 0
-        for i in range(flat_embeds.shape[0]):
-            if audio_idx < len(audio_indices) and i == audio_indices[audio_idx]:
-                result.append(audio_embeds[audio_idx])
-                audio_idx += 1
-            else:
-                result.append(flat_embeds[i])
-
-        return mx.stack(result, axis=0).reshape(batch_size, seq_len, hidden_dim)
+        flat_embeds[mx.array(audio_indices, dtype=mx.uint32)] = audio_embeds
+        return flat_embeds.reshape(batch_size, seq_len, hidden_dim)
 
     def __call__(
         self,
