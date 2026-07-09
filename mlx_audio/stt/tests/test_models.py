@@ -1802,6 +1802,26 @@ class TestQwen3ASRModel(unittest.TestCase):
 
         self.assertEqual(output.shape, (1, 5, self.text_config.hidden_size))
 
+    def test_text_model_cached_chunks_match_full_causal_pass(self):
+        from mlx_lm.models.cache import KVCache
+
+        model = self.TextModel(self.text_config)
+        input_ids = mx.array([[1, 2, 3, 4, 5]], dtype=mx.int32)
+
+        full = model(input_ids=input_ids)
+        cache = [KVCache() for _ in model.layers]
+        first = model(input_ids=input_ids[:, :3], cache=cache)
+        mx.eval(first, [entry.state for entry in cache])
+        second = model(input_ids=input_ids[:, 3:], cache=cache)
+        mx.eval(full, second)
+
+        np.testing.assert_allclose(
+            np.array(second),
+            np.array(full[:, 3:]),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
     def test_qwen3_asr_model_init(self):
         model = self.Qwen3ASRModel(self.model_config)
 

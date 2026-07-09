@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
 from tqdm import tqdm
 
 from mlx_audio.stt.models.base import STTOutput
@@ -487,6 +488,7 @@ class TextAttention(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,
+        mask: Optional[Union[str, mx.array]] = None,
         cache: Optional[Any] = None,
     ) -> mx.array:
         B, L, _ = hidden_states.shape
@@ -519,12 +521,13 @@ class TextAttention(nn.Module):
             keys, values = cache.update_and_fetch(keys, values)
 
         query_len = queries.shape[2]
-        mask = create_additive_causal_mask(query_len, offset=offset).astype(
-            queries.dtype
-        )
-
-        output = mx.fast.scaled_dot_product_attention(
-            queries, keys, values, scale=self.scale, mask=mask
+        output = scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            cache=cache,
+            scale=self.scale,
+            mask=mask,
         )
 
         output = output.transpose(0, 2, 1, 3).reshape(B, query_len, -1)
@@ -568,11 +571,12 @@ class TextDecoderLayer(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,
+        mask: Optional[Union[str, mx.array]] = None,
         cache: Optional[Any] = None,
     ) -> mx.array:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, cache=cache)
+        hidden_states = self.self_attn(hidden_states, mask=mask, cache=cache)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -610,9 +614,10 @@ class TextModel(nn.Module):
 
         if cache is None:
             cache = [None] * len(self.layers)
+        mask = create_attention_mask(hidden_states, cache[0])
 
         for i, layer in enumerate(self.layers):
-            hidden_states = layer(hidden_states, cache=cache[i])
+            hidden_states = layer(hidden_states, mask=mask, cache=cache[i])
 
         return self.norm(hidden_states)
 
