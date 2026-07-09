@@ -1301,6 +1301,44 @@ class TestMossTranscribeDiarizeModel(unittest.TestCase):
         self.assertIn(1, ids)
         self.assertIn(0, ids)
 
+    def test_inject_audio_features_updates_audio_positions_vectorized(self):
+        from mlx_audio.stt.models.moss_transcribe_diarize.moss_transcribe_diarize import (
+            MossBackbone,
+        )
+
+        backbone = MossBackbone.__new__(MossBackbone)
+        backbone.config = SimpleNamespace(audio_token_id=99)
+        backbone.get_audio_features = lambda **_: [
+            mx.array([[[10.0, 11.0], [12.0, 13.0], [14.0, 15.0]]])
+        ]
+
+        input_ids = mx.array([[1, 99, 2], [99, 3, 99]], dtype=mx.int32)
+        inputs_embeds = mx.array(
+            [
+                [[1.0, 1.5], [2.0, 2.5], [3.0, 3.5]],
+                [[4.0, 4.5], [5.0, 5.5], [6.0, 6.5]],
+            ]
+        )
+
+        result = MossBackbone.inject_audio_features(
+            backbone,
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            input_features=mx.zeros((1, 1, 1)),
+            audio_feature_lengths=mx.array([1]),
+            audio_chunk_mapping=mx.array([0]),
+        )
+
+        np.testing.assert_allclose(
+            np.array(result),
+            np.array(
+                [
+                    [[1.0, 1.5], [10.0, 11.0], [3.0, 3.5]],
+                    [[12.0, 13.0], [5.0, 5.5], [14.0, 15.0]],
+                ]
+            ),
+        )
+
 
 class TestQwen3ASRConfig(unittest.TestCase):
     """Tests for Qwen3-ASR configuration classes."""
