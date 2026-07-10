@@ -589,7 +589,7 @@ class Model(nn.Module):
         sampler: Optional[Callable[[mx.array], mx.array]] = None,
         logits_processors: Optional[List[Callable]] = None,
         prompt: Optional[str] = None,
-        prefill_step_size: int = 2048,
+        prefill_step_size: int = 4096,
         verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
         from mlx_lm.generate import generate_step
@@ -661,7 +661,7 @@ class Model(nn.Module):
         repetition_penalty: Optional[float] = None,
         repetition_context_size: int = 100,
         prompt: Optional[str] = None,
-        prefill_step_size: int = 2048,
+        prefill_step_size: int = 4096,
         verbose: bool = False,
         stream: bool = False,
         **kwargs,

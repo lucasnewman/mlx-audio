@@ -61,10 +61,8 @@ def load_audio(
     """
     from mlx_audio.audio_io import read as audio_read
 
-    audio, sample_rate = audio_read(file, always_2d=True)
-    if sample_rate != sr:
-        audio = resample_audio(audio, sample_rate, sr)
-    return mx.array(audio, dtype=dtype).mean(axis=1)
+    audio, _ = audio_read(file, dtype="float32", sample_rate=sr, nchannels=1)
+    return mx.array(audio, dtype=dtype)
 
 
 def load_model(

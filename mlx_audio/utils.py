@@ -678,17 +678,12 @@ def load_audio(
     if not os.path.exists(audio):
         raise FileNotFoundError(f"Audio file not found: {audio}")
 
-    samples, orig_sample_rate = audio_read(audio)
-    shape = samples.shape
-
-    # Collapse multi channel as mono
-    if len(shape) > 1:
-        samples = samples.sum(axis=1)
-        samples = samples / shape[1]
-
-    # Resample if needed
-    if sample_rate != orig_sample_rate:
-        samples = resample_audio(samples, orig_sample_rate, sample_rate)
+    samples, _ = audio_read(
+        audio,
+        dtype="float32",
+        sample_rate=sample_rate,
+        nchannels=1,
+    )
 
     # Random segment selection
     if segment_duration is not None:
