@@ -115,7 +115,6 @@ class GraniteAttention(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
-        self.kv_groups = num_heads // num_kv_heads
         self.attention_multiplier = attention_multiplier  # = 1/128, not 1/sqrt(128)
 
         self.q_proj = nn.Linear(hidden_size, num_heads * head_dim, bias=False)
@@ -147,12 +146,11 @@ class GraniteAttention(nn.Module):
         # Apply RoPE to Q and K (V is not rotated)
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        # GQA: repeat K and V along the head axis to match num_heads.
-        # mx.repeat gives repeat_interleave semantics: [a, b] → [a, a, b, b] (verified).
-        k = mx.repeat(k, self.kv_groups, axis=1)  # [B, num_heads, T, head_dim]
-        v = mx.repeat(v, self.kv_groups, axis=1)
-
-        # Bidirectional attention: no mask. Granite scale = attention_multiplier (1/128).
+        # Bidirectional GQA attention w/o mask. MLX's scaled_dot_product_attention
+        # handles grouped-query heads natively (gqa_factor = num_heads/num_kv_heads),
+        # so we pass the un-repeated K,V (num_kv_heads=4) directly to avoid explicitly
+        # materializing the 4x K,V repeat.
+        # Granite scale = attention_multiplier (1/128), not 1/sqrt(head_dim).
         attn = mx.fast.scaled_dot_product_attention(
             q,
             k,
