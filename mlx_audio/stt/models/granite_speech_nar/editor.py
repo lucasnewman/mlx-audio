@@ -29,11 +29,7 @@ class GraniteRMSNorm(nn.Module):
         self.weight = mx.ones(dim)
 
     def __call__(self, x: mx.array) -> mx.array:
-        dtype = x.dtype
-        h = x.astype(mx.float32)
-        variance = (h * h).mean(axis=-1, keepdims=True)
-        h = h * mx.rsqrt(variance + self.eps)
-        return (self.weight.astype(mx.float32) * h).astype(dtype)
+        return mx.fast.rms_norm(x, self.weight, self.eps).astype(x.dtype)
 
 
 class GraniteAttention(nn.Module):
