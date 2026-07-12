@@ -36,65 +36,6 @@ class GraniteRMSNorm(nn.Module):
         return (self.weight.astype(mx.float32) * h).astype(dtype)
 
 
-class GraniteRotaryEmbedding(nn.Module):
-    """RoPE position encoding.
-
-    inv_freq is precomputed in __init__ and stored under an underscored name so
-    MLX's parameter tree skips it — the analog of PyTorch's
-    `register_buffer(..., persistent=False)` used upstream.
-
-    Forward returns (cos, sin) tensors of shape [seq_len, head_dim] in the caller's
-    requested dtype. cos/sin are computed in fp32 for numerical stability.
-    """
-
-    def __init__(self, head_dim: int, max_position: int, theta: float = 10000.0):
-        super().__init__()
-        self.head_dim = head_dim
-        self.max_position = max_position
-        self.theta = theta
-        # inv_freq[i] = 1 / (theta ** (2i / head_dim)) for i in 0..head_dim/2-1
-        idx = mx.arange(0, head_dim, 2, dtype=mx.float32)
-        self._inv_freq = 1.0 / (theta ** (idx / head_dim))  # [head_dim/2]
-
-    def __call__(self, position_ids: mx.array, dtype) -> tuple[mx.array, mx.array]:
-        # position_ids: [seq_len], int
-        positions = position_ids.astype(mx.float32)
-        # Outer product via broadcast: [seq_len, head_dim/2]
-        freqs = positions[:, None] * self._inv_freq[None, :]
-        # Duplicate along last dim to match head_dim: [seq_len, head_dim]
-        emb = mx.concatenate([freqs, freqs], axis=-1)
-        cos = mx.cos(emb)
-        sin = mx.sin(emb)
-        return cos.astype(dtype), sin.astype(dtype)
-
-
-def rotate_half(x: mx.array) -> mx.array:
-    """Splits last dim in half, returns concat([-second_half, first_half])."""
-    half = x.shape[-1] // 2
-    x1 = x[..., :half]
-    x2 = x[..., half:]
-    return mx.concatenate([-x2, x1], axis=-1)
-
-
-def apply_rotary_pos_emb(
-    q: mx.array, k: mx.array, cos: mx.array, sin: mx.array
-) -> tuple[mx.array, mx.array]:
-    """Apply RoPE rotation to query and key.
-
-    q, k: [batch, num_heads, seq, head_dim]  (or any shape ending in [seq, head_dim])
-    cos, sin: [seq, head_dim]
-    """
-    # Broadcast cos/sin: prepend (q.ndim - cos.ndim) leading size-1 axes so that
-    # shapes align regardless of whether q is 3-D or 4-D.
-    n_extra = q.ndim - cos.ndim
-    for _ in range(n_extra):
-        cos = cos[None]
-        sin = sin[None]
-    q_rot = q * cos + rotate_half(q) * sin
-    k_rot = k * cos + rotate_half(k) * sin
-    return q_rot, k_rot
-
-
 class GraniteAttention(nn.Module):
     """Bidirectional GQA self-attention with Granite's custom `attention_multiplier` scale.
 
@@ -109,6 +50,7 @@ class GraniteAttention(nn.Module):
         num_kv_heads: int,
         head_dim: int,
         attention_multiplier: float,
+        rope_theta: float,
     ):
         super().__init__()
         assert num_heads % num_kv_heads == 0
@@ -116,13 +58,14 @@ class GraniteAttention(nn.Module):
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
         self.attention_multiplier = attention_multiplier  # = 1/128, not 1/sqrt(128)
+        self.rope_theta = rope_theta
 
         self.q_proj = nn.Linear(hidden_size, num_heads * head_dim, bias=False)
         self.k_proj = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=False)
         self.v_proj = nn.Linear(hidden_size, num_kv_heads * head_dim, bias=False)
         self.o_proj = nn.Linear(num_heads * head_dim, hidden_size, bias=False)
 
-    def __call__(self, x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
+    def __call__(self, x: mx.array) -> mx.array:
         B, T, H = x.shape
         dtype = x.dtype
 
@@ -143,8 +86,25 @@ class GraniteAttention(nn.Module):
             .transpose(0, 2, 1, 3)
         )
 
-        # Apply RoPE to Q and K (V is not rotated)
-        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+        # Apply RoPE to Q and K (V is not rotated) via the fused mx.fast.rope kernel.
+        # traditional=False = half rotation (NeoX/Llama, matching rotate_half from
+        # previous code); offset=0 reproduces the contiguous arange positions.
+        q = mx.fast.rope(
+            q,
+            self.head_dim,
+            traditional=False,
+            base=self.rope_theta,
+            scale=1.0,
+            offset=0,
+        )
+        k = mx.fast.rope(
+            k,
+            self.head_dim,
+            traditional=False,
+            base=self.rope_theta,
+            scale=1.0,
+            offset=0,
+        )
 
         # Bidirectional GQA attention w/o mask. MLX's scaled_dot_product_attention
         # handles grouped-query heads natively (gqa_factor = num_heads/num_kv_heads),
@@ -202,6 +162,7 @@ class GraniteDecoderLayer(nn.Module):
         attention_multiplier: float,
         residual_multiplier: float,
         eps: float,
+        rope_theta: float,
     ):
         super().__init__()
         self.residual_multiplier = residual_multiplier
@@ -212,16 +173,17 @@ class GraniteDecoderLayer(nn.Module):
             num_kv_heads,
             head_dim,
             attention_multiplier,
+            rope_theta,
         )
         self.post_attention_layernorm = GraniteRMSNorm(hidden_size, eps=eps)
         self.mlp = GraniteMLP(hidden_size, intermediate_size)
 
-    def __call__(self, x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
+    def __call__(self, x: mx.array) -> mx.array:
         dtype = x.dtype
         # Attention block
         residual = x
         h = self.input_layernorm(x)
-        h = self.self_attn(h, cos, sin)
+        h = self.self_attn(h)
         x = residual + h * self.residual_multiplier
         # MLP block
         residual = x
@@ -251,11 +213,6 @@ class GraniteEditor(nn.Module):
 
         self.embed_tokens = nn.Embedding(cfg.vocab_size, cfg.hidden_size)
         head_dim = cfg.hidden_size // cfg.num_attention_heads
-        self.rotary_emb = GraniteRotaryEmbedding(
-            head_dim=head_dim,
-            max_position=cfg.max_position_embeddings,
-            theta=cfg.rope_theta,
-        )
         self.layers = [
             GraniteDecoderLayer(
                 hidden_size=cfg.hidden_size,
@@ -266,6 +223,7 @@ class GraniteEditor(nn.Module):
                 attention_multiplier=cfg.attention_multiplier,
                 residual_multiplier=cfg.residual_multiplier,
                 eps=cfg.rms_norm_eps,
+                rope_theta=cfg.rope_theta,
             )
             for _ in range(cfg.num_hidden_layers)
         ]
@@ -290,15 +248,11 @@ class GraniteEditor(nn.Module):
         # Apply embedding multiplier to ALL inputs uniformly
         h = inputs_embeds * self.embedding_multiplier
 
-        # Compute RoPE cos/sin once for the full sequence
-        if position_ids.ndim == 2:
-            # Take the first row — we don't support packed sequences in Plan 4
-            position_ids = position_ids[0]
-        cos, sin = self.rotary_emb(position_ids, dtype=h.dtype)
-
+        # RoPE is applied per-layer inside each GraniteAttention via mx.fast.rope
+        # (offset=0 reproduces the contiguous arange positions the caller passes).
         # 40 decoder layers (run over the FULL sequence -- attention needs it)
         for layer in self.layers:
-            h = layer(h, cos, sin)
+            h = layer(h)
 
         h = self.norm(h)
 
