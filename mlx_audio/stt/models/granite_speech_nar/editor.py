@@ -277,8 +277,15 @@ class GraniteEditor(nn.Module):
         # for both nn.Embedding (bf16 weight) and nn.QuantizedEmbedding (packed
         # weight + scales/biases), so the tied lm_head survives quantization.
 
-    def __call__(self, inputs_embeds: mx.array, position_ids: mx.array) -> mx.array:
+    def __call__(
+        self,
+        inputs_embeds: mx.array,
+        position_ids: mx.array,
+        logits_start: int | None = None,
+    ) -> mx.array:
         # inputs_embeds: [B, T, hidden]; position_ids: [T] or [B, T]
+        # logits_start: if given, only compute vocab logits for positions >=
+        # logits_start (usually just the text tail), skipping the audio prefix.
         B, T, _ = inputs_embeds.shape
         dtype = inputs_embeds.dtype
 
@@ -291,14 +298,17 @@ class GraniteEditor(nn.Module):
             position_ids = position_ids[0]
         cos, sin = self.rotary_emb(position_ids, dtype=h.dtype)
 
-        # 40 decoder layers
+        # 40 decoder layers (run over the FULL sequence -- attention needs it)
         for layer in self.layers:
             h = layer(h, cos, sin)
 
         h = self.norm(h)
 
         # Tied lm_head via as_linear (quantization-safe; equivalent to h @ W.T
-        # when the embedding is unquantized).
+        # when the embedding is unquantized). Slice to the text tail first when
+        # logits_start is given so we don't project (and discard) audio positions.
+        if logits_start is not None:
+            h = h[:, logits_start:, :]
         logits = self.embed_tokens.as_linear(h)
         logits = logits / self.logits_scaling
         return logits.astype(dtype)
