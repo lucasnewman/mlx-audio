@@ -1519,6 +1519,13 @@ def _resolve_realtime_model_name(requested_model: Optional[str]) -> Optional[str
 _REALTIME_VAD_MODEL_DEFAULT: str = "mlx-community/silero-vad"
 _realtime_vad_models: Dict[str, Any] = {}
 
+# In server_vad mode the transcription model is fed only while a turn is open, so
+# the audio just before the VAD confirms speech would be lost. We buffer a rolling
+# pre-roll of ``prefix_padding_ms`` (the OpenAI lead-in knob) plus this margin,
+# which covers the VAD's own frame-level confirmation latency, and flush it at
+# ``speech_started`` so the first phoneme survives.
+_REALTIME_PREROLL_MARGIN_MS: int = 150
+
 
 def _resolve_vad_model_name() -> str:
     """Return the VAD model used for server-side turn detection.
@@ -1623,6 +1630,11 @@ async def realtime_ws(websocket: WebSocket):
     client_input_rate = _REALTIME_DEFAULT_CLIENT_RATE
     turn_config: Optional[ServerVadConfig] = None
     turn_detector: Optional[StreamingVad] = None
+    # server_vad gating: feed the transcription model only while a turn is open,
+    # keeping a rolling pre-roll so the onset the VAD confirms late isn't clipped.
+    feeding: bool = False
+    preroll: list = []
+    preroll_samples: int = 0
 
     def _new_item_id() -> str:
         return f"item_{uuid.uuid4().hex[:16]}"
@@ -1771,6 +1783,9 @@ async def realtime_ws(websocket: WebSocket):
                             await send_error(f"vad load failed: {e}")
                             continue
                         turn_detector = StreamingVad(vad_model, turn_config)
+                        feeding = False
+                        preroll = []
+                        preroll_samples = 0
 
                 await send_event(
                     {"type": "session.updated", "session": _session_snapshot()}
@@ -1780,73 +1795,114 @@ async def realtime_ws(websocket: WebSocket):
                 audio_b64 = msg.get("audio", "")
                 if not audio_b64:
                     continue
-                # Create the conversation item on the first appended audio so
-                # transcription deltas always carry a valid item_id; the VAD's
-                # speech_started (below) reuses it instead of making a second.
-                if current_item_id is None:
-                    current_item_id = _new_item_id()
-                    await send_event(
-                        {
-                            "type": "conversation.item.added",
-                            "item": {
-                                "id": current_item_id,
-                                "object": "realtime.item",
-                                "type": "message",
-                                "role": "user",
-                                "content": [{"type": "input_audio"}],
-                            },
-                        }
-                    )
                 pcm16 = np.frombuffer(base64.b64decode(audio_b64), dtype=np.int16)
                 samples = _resample_pcm16_to_rate(
                     pcm16, client_input_rate, session.input_sample_rate
                 )
-                async with REALTIME_INFERENCE_LOCK:
-                    session.feed(samples)
-                # Opportunistic draining between chunks so deltas flow early.
-                await drain_deltas(max_decode_tokens=8)
 
-                if turn_detector is not None:
-                    vad_samples = _resample_pcm16_to_rate(
-                        pcm16, client_input_rate, VAD_SAMPLE_RATE
-                    )
+                if turn_detector is None:
+                    # Manual-commit mode (turn_detection: null): no VAD, so
+                    # transcribe every chunk. The item is created on the first
+                    # audio so transcription deltas always carry a valid item_id.
+                    if current_item_id is None:
+                        current_item_id = _new_item_id()
+                        await send_event(
+                            {
+                                "type": "conversation.item.added",
+                                "item": {
+                                    "id": current_item_id,
+                                    "object": "realtime.item",
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [{"type": "input_audio"}],
+                                },
+                            }
+                        )
                     async with REALTIME_INFERENCE_LOCK:
-                        # Inline (see drain_deltas): VAD MLX must share the
-                        # transcription thread, or MLX streams collide.
-                        turn_events = turn_detector.process(vad_samples)
-                    for turn_event in turn_events:
-                        if turn_event.kind is TurnEventKind.SPEECH_STARTED:
-                            if current_item_id is None:
-                                current_item_id = _new_item_id()
-                                await send_event(
-                                    {
-                                        "type": "conversation.item.added",
-                                        "item": {
-                                            "id": current_item_id,
-                                            "object": "realtime.item",
-                                            "type": "message",
-                                            "role": "user",
-                                            "content": [{"type": "input_audio"}],
-                                        },
-                                    }
-                                )
+                        session.feed(samples)
+                    await drain_deltas(max_decode_tokens=8)
+                    continue
+
+                # server_vad mode: run the cheap VAD first, and feed the expensive
+                # transcription model *only while a turn is open*. Through the
+                # silences of a meeting the model — and the GPU — stay idle, which
+                # is the whole point of server-side turn detection. (The earlier
+                # code fed and decoded every chunk, silence included: `feed()` only
+                # buffers, but the `drain_deltas` `step()` is real GPU work, so the
+                # GPU never dropped below 100%.)
+                vad_samples = _resample_pcm16_to_rate(
+                    pcm16, client_input_rate, VAD_SAMPLE_RATE
+                )
+                async with REALTIME_INFERENCE_LOCK:
+                    # Inline (see drain_deltas): VAD MLX must share the
+                    # transcription thread, or MLX streams collide.
+                    turn_events = turn_detector.process(vad_samples)
+
+                for turn_event in turn_events:
+                    if turn_event.kind is TurnEventKind.SPEECH_STARTED:
+                        # Deltas only flow once a turn opens, so the item is created
+                        # here rather than on the first (possibly silent) append.
+                        if current_item_id is None:
+                            current_item_id = _new_item_id()
                             await send_event(
                                 {
-                                    "type": "input_audio_buffer.speech_started",
-                                    "audio_start_ms": turn_event.audio_ms,
-                                    "item_id": current_item_id,
+                                    "type": "conversation.item.added",
+                                    "item": {
+                                        "id": current_item_id,
+                                        "object": "realtime.item",
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{"type": "input_audio"}],
+                                    },
                                 }
                             )
-                        else:
-                            await send_event(
-                                {
-                                    "type": "input_audio_buffer.speech_stopped",
-                                    "audio_end_ms": turn_event.audio_ms,
-                                    "item_id": current_item_id,
-                                }
-                            )
-                            await finalize_turn()
-                            turn_detector.reset_turn()
+                        # The VAD confirms speech a few frames after it began; flush
+                        # the buffered lead-in so the model keeps the first phoneme.
+                        if preroll:
+                            async with REALTIME_INFERENCE_LOCK:
+                                for chunk in preroll:
+                                    session.feed(chunk)
+                            preroll = []
+                            preroll_samples = 0
+                        feeding = True
+                        await send_event(
+                            {
+                                "type": "input_audio_buffer.speech_started",
+                                "audio_start_ms": turn_event.audio_ms,
+                                "item_id": current_item_id,
+                            }
+                        )
+                    else:
+                        await send_event(
+                            {
+                                "type": "input_audio_buffer.speech_stopped",
+                                "audio_end_ms": turn_event.audio_ms,
+                                "item_id": current_item_id,
+                            }
+                        )
+                        await finalize_turn()
+                        turn_detector.reset_turn()
+                        feeding = False
+
+                if feeding:
+                    async with REALTIME_INFERENCE_LOCK:
+                        session.feed(samples)
+                    await drain_deltas(max_decode_tokens=8)
+                else:
+                    # Silence between turns: retain a rolling pre-roll (so the next
+                    # onset isn't clipped) and feed the model nothing at all.
+                    preroll_target = int(
+                        session.input_sample_rate
+                        * (turn_config.prefix_padding_ms + _REALTIME_PREROLL_MARGIN_MS)
+                        / 1000
+                    )
+                    preroll.append(samples)
+                    preroll_samples += int(samples.shape[0])
+                    while (
+                        len(preroll) > 1
+                        and preroll_samples - int(preroll[0].shape[0]) >= preroll_target
+                    ):
+                        preroll_samples -= int(preroll.pop(0).shape[0])
 
             elif msg_type == "input_audio_buffer.commit":
                 if current_item_id is None:
@@ -1866,6 +1922,9 @@ async def realtime_ws(websocket: WebSocket):
                 await finalize_turn()
                 if turn_detector is not None:
                     turn_detector.reset_turn()
+                feeding = False
+                preroll = []
+                preroll_samples = 0
 
     except WebSocketDisconnect:
         pass
