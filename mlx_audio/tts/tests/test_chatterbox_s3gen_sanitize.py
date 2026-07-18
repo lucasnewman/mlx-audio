@@ -33,9 +33,7 @@ class ChatterboxS3GenSanitizeTest(unittest.TestCase):
         self.model = S3Token2Wav()
         self.model_params = dict(tree_flatten(self.model.parameters()))
         self.conformer_keys = [
-            k
-            for k in self.model_params
-            if ".encoders_" in k or ".up_encoders_" in k
+            k for k in self.model_params if ".encoders_" in k or ".up_encoders_" in k
         ]
         # Guard: the model really does have conformer blocks to protect.
         self.assertGreater(len(self.conformer_keys), 0)
@@ -52,6 +50,7 @@ class ChatterboxS3GenSanitizeTest(unittest.TestCase):
 
         sanitized = self.model.sanitize(pytorch_weights)
 
+        # Every conformer weight survives under its MLX (underscore) name...
         for k in self.conformer_keys:
             self.assertIn(
                 k,
@@ -59,6 +58,40 @@ class ChatterboxS3GenSanitizeTest(unittest.TestCase):
                 f"conformer weight {k} was dropped by sanitize()",
             )
             self.assertEqual(sanitized[k].shape, self.model_params[k].shape)
+
+        # ...and no raw dotted-index key leaks through unrenamed. This pins the
+        # rename: if it regressed, the dotted keys would either survive verbatim
+        # or be dropped, and this assertion would fail instead of silently
+        # passing through some other path.
+        leaked = [
+            k for k in sanitized if re.search(r"\.(up_)?encoders\.\d+\.", k) is not None
+        ]
+        self.assertEqual(leaked, [], f"dotted conformer keys leaked: {leaked}")
+
+    def test_dotted_index_is_renamed_to_underscore(self):
+        # Pin the exact rename independently of the should_keep membership check:
+        # feed a dotted key and assert it maps to the expected underscore key.
+        # If the rename regex is removed, the dotted key is left untouched and
+        # this exact-mapping assertion fails.
+        for mlx_key in self.conformer_keys:
+            dotted_key = _to_pytorch_key(mlx_key)
+            # The helper must actually produce a dotted (PyTorch) form to test.
+            self.assertNotEqual(dotted_key, mlx_key)
+
+            sanitized = self.model.sanitize(
+                {dotted_key: mx.zeros(self.model_params[mlx_key].shape)}
+            )
+
+            self.assertIn(
+                mlx_key,
+                sanitized,
+                f"{dotted_key} was not renamed to {mlx_key}",
+            )
+            self.assertNotIn(
+                dotted_key,
+                sanitized,
+                f"dotted key {dotted_key} survived unrenamed",
+            )
 
     def test_sanitize_is_idempotent_for_conformer(self):
         # Already-converted (underscore) keys must be preserved unchanged.
