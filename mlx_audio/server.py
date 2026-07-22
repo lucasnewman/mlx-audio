@@ -1519,13 +1519,6 @@ def _resolve_realtime_model_name(requested_model: Optional[str]) -> Optional[str
 _REALTIME_VAD_MODEL_DEFAULT: str = "mlx-community/silero-vad"
 _realtime_vad_models: Dict[str, Any] = {}
 
-# In server_vad mode the transcription model is fed only while a turn is open, so
-# the audio just before the VAD confirms speech would be lost. We buffer a rolling
-# pre-roll of ``prefix_padding_ms`` (the OpenAI lead-in knob) plus this margin,
-# which covers the VAD's own frame-level confirmation latency, and flush it at
-# ``speech_started`` so the first phoneme survives.
-_REALTIME_PREROLL_MARGIN_MS: int = 150
-
 
 def _resolve_vad_model_name() -> str:
     """Return the VAD model used for server-side turn detection.
@@ -1889,12 +1882,11 @@ async def realtime_ws(websocket: WebSocket):
                         session.feed(samples)
                     await drain_deltas(max_decode_tokens=8)
                 else:
-                    # Silence between turns: retain a rolling pre-roll (so the next
-                    # onset isn't clipped) and feed the model nothing at all.
+                    # Silence between turns: retain a rolling pre-roll of
+                    # ``prefix_padding_ms`` (the OpenAI lead-in knob) so the next
+                    # onset isn't clipped, and feed the model nothing at all.
                     preroll_target = int(
-                        session.input_sample_rate
-                        * (turn_config.prefix_padding_ms + _REALTIME_PREROLL_MARGIN_MS)
-                        / 1000
+                        session.input_sample_rate * turn_config.prefix_padding_ms / 1000
                     )
                     preroll.append(samples)
                     preroll_samples += int(samples.shape[0])
