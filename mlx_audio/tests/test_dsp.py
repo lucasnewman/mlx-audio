@@ -93,46 +93,129 @@ print("OK")
     assert result.returncode == 0, f"Lazy import failed: {result.stderr}"
 
 
-def test_integrated_loudness_matches_reference_values():
-    """Verify BS.1770 loudness matches fixed reference outputs."""
+def _sine(peak_dbfs, seconds, rate, freq=997.0):
+    n = int(seconds * rate)
+    return 10.0 ** (peak_dbfs / 20.0) * np.sin(2 * np.pi * freq * np.arange(n) / rate)
+
+
+def test_k_weighting_matches_bs1770_coefficients():
+    """The two K-weighting stages must equal the coefficients ITU-R BS.1770
+    tabulates for 48 kHz in Table 1 (spherical head) and Table 2 (RLB)."""
+    from mlx_audio.dsp import (
+        _K_WEIGHT_HIGHPASS_FREQ,
+        _K_WEIGHT_HIGHPASS_Q,
+        _K_WEIGHT_SHELF_FREQ,
+        _K_WEIGHT_SHELF_GAIN_DB,
+        _K_WEIGHT_SHELF_Q,
+        _biquad_coefficients,
+    )
+
+    shelf_b, shelf_a = _biquad_coefficients(
+        _K_WEIGHT_SHELF_GAIN_DB,
+        _K_WEIGHT_SHELF_Q,
+        _K_WEIGHT_SHELF_FREQ,
+        48000,
+        "high_shelf",
+    )
+    np.testing.assert_allclose(
+        shelf_b, [1.53512485958697, -2.69169618940638, 1.19839281085285], atol=1e-12
+    )
+    np.testing.assert_allclose(
+        shelf_a, [1.0, -1.69065929318241, 0.73248077421585], atol=1e-12
+    )
+
+    pass_b, pass_a = _biquad_coefficients(
+        0.0, _K_WEIGHT_HIGHPASS_Q, _K_WEIGHT_HIGHPASS_FREQ, 48000, "high_pass"
+    )
+    np.testing.assert_allclose(pass_b, [1.0, -2.0, 1.0], atol=1e-12)
+    np.testing.assert_allclose(
+        pass_a, [1.0, -1.99004745483398, 0.99007225036621], atol=1e-12
+    )
+
+    # BS.1770 Note 1: the -0.691 constant cancels the K-weighting gain at 997 Hz,
+    # so that gain has to be 0.691 dB.
+    z = np.exp(-2j * np.pi * 997.0 / 48000)
+
+    def gain_db(b, a):
+        num = b[0] + b[1] * z + b[2] * z**2
+        den = a[0] + a[1] * z + a[2] * z**2
+        return 20.0 * np.log10(np.abs(num / den))
+
+    total = gain_db(shelf_b, shelf_a) + gain_db(pass_b, pass_a)
+    assert total == pytest.approx(0.691, abs=1e-3)
+
+
+def test_integrated_loudness_matches_bs1770_997hz_anchor():
+    """BS.1770: a 0 dB FS 997 Hz sine on one channel reads -3.01 LKFS, and the
+    scale is 1 LKFS per dB."""
     from mlx_audio.dsp import integrated_loudness
 
-    rng = np.random.default_rng(0)
-    mono = (rng.standard_normal(24000) * 0.02).astype(np.float64)
-    stereo = (rng.standard_normal((24000, 2)) * 0.015).astype(np.float64)
-
-    assert integrated_loudness(mono, 24000) == pytest.approx(
-        -31.147497580698033, abs=1e-12
-    )
-    assert integrated_loudness(stereo, 24000) == pytest.approx(
-        -30.587340400145717, abs=1e-12
-    )
+    for peak_dbfs in (0.0, -20.0, -40.0):
+        measured = integrated_loudness(_sine(peak_dbfs, 2.0, 48000), 48000)
+        assert measured == pytest.approx(peak_dbfs - 3.01, abs=0.01)
 
 
-def test_normalize_loudness_matches_reference_values():
-    """Verify loudness normalization matches fixed reference outputs."""
+def test_integrated_loudness_ignores_incomplete_final_block():
+    """BS.1770: "Incomplete gating blocks at the end of the measurement interval
+    are not used", so trailing samples that do not complete a block cannot move
+    the reading and a steady tone measures the same at any length."""
+    from mlx_audio.dsp import integrated_loudness
+
+    rate = 24000
+    tone = _sine(-23.0, 0.5, rate)
+    reference = integrated_loudness(tone, rate)
+    hop = int(0.4 * 0.25 * rate)
+    for extra in (1, hop // 2, hop - 1):
+        padded = np.concatenate([tone, _sine(-23.0, 0.5, rate)[:extra]])
+        assert integrated_loudness(padded, rate) == pytest.approx(reference, abs=1e-12)
+
+    readings = [
+        integrated_loudness(_sine(-23.0, duration, rate), rate)
+        for duration in (0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70)
+    ]
+    assert max(readings) - min(readings) < 0.01
+
+
+def test_integrated_loudness_gates_quiet_passages():
+    """The two-stage -70 LKFS / -10 LU gating keeps a loud programme's reading
+    from being dragged down by quiet passages around it."""
+    from mlx_audio.dsp import integrated_loudness
+
+    rate = 24000
+    loud = _sine(-23.0, 8.0, rate)
+
+    # -60 dBFS sits above the -70 LKFS absolute threshold, so it is the relative
+    # threshold that has to exclude it.
+    quiet = _sine(-60.0, 2.0, rate)
+    assert integrated_loudness(
+        np.concatenate([quiet, loud, quiet]), rate
+    ) == pytest.approx(integrated_loudness(loud, rate), abs=0.25)
+
+    # Below the absolute threshold, pushing a passage even further down cannot
+    # change the result at all.
+    readings = [
+        integrated_loudness(
+            np.concatenate([_sine(peak, 2.0, rate), loud, _sine(peak, 2.0, rate)]),
+            rate,
+        )
+        for peak in (-100.0, -140.0)
+    ]
+    assert readings[0] == pytest.approx(readings[1], abs=1e-7)
+
+
+def test_normalize_loudness_reaches_target():
+    """Normalizing to a target LUFS has to actually land on that target."""
     from mlx_audio.dsp import integrated_loudness, normalize_loudness
 
     rng = np.random.default_rng(0)
     mono = (rng.standard_normal(24000) * 0.02).astype(np.float64)
 
-    measured = integrated_loudness(mono, 24000, block_size=0.4)
+    measured = integrated_loudness(mono, 24000)
     normalized = normalize_loudness(mono, measured, -18.0)
 
-    assert np.max(np.abs(normalized)) == pytest.approx(0.4083656963780373, abs=1e-12)
+    assert integrated_loudness(normalized, 24000) == pytest.approx(-18.0, abs=1e-9)
     np.testing.assert_allclose(
-        normalized[:5],
-        np.array(
-            [
-                0.011424693401069328,
-                -0.01200393625946315,
-                0.058193108743361296,
-                0.009531930078445609,
-                -0.04867452152305382,
-            ]
-        ),
-        atol=1e-12,
-        rtol=0.0,
+        normalized, mono * 10.0 ** ((-18.0 - measured) / 20.0), rtol=1e-12
     )
 
 
