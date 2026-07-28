@@ -148,6 +148,7 @@ class MossMusicEncoder(nn.Module):
             )
         }
         self._embed_positions = sinusoids(config.max_source_positions, config.d_model)
+        mx.eval(self._embed_positions)
 
     @staticmethod
     def compute_downsampled_length(length: int) -> int:
@@ -355,6 +356,7 @@ class Model(nn.Module):
                 model.audio_encoder.conv1.weight.dtype
             )
         )
+        mx.eval(model.audio_encoder._embed_positions)
         return model
 
     def _ensure_processor(self) -> MossMusicProcessor:

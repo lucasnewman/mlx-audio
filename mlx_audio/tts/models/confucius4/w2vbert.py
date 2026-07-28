@@ -6,6 +6,7 @@ feature_projection + 17 conformer layers. Each layer: ffn1(*0.5) -> self_attn
 (relative_key) -> conv_module (causal depthwise) -> ffn2(*0.5) -> final LN.
 Weights: b4/w2vbert_mlx.safetensors (fp32, torch layout).
 """
+
 import math
 import os
 

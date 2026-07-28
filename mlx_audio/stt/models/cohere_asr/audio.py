@@ -22,6 +22,7 @@ class CohereAudioFrontend:
             norm="slaney",
             mel_scale="slaney",
         ).astype(mx.float32)
+        mx.eval(self.window, self.fb)
 
     def _build_window(self) -> mx.array:
         window_fn = STR_TO_WINDOW_FN.get(self.config.window, None)
@@ -64,6 +65,8 @@ class CohereAudioFrontend:
         win_key = "preprocessor.featurizer.window"
         if win_key in weights:
             self.window = weights[win_key].astype(mx.float32)
+
+        mx.eval(self.window, self.fb)
 
     def _normalize_waveform(self, waveform: Union[mx.array, np.ndarray]) -> mx.array:
         if isinstance(waveform, mx.array):

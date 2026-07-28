@@ -75,6 +75,7 @@ class ConformerAttention(nn.Module):
         dist = idx[:, None] - idx[None, :]
         dist = mx.clip(dist, -context_size, context_size) + max_pos_emb
         self._dist = dist  # shape [ctx, ctx], int
+        mx.eval(self._dist)
 
     def __call__(self, x: mx.array) -> mx.array:
         B, T, H = x.shape

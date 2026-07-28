@@ -52,6 +52,7 @@ _WINDOW = mx.concatenate(
     ]
 )
 _MEL_T = dsp.mel_filters(SAMPLING_RATE, N_FFT, N_MELS, precise=True).T
+mx.eval(_WINDOW, _MEL_T)
 
 
 def _compute_features(waveform: mx.array) -> mx.array:

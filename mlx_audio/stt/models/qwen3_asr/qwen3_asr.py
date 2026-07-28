@@ -188,6 +188,7 @@ class SinusoidalPositionEmbedding(nn.Module):
         self._positional_embedding = mx.concatenate(
             [mx.sin(scaled_time), mx.cos(scaled_time)], axis=1
         )
+        mx.eval(self._positional_embedding)
 
     def __call__(self, seqlen: int) -> mx.array:
         return self._positional_embedding[:seqlen, :]

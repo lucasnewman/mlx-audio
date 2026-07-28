@@ -6,6 +6,7 @@ Validate-driven: phan DiT estimator truoc (RoPE interleaved fp32, adaLN/RMSNorm,
 SwiGLU, U-Net skip, WaveNet gated). Weights: b2/s2a_mlx.safetensors (weight_norm
 da fold, layout torch giu nguyen: Linear (out,in), Conv1d (out,in,k)).
 """
+
 import math
 import os
 

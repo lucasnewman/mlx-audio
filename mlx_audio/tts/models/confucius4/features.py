@@ -7,6 +7,7 @@ Reimplements transformers' SeamlessM4TFeatureExtractor: povey window, remove-dc
 convert time (fbank_filters.npz). Validated to ~1e-6 vs transformers; the MLX
 path matches that reference to float32 precision.
 """
+
 import mlx.core as mx
 
 FRAME, HOP, NFFT, MEL_FLOOR = 400, 160, 512, 1.192092955078125e-07
