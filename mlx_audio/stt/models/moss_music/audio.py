@@ -31,6 +31,7 @@ class MossMusicFeatureExtractor:
             mel_scale="slaney",
             precise=True,
         ).astype(mx.float32)
+        mx.eval(self.window, self.filters)
 
     def _normalize_waveform(self, audio: Union[mx.array, np.ndarray]) -> mx.array:
         if isinstance(audio, mx.array):

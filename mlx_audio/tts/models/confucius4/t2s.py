@@ -7,6 +7,7 @@ final_norm + semantic_head. Prefix (speaker/text encoder) van do torch tinh o
 B1 de co lap phep toan GPT-2. Weight doc thang tu t2s_model.safetensors (F32,
 GPT-2 Conv1D layout [in,out]).
 """
+
 import math
 import os
 

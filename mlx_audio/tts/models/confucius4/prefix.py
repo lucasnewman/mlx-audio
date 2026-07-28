@@ -6,6 +6,7 @@ Produces the [condition_emb | text_emb] prefix from (w2v condition_vector, token
 so the T2S decode no longer needs the torch prefix. Weights read from
 t2s_model.safetensors (text_projector.*, speaker_encoder.*, text_position_embedding.*).
 """
+
 import mlx.core as mx
 
 from .t2s import find_ckpt

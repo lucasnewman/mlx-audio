@@ -119,6 +119,7 @@ class RelPositionalEncoding(nn.Module):
         pe[:, 0::2] = mx.sin(positions * div_term)
         pe[:, 1::2] = mx.cos(positions * div_term)
         self._pe = mx.expand_dims(pe, axis=0)
+        mx.eval(self._pe)
 
     def __call__(self, x: mx.array) -> Tuple[mx.array, mx.array]:
         if x.shape[1] > self.max_len:

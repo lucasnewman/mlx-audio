@@ -6,6 +6,7 @@ snakebeta logscale + anti-aliased activation (upsample->snake->downsample with
 fixed FIR filters). Weights b2/bigvgan_mlx.safetensors (weight_norm folded).
 Config: ups [4,4,2,2,2,2], init ch 1536, resblock k[3,7,11] dil[1,3,5].
 """
+
 import os
 
 import mlx.core as mx

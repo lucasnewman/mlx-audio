@@ -166,6 +166,7 @@ class FixedPositionalEncoding(nn.Module):
             max_len, d_model
         )
         self._pos_enc = pos_enc / math.sqrt(d_model)
+        mx.eval(self._pos_enc)
 
     def __call__(self, position_ids: mx.array) -> mx.array:
         """Get position embeddings for the given position IDs."""
