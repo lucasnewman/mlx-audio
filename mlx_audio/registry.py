@@ -123,7 +123,9 @@ def classify_model(model_type: str, model_name: str = "") -> Optional[str]:
             return kind
 
     folder_hits = [
-        kind for kind in available if model_type and model_type in _matchable_families(kind)
+        kind
+        for kind in available
+        if model_type and model_type in _matchable_families(kind)
     ]
     if len(folder_hits) == 1:
         return folder_hits[0]
