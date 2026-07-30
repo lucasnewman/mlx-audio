@@ -73,7 +73,8 @@ class ModelConfig(BaseModelArgs):
 
 def _precompute_rope(length: int, head_dim: int, base: float) -> mx.array:
     frequencies = 1.0 / (
-        base ** (mx.arange(0, head_dim, 2).astype(mx.float32)[: head_dim // 2] / head_dim)
+        base
+        ** (mx.arange(0, head_dim, 2).astype(mx.float32)[: head_dim // 2] / head_dim)
     )
     phases = mx.arange(length).astype(mx.float32)[:, None] * frequencies[None, :]
     # reference stores the (real, imag) table in bf16; keep the same rounding
@@ -113,7 +114,9 @@ class ArkttsRMSNorm(nn.Module):
 
 
 class ArkttsKVCache:
-    def __init__(self, batch_size: int, max_length: int, heads: int, head_dim: int, dtype):
+    def __init__(
+        self, batch_size: int, max_length: int, heads: int, head_dim: int, dtype
+    ):
         shape = (batch_size, heads, max_length, head_dim)
         self.keys = mx.zeros(shape, dtype=dtype)
         self.values = mx.zeros(shape, dtype=dtype)
@@ -212,14 +215,23 @@ class ArkttsTransformerBlock(nn.Module):
     ):
         super().__init__()
         self.attention = ArkttsAttention(
-            dim, n_head, n_local_heads, head_dim, qkv_bias, output_bias, qk_norm, norm_eps
+            dim,
+            n_head,
+            n_local_heads,
+            head_dim,
+            qkv_bias,
+            output_bias,
+            qk_norm,
+            norm_eps,
         )
         self.feed_forward = ArkttsFeedForward(dim, intermediate_size)
         self.ffn_norm = ArkttsRMSNorm(dim, norm_eps)
         self.attention_norm = ArkttsRMSNorm(dim, norm_eps)
 
     def __call__(self, x, rope, attention_mask, cache_start=None):
-        hidden = x + self.attention(self.attention_norm(x), rope, attention_mask, cache_start)
+        hidden = x + self.attention(
+            self.attention_norm(x), rope, attention_mask, cache_start
+        )
         return hidden + self.feed_forward(self.ffn_norm(hidden))
 
 
@@ -233,9 +245,15 @@ class ArkttsModel(nn.Module):
         )
         self.layers = [
             ArkttsTransformerBlock(
-                config.dim, config.intermediate_size, config.n_head, config.n_local_heads,
-                config.head_dim, config.attention_qkv_bias, config.attention_o_bias,
-                config.attention_qk_norm, config.norm_eps,
+                config.dim,
+                config.intermediate_size,
+                config.n_head,
+                config.n_local_heads,
+                config.head_dim,
+                config.attention_qkv_bias,
+                config.attention_o_bias,
+                config.attention_qk_norm,
+                config.norm_eps,
             )
             for _ in range(config.n_layer)
         ]
@@ -248,16 +266,23 @@ class ArkttsModel(nn.Module):
         self.fast_embeddings = nn.Embedding(config.codebook_size, config.fast_dim)
         self.fast_layers = [
             ArkttsTransformerBlock(
-                config.fast_dim, config.fast_intermediate_size, config.fast_n_head,
-                config.fast_n_local_heads, config.fast_head_dim,
-                config.fast_attention_qkv_bias, config.fast_attention_o_bias,
-                config.fast_attention_qk_norm, config.norm_eps,
+                config.fast_dim,
+                config.fast_intermediate_size,
+                config.fast_n_head,
+                config.fast_n_local_heads,
+                config.fast_head_dim,
+                config.fast_attention_qkv_bias,
+                config.fast_attention_o_bias,
+                config.fast_attention_qk_norm,
+                config.norm_eps,
             )
             for _ in range(config.n_fast_layer)
         ]
         self.fast_norm = ArkttsRMSNorm(config.fast_dim, config.norm_eps)
         self.fast_output = nn.Linear(config.fast_dim, config.codebook_size, bias=False)
-        self._freqs_cis = _precompute_rope(config.max_seq_len, config.head_dim, config.rope_base)
+        self._freqs_cis = _precompute_rope(
+            config.max_seq_len, config.head_dim, config.rope_base
+        )
         self._fast_freqs_cis = _precompute_rope(
             config.num_codebooks, config.fast_head_dim, config.rope_base
         )
@@ -268,7 +293,9 @@ class ArkttsModel(nn.Module):
         codebook_embeds = []
         for index in range(config.num_codebooks):
             codebook_embeds.append(
-                self.codebook_embeddings(input_ids[:, index + 1] + index * config.codebook_size)
+                self.codebook_embeddings(
+                    input_ids[:, index + 1] + index * config.codebook_size
+                )
             )
         codebook_sum = mx.stack(codebook_embeds, axis=1).sum(axis=1)
         semantic = mx.logical_and(
@@ -279,7 +306,9 @@ class ArkttsModel(nn.Module):
         return self.embeddings(input_ids[:, 0]) + codebook_sum
 
     @staticmethod
-    def _causal_mask(attention_mask: mx.array, query_positions: mx.array, key_length: int) -> mx.array:
+    def _causal_mask(
+        attention_mask: mx.array, query_positions: mx.array, key_length: int
+    ) -> mx.array:
         if attention_mask.shape[1] < key_length:
             attention_mask = mx.pad(
                 attention_mask, ((0, 0), (0, key_length - attention_mask.shape[1]))
@@ -287,14 +316,17 @@ class ArkttsModel(nn.Module):
         key_positions = mx.arange(key_length)
         causal = key_positions[None, :] <= query_positions[:, None]
         return mx.logical_and(
-            causal[None, None], attention_mask[:, None, None, :key_length].astype(mx.bool_)
+            causal[None, None],
+            attention_mask[:, None, None, :key_length].astype(mx.bool_),
         )
 
     # -- prefill (no-cache) forward, for parity ------------------------------
     def __call__(self, input_ids: mx.array, attention_mask: Optional[mx.array] = None):
         config = self.config
         if input_ids.ndim != 3 or input_ids.shape[1] != config.num_codebooks + 1:
-            raise ValueError(f"input_ids must have shape [B, {config.num_codebooks + 1}, T]")
+            raise ValueError(
+                f"input_ids must have shape [B, {config.num_codebooks + 1}, T]"
+            )
         batch, _, length = input_ids.shape
         if attention_mask is None:
             attention_mask = mx.ones((batch, length), dtype=mx.int64)
@@ -315,12 +347,19 @@ class ArkttsModel(nn.Module):
         config = self.config
         for layer in self.layers:
             layer.attention.kv_cache = ArkttsKVCache(
-                batch_size, config.max_seq_len, config.n_local_heads, config.head_dim, dtype
+                batch_size,
+                config.max_seq_len,
+                config.n_local_heads,
+                config.head_dim,
+                dtype,
             )
         for layer in self.fast_layers:
             layer.attention.kv_cache = ArkttsKVCache(
-                batch_size, config.num_codebooks, config.fast_n_local_heads,
-                config.fast_head_dim, dtype,
+                batch_size,
+                config.num_codebooks,
+                config.fast_n_local_heads,
+                config.fast_head_dim,
+                dtype,
             )
 
     def _clear_generation_caches(self):
@@ -411,11 +450,15 @@ class ArkttsModel(nn.Module):
         )
         return mx.where(mx.logical_and(repeated, semantic), high, normal)
 
-    def _generate_codebooks(self, slow_hidden, semantic, top_k, top_p, temperature, do_sample, rng_key):
+    def _generate_codebooks(
+        self, slow_hidden, semantic, top_k, top_p, temperature, do_sample, rng_key
+    ):
         config = self.config
         hidden = self.fast_project_in(slow_hidden)
         self._fast_step(hidden, 0)
-        current = mx.clip(semantic - config.semantic_begin_id, 0, config.codebook_size - 1)
+        current = mx.clip(
+            semantic - config.semantic_begin_id, 0, config.codebook_size - 1
+        )
         codebooks = [current]
         hidden = self.fast_embeddings(current)[:, None]
         for position in range(1, config.num_codebooks):
@@ -447,19 +490,27 @@ class ArkttsModel(nn.Module):
             suffix = np.asarray(suffix_input_ids[batch_index], dtype=np.int64)
             if reference_codes is None:
                 semantic_row = np.concatenate((prefix, suffix))
-                values = np.zeros((config.num_codebooks + 1, semantic_row.size), dtype=np.int64)
+                values = np.zeros(
+                    (config.num_codebooks + 1, semantic_row.size), dtype=np.int64
+                )
                 values[0] = semantic_row
             else:
                 length = int(reference_code_lengths[batch_index])
-                codes = np.asarray(reference_codes[batch_index][:, :length], dtype=np.int64)
+                codes = np.asarray(
+                    reference_codes[batch_index][:, :length], dtype=np.int64
+                )
                 semantic_codes = codes[0] + config.semantic_begin_id
                 semantic_row = np.concatenate((prefix, semantic_codes, suffix))
-                values = np.zeros((config.num_codebooks + 1, semantic_row.size), dtype=np.int64)
+                values = np.zeros(
+                    (config.num_codebooks + 1, semantic_row.size), dtype=np.int64
+                )
                 values[0] = semantic_row
                 values[1:, prefix.size : prefix.size + length] = codes
             rows.append(values)
         max_length = max(row.shape[1] for row in rows)
-        prompt = np.zeros((batch_size, config.num_codebooks + 1, max_length), dtype=np.int64)
+        prompt = np.zeros(
+            (batch_size, config.num_codebooks + 1, max_length), dtype=np.int64
+        )
         prompt[:, 0] = config.pad_token_id
         prompt_mask = np.zeros((batch_size, max_length), dtype=np.int64)
         for batch_index, row in enumerate(rows):
@@ -495,7 +546,9 @@ class ArkttsModel(nn.Module):
         max_new_tokens = min(max_new_tokens, config.max_seq_len - prompt_width)
         dtype = self.embeddings.weight.dtype
         self._setup_generation_caches(batch_size, dtype)
-        rng_key = mx.random.key(seed if seed is not None else int(time.time_ns() % (2**63)))
+        rng_key = mx.random.key(
+            seed if seed is not None else int(time.time_ns() % (2**63))
+        )
 
         position_ids = mx.maximum(mx.cumsum(prompt_mask, axis=-1) - 1, 0)
         logits, slow_hidden = self._slow_step(
@@ -513,7 +566,13 @@ class ArkttsModel(nn.Module):
             keys = mx.random.split(rng_key, 4)
             rng_key = keys[3]
             semantic = self._sample_semantic(
-                logits, top_k, top_p, temperature, previous, do_sample, (keys[0], keys[1])
+                logits,
+                top_k,
+                top_p,
+                temperature,
+                previous,
+                do_sample,
+                (keys[0], keys[1]),
             )
             codebooks = self._generate_codebooks(
                 slow_hidden, semantic, top_k, top_p, temperature, do_sample, keys[2]
@@ -524,7 +583,9 @@ class ArkttsModel(nn.Module):
             code_lengths = code_lengths + emitted.astype(mx.int64)
 
             if previous is None:
-                previous = mx.zeros((batch_size, config.ras_window_size), dtype=mx.int64)
+                previous = mx.zeros(
+                    (batch_size, config.ras_window_size), dtype=mx.int64
+                )
             else:
                 previous = mx.concatenate((previous[:, 1:], semantic[:, None]), axis=1)
             finished = mx.logical_or(finished, semantic == config.eos_token_id)
@@ -532,7 +593,9 @@ class ArkttsModel(nn.Module):
             if bool(mx.all(finished)):
                 break
 
-            next_column = mx.concatenate((semantic[:, None], codebooks), axis=1)[..., None]
+            next_column = mx.concatenate((semantic[:, None], codebooks), axis=1)[
+                ..., None
+            ]
             new_valid = active_before.astype(mx.int64)[:, None]
             prompt_mask_np = mx.concatenate((prompt_mask_np, new_valid), axis=1)
             physical_position = prompt_width + step
@@ -598,7 +661,9 @@ class Model(nn.Module):
             return cleaned
         return f"<|speaker:0|>{cleaned}"
 
-    def _prompt_segments(self, text: str, reference_text: Optional[str], has_reference: bool):
+    def _prompt_segments(
+        self, text: str, reference_text: Optional[str], has_reference: bool
+    ):
         tokenizer = self._load_tokenizer()
 
         def encode_parts(parts):
@@ -611,31 +676,39 @@ class Model(nn.Module):
         if not target:
             raise ValueError("text must not be empty")
         if not has_reference:
-            full = encode_parts([
+            full = encode_parts(
+                [
+                    "<|im_start|>system\n",
+                    "convert the provided text to speech",
+                    "<|im_end|>\n",
+                    "<|im_start|>user\n",
+                    target,
+                    "<|im_end|>\n",
+                    "<|im_start|>assistant\n<|voice|>",
+                ]
+            )
+            return full, np.asarray([], dtype=np.int64)
+        if not reference_text:
+            raise ValueError(
+                "reference_text is required when a reference voice is provided"
+            )
+        prefix = encode_parts(
+            [
                 "<|im_start|>system\n",
-                "convert the provided text to speech",
+                "convert the provided text to speech reference to the following:\n\nText:\n",
+                self._format_reference_text(reference_text),
+                "\n\nSpeech:\n",
+            ]
+        )
+        suffix = encode_parts(
+            [
                 "<|im_end|>\n",
                 "<|im_start|>user\n",
                 target,
                 "<|im_end|>\n",
                 "<|im_start|>assistant\n<|voice|>",
-            ])
-            return full, np.asarray([], dtype=np.int64)
-        if not reference_text:
-            raise ValueError("reference_text is required when a reference voice is provided")
-        prefix = encode_parts([
-            "<|im_start|>system\n",
-            "convert the provided text to speech reference to the following:\n\nText:\n",
-            self._format_reference_text(reference_text),
-            "\n\nSpeech:\n",
-        ])
-        suffix = encode_parts([
-            "<|im_end|>\n",
-            "<|im_start|>user\n",
-            target,
-            "<|im_end|>\n",
-            "<|im_start|>assistant\n<|voice|>",
-        ])
+            ]
+        )
         return prefix, suffix
 
     # audio ------------------------------------------------------------------
@@ -645,7 +718,9 @@ class Model(nn.Module):
         from mlx_audio.utils import resample_audio
 
         if isinstance(ref_audio, (str, Path)):
-            array, source_rate = sf.read(str(ref_audio), dtype="float32", always_2d=True)
+            array, source_rate = sf.read(
+                str(ref_audio), dtype="float32", always_2d=True
+            )
             array = array.mean(axis=1)
         else:
             array = np.asarray(ref_audio, dtype=np.float32)
@@ -751,7 +826,7 @@ class Model(nn.Module):
             if key.endswith(("freqs_cis", "causal_mask")):
                 continue
             if key.startswith("generator."):
-                key = key[len("generator."):]
+                key = key[len("generator.") :]
             if not key.startswith(("model.", "codec.")):
                 # raw reference LM checkpoint keys arrive unprefixed;
                 # raw codec.pth keys arrive as encoder./decoder./quantizer.
@@ -794,7 +869,9 @@ class Model(nn.Module):
                     else:
                         # Conv1d: torch (O, I, K) -> mlx (O, K, I)
                         value = value.transpose(0, 2, 1)
-                elif (".in_proj.weight" in key or ".out_proj.weight" in key) and value.ndim == 3:
+                elif (
+                    ".in_proj.weight" in key or ".out_proj.weight" in key
+                ) and value.ndim == 3:
                     # VQ 1x1 convs: torch (O, I, 1) -> mlx (O, 1, I)
                     value = value.transpose(0, 2, 1)
             remapped[key] = value

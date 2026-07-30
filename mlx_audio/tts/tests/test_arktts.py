@@ -82,15 +82,28 @@ class TestArkttsSanitize(unittest.TestCase):
                 "encoder.block.1.block.0.block.0.alpha": mx.zeros((1, 64, 1)),
             },
         )
-        self.assertEqual(out["codec.decoder.model.1.block.1.conv.weight"].shape, (8, 4, 16))
-        self.assertEqual(out["codec.quantizer.upsample.0.0.conv.weight"].shape, (8, 2, 16))
-        self.assertEqual(out["codec.quantizer.upsample.0.1.dwconv.conv.weight"].shape, (16, 7, 1))
-        self.assertEqual(out["codec.quantizer.downsample.0.0.conv.weight"].shape, (16, 2, 16))
-        self.assertEqual(out["codec.encoder.block.1.block.0.block.0.alpha"].shape, (1, 1, 64))
+        self.assertEqual(
+            out["codec.decoder.model.1.block.1.conv.weight"].shape, (8, 4, 16)
+        )
+        self.assertEqual(
+            out["codec.quantizer.upsample.0.0.conv.weight"].shape, (8, 2, 16)
+        )
+        self.assertEqual(
+            out["codec.quantizer.upsample.0.1.dwconv.conv.weight"].shape, (16, 7, 1)
+        )
+        self.assertEqual(
+            out["codec.quantizer.downsample.0.0.conv.weight"].shape, (16, 2, 16)
+        )
+        self.assertEqual(
+            out["codec.encoder.block.1.block.0.block.0.alpha"].shape, (1, 1, 64)
+        )
 
     def test_idempotent_on_converted_weights(self):
         model = Model.__new__(Model)
-        converted = {"model.embeddings.weight": mx.zeros((8, 4)), "codec.x": mx.zeros((2,))}
+        converted = {
+            "model.embeddings.weight": mx.zeros((8, 4)),
+            "codec.x": mx.zeros((2,)),
+        }
         out = Model.sanitize(model, converted)
         self.assertEqual(set(out), set(converted))
         self.assertEqual(out["model.embeddings.weight"].shape, (8, 4))
@@ -107,7 +120,9 @@ class TestArkttsTinyModel(unittest.TestCase):
         lm = ArkttsModel(config)
         mx.eval(lm.parameters())
         batch, width = 1, 12
-        prompt = np.random.randint(0, 255, size=(batch, config.num_codebooks + 1, width))
+        prompt = np.random.randint(
+            0, 255, size=(batch, config.num_codebooks + 1, width)
+        )
         prompt[:, 0, -3:] = np.random.randint(
             config.semantic_begin_id, config.semantic_end_id, size=(batch, 3)
         )
@@ -117,9 +132,7 @@ class TestArkttsTinyModel(unittest.TestCase):
 
         prefix = np.arange(5, dtype=np.int64)
         suffix = np.arange(3, dtype=np.int64)
-        codes = lm.generate_codes(
-            [prefix], [suffix], max_new_tokens=4, do_sample=False
-        )
+        codes = lm.generate_codes([prefix], [suffix], max_new_tokens=4, do_sample=False)
         self.assertEqual(codes.shape[0], batch)
         self.assertEqual(codes.shape[1], config.num_codebooks)
         self.assertLessEqual(codes.shape[2], 4)
@@ -130,8 +143,12 @@ class TestArkttsTinyModel(unittest.TestCase):
         mx.eval(lm.parameters())
         prefix = np.arange(5, dtype=np.int64)
         suffix = np.arange(3, dtype=np.int64)
-        a = lm.generate_codes([prefix], [suffix], max_new_tokens=4, do_sample=True, seed=11)
-        b = lm.generate_codes([prefix], [suffix], max_new_tokens=4, do_sample=True, seed=11)
+        a = lm.generate_codes(
+            [prefix], [suffix], max_new_tokens=4, do_sample=True, seed=11
+        )
+        b = lm.generate_codes(
+            [prefix], [suffix], max_new_tokens=4, do_sample=True, seed=11
+        )
         self.assertTrue(np.array_equal(np.asarray(a), np.asarray(b)))
 
 

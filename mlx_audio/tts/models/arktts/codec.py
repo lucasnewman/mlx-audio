@@ -28,7 +28,9 @@ def _rope(length: int, head_dim: int, base: float) -> mx.array:
 def _apply_rope(x: mx.array, values: mx.array) -> mx.array:
     # x: (B, T, H, D)
     shaped = x.astype(mx.float32).reshape(*x.shape[:-1], -1, 2)
-    values = values.astype(mx.float32).reshape(1, shaped.shape[1], 1, shaped.shape[3], 2)
+    values = values.astype(mx.float32).reshape(
+        1, shaped.shape[1], 1, shaped.shape[3], 2
+    )
     output = mx.stack(
         (
             shaped[..., 0] * values[..., 0] - shaped[..., 1] * values[..., 1],
@@ -143,15 +145,21 @@ class ArkttsCodecWindowTransformer(nn.Module):
         causal: bool = True,
     ):
         super().__init__()
-        self.layers = [ArkttsCodecTransformerBlock(config) for _ in range(config.n_layer)]
+        self.layers = [
+            ArkttsCodecTransformerBlock(config) for _ in range(config.n_layer)
+        ]
         self.norm = ArkttsCodecRMSNorm(config.dim, config.norm_eps)
         self.window_size = window_size
         self.causal = causal
         self.input_proj = (
-            nn.Linear(input_dim, config.dim) if input_dim != config.dim else nn.Identity()
+            nn.Linear(input_dim, config.dim)
+            if input_dim != config.dim
+            else nn.Identity()
         )
         self.output_proj = (
-            nn.Linear(config.dim, input_dim) if input_dim != config.dim else nn.Identity()
+            nn.Linear(config.dim, input_dim)
+            if input_dim != config.dim
+            else nn.Identity()
         )
         self.head_dim = config.head_dim
         self.rope_base = config.rope_base
@@ -174,7 +182,9 @@ class ArkttsCodecWindowTransformer(nn.Module):
         return self.output_proj(self.norm(x))
 
 
-def _extra_padding(x: mx.array, kernel_size: int, stride: int, padding_total: int = 0) -> int:
+def _extra_padding(
+    x: mx.array, kernel_size: int, stride: int, padding_total: int = 0
+) -> int:
     length = x.shape[1]
     frames = (length - kernel_size + padding_total) / stride + 1
     ideal = (math.ceil(frames) - 1) * stride + kernel_size - padding_total
@@ -182,11 +192,17 @@ def _extra_padding(x: mx.array, kernel_size: int, stride: int, padding_total: in
 
 
 class ArkttsCausalConv1d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, dilation=1, stride=1, groups=1):
+    def __init__(
+        self, in_channels, out_channels, kernel_size, dilation=1, stride=1, groups=1
+    ):
         super().__init__()
         self.conv = nn.Conv1d(
-            in_channels, out_channels, kernel_size,
-            stride=stride, dilation=dilation, groups=groups,
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            dilation=dilation,
+            groups=groups,
         )
         self.stride = stride
         self.kernel_size = (kernel_size - 1) * dilation + 1
@@ -279,7 +295,9 @@ class ArkttsEncoder(nn.Module):
         for stride, transformer_layers in zip((2, 4, 8, 8), (0, 0, 0, 4)):
             dim *= 2
             modules.append(ArkttsEncoderBlock(dim, stride, transformer_layers))
-        modules.extend((ArkttsSnake1d(dim), ArkttsCausalConv1d(dim, 1024, kernel_size=3)))
+        modules.extend(
+            (ArkttsSnake1d(dim), ArkttsCausalConv1d(dim, 1024, kernel_size=3))
+        )
         self.block = modules
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -293,7 +311,9 @@ class ArkttsDecoderBlock(nn.Module):
         super().__init__()
         self.block = [
             ArkttsSnake1d(input_dim),
-            ArkttsCausalConvTranspose1d(input_dim, output_dim, kernel_size=2 * stride, stride=stride),
+            ArkttsCausalConvTranspose1d(
+                input_dim, output_dim, kernel_size=2 * stride, stride=stride
+            ),
             ArkttsResidualUnit(output_dim, 1),
             ArkttsResidualUnit(output_dim, 3),
             ArkttsResidualUnit(output_dim, 9),
@@ -315,7 +335,10 @@ class ArkttsDecoder(nn.Module):
             output_dim = channels // (2 ** (index + 1))
             modules.append(ArkttsDecoderBlock(input_dim, output_dim, stride))
         modules.extend(
-            (ArkttsSnake1d(output_dim), ArkttsCausalConv1d(output_dim, 1, kernel_size=7))
+            (
+                ArkttsSnake1d(output_dim),
+                ArkttsCausalConv1d(output_dim, 1, kernel_size=7),
+            )
         )
         self.model = modules
 
@@ -364,7 +387,9 @@ class ArkttsVectorQuantizer(nn.Module):
 
 
 class ArkttsResidualQuantizer(nn.Module):
-    def __init__(self, input_dim: int, n_codebooks: int, codebook_size: int, codebook_dim: int):
+    def __init__(
+        self, input_dim: int, n_codebooks: int, codebook_size: int, codebook_dim: int
+    ):
         super().__init__()
         self.n_codebooks = int(n_codebooks)
         self.codebook_size = int(codebook_size)
@@ -414,12 +439,24 @@ class ArkttsDownsampleQuantizer(nn.Module):
         self.semantic_quantizer = ArkttsResidualQuantizer(1024, 1, 4096, 8)
         self.quantizer = ArkttsResidualQuantizer(1024, 9, 1024, 8)
         self.downsample = [
-            [ArkttsCausalConv1d(1024, 1024, kernel_size=2, stride=2), ArkttsConvNeXtBlock(1024)],
-            [ArkttsCausalConv1d(1024, 1024, kernel_size=2, stride=2), ArkttsConvNeXtBlock(1024)],
+            [
+                ArkttsCausalConv1d(1024, 1024, kernel_size=2, stride=2),
+                ArkttsConvNeXtBlock(1024),
+            ],
+            [
+                ArkttsCausalConv1d(1024, 1024, kernel_size=2, stride=2),
+                ArkttsConvNeXtBlock(1024),
+            ],
         ]
         self.upsample = [
-            [ArkttsCausalConvTranspose1d(1024, 1024, kernel_size=2, stride=2), ArkttsConvNeXtBlock(1024)],
-            [ArkttsCausalConvTranspose1d(1024, 1024, kernel_size=2, stride=2), ArkttsConvNeXtBlock(1024)],
+            [
+                ArkttsCausalConvTranspose1d(1024, 1024, kernel_size=2, stride=2),
+                ArkttsConvNeXtBlock(1024),
+            ],
+            [
+                ArkttsCausalConvTranspose1d(1024, 1024, kernel_size=2, stride=2),
+                ArkttsConvNeXtBlock(1024),
+            ],
         ]
         pre_transformer_config = ArkttsCodecTransformerConfig(
             n_layer=8, n_head=16, dim=1024, intermediate_size=3072
@@ -429,10 +466,16 @@ class ArkttsDownsampleQuantizer(nn.Module):
             n_head=int(getattr(config, "codec_post_n_head", 16)),
             n_local_heads=int(getattr(config, "codec_post_n_local_heads", 8)),
             dim=1024,
-            intermediate_size=int(getattr(config, "codec_post_intermediate_size", 1216)),
+            intermediate_size=int(
+                getattr(config, "codec_post_intermediate_size", 1216)
+            ),
         )
-        self.pre_module = ArkttsCodecWindowTransformer(pre_transformer_config, 1024, window_size=128)
-        self.post_module = ArkttsCodecWindowTransformer(post_transformer_config, 1024, window_size=128)
+        self.pre_module = ArkttsCodecWindowTransformer(
+            pre_transformer_config, 1024, window_size=128
+        )
+        self.post_module = ArkttsCodecWindowTransformer(
+            post_transformer_config, 1024, window_size=128
+        )
 
     def _run(self, stages, x: mx.array) -> mx.array:
         for stage in stages:
@@ -454,7 +497,9 @@ class ArkttsDownsampleQuantizer(nn.Module):
         return z, mx.concatenate((semantic_codes, residual_codes), axis=1)
 
     def decode(self, indices: mx.array) -> mx.array:
-        semantic_indices = mx.clip(indices[:, :1], 0, self.semantic_quantizer.codebook_size - 1)
+        semantic_indices = mx.clip(
+            indices[:, :1], 0, self.semantic_quantizer.codebook_size - 1
+        )
         residual_indices = mx.clip(indices[:, 1:], 0, self.quantizer.codebook_size - 1)
         semantic = self.semantic_quantizer.from_codes(semantic_indices)
         residual = self.quantizer.from_codes(residual_indices)
@@ -479,7 +524,10 @@ class ArkttsCodec(nn.Module):
         if audio.ndim != 3 or audio.shape[-1] != 1:
             raise ValueError("audio must have shape [B, samples, 1]")
         original_length = audio.shape[1]
-        right = math.ceil(original_length / self.frame_length) * self.frame_length - original_length
+        right = (
+            math.ceil(original_length / self.frame_length) * self.frame_length
+            - original_length
+        )
         if right:
             audio = mx.pad(audio, ((0, 0), (0, right), (0, 0)))
         if audio_lengths is None:
@@ -487,7 +535,9 @@ class ArkttsCodec(nn.Module):
         encoded = self.encoder(audio)
         _, codes = self.quantizer(encoded)
         codes = codes.astype(mx.int64)
-        code_lengths = mx.ceil(audio_lengths.astype(mx.float32) / self.frame_length).astype(mx.int64)
+        code_lengths = mx.ceil(
+            audio_lengths.astype(mx.float32) / self.frame_length
+        ).astype(mx.int64)
         max_codes = codes.shape[-1]
         frame_positions = mx.arange(max_codes)[None, None, :]
         valid = frame_positions < code_lengths[:, None, None]
