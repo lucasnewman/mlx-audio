@@ -286,6 +286,11 @@ class ArkttsModel(nn.Module):
         self._fast_freqs_cis = _precompute_rope(
             config.num_codebooks, config.fast_head_dim, config.rope_base
         )
+        # Materialize the rope tables now. They are plain attributes rather than module
+        # parameters, so nothing else forces them; left lazy, their graph would first be
+        # evaluated inside whichever stream/thread happens to run the first forward, which
+        # crashes when the model is moved across streams.
+        mx.eval((self._freqs_cis, self._fast_freqs_cis))
 
     # -- embedding -----------------------------------------------------------
     def _embed(self, input_ids: mx.array) -> mx.array:
