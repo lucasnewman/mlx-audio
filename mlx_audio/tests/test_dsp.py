@@ -155,6 +155,23 @@ def test_integrated_loudness_matches_bs1770_997hz_anchor():
         assert measured == pytest.approx(peak_dbfs - 3.01, abs=0.01)
 
 
+def test_integrated_loudness_block_hop_11025hz():
+    """At 44.1 kHz / 4 the 400 ms block is 4410 samples and the hop is
+    round(1102.5) = 1102, so block starts are exact integer multiples of the
+    hop (uniform spacing, no drift), and the 997 Hz anchor still holds."""
+    from mlx_audio.dsp import integrated_loudness
+
+    rate = 11025
+    assert int(round(0.4 * rate)) == 4410
+    assert int(round(0.4 * 0.25 * rate)) == 1102
+
+    # -23 dB FS 997 Hz reads -23 - 3.01 LKFS; the K-weighting is redesigned
+    # per rate from the analogue prototypes, which costs < 0.05 dB (48 kHz
+    # reads -26.010, 44.1 kHz -26.007).
+    measured = integrated_loudness(_sine(-23.0, 2.0, rate), rate)
+    assert measured == pytest.approx(-23.0 - 3.01, abs=0.05)
+
+
 def test_integrated_loudness_ignores_incomplete_final_block():
     """BS.1770: "Incomplete gating blocks at the end of the measurement interval
     are not used", so trailing samples that do not complete a block cannot move
