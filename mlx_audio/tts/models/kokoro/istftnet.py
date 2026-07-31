@@ -3,8 +3,8 @@ from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 
+from mlx_audio.dsp import hanning
 from mlx_audio.utils import istft, stft
 
 from ..base import check_array_shape
@@ -466,7 +466,7 @@ class MLXSTFT:
         if isinstance(window, str):
             if window.lower() not in ("hann", "hanning"):
                 raise ValueError(f"Unsupported window: {window}")
-            self.window = mx.array(np.hanning(win_length + 1)[:-1].astype(np.float32))
+            self.window = hanning(win_length, periodic=True)
         else:
             self.window = window
 

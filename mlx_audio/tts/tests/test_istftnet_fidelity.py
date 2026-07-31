@@ -9,10 +9,10 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from mlx_audio.tts.models.kitten_tts.istftnet import ConvWeighted as KittenConvWeighted
 from mlx_audio.tts.models.kitten_tts.istftnet import MLXSTFT as KittenMLXSTFT
-from mlx_audio.tts.models.kokoro.istftnet import ConvWeighted as KokoroConvWeighted
+from mlx_audio.tts.models.kitten_tts.istftnet import ConvWeighted as KittenConvWeighted
 from mlx_audio.tts.models.kokoro.istftnet import MLXSTFT as KokoroMLXSTFT
+from mlx_audio.tts.models.kokoro.istftnet import ConvWeighted as KokoroConvWeighted
 
 
 @pytest.mark.parametrize("conv_cls", [KokoroConvWeighted, KittenConvWeighted])

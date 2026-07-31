@@ -79,9 +79,7 @@ class TestInterpolate(unittest.TestCase):
         # The first element must be 1.0: torch clamps the (negative) source
         # coordinate of the first output at 0 instead of gathering index -1.
         expected = mx.array(
-            np.array(
-                [[[1.0, 1.7142857, 2.8571429, 4.0, 5.1428576, 6.2857141, 7.0]]]
-            )
+            np.array([[[1.0, 1.7142857, 2.8571429, 4.0, 5.1428576, 6.2857141, 7.0]]])
         )
         np.testing.assert_allclose(result.tolist(), expected.tolist(), rtol=1e-5)
 
