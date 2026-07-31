@@ -1449,6 +1449,39 @@ class TestChatterboxConfig(unittest.TestCase):
         self.assertEqual(config.model_type, "chatterbox")
         self.assertTrue(config.t3_config.is_multilingual)
 
+    def test_v3_legacy_config_builds_multilingual_t3(self):
+        """V3's compact config must build the 2,454-token T3 architecture."""
+        from mlx_audio.tts.models.chatterbox.config import ModelConfig
+
+        config = ModelConfig.from_dict(
+            {
+                "model_type": "chatterbox",
+                "multilingual": True,
+                "vocab_size": 2454,
+                "t3_model": "v3",
+            }
+        )
+
+        self.assertTrue(config.multilingual)
+        self.assertTrue(config.t3_config.is_multilingual)
+        self.assertEqual(config.t3_model, "v3")
+        self.assertEqual(config.text_preprocessing, "NFKD,fullcase")
+
+    def test_existing_multilingual_config_is_identified_as_v2(self):
+        from mlx_audio.tts.models.chatterbox.config import ModelConfig
+
+        config = ModelConfig.from_dict(
+            {
+                "model_type": "chatterbox",
+                "multilingual": True,
+                "vocab_size": 2454,
+            }
+        )
+
+        self.assertEqual(config.t3_model, "v2")
+        self.assertEqual(config.text_preprocessing, "legacy")
+        self.assertTrue(config.t3_config.is_multilingual)
+
 
 class TestChatterboxModel(unittest.TestCase):
     @patch("mlx_audio.tts.models.chatterbox.chatterbox.T3")
@@ -1503,6 +1536,43 @@ class TestChatterboxModel(unittest.TestCase):
         self.assertIn("ve.lstm.weight", result)
         self.assertIn("t3.tfmr.weight", result)
         self.assertIn("s3gen.flow.weight", result)
+
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.T3")
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.S3Token2Wav")
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.VoiceEncoder")
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.S3TokenizerV2")
+    def test_v3_english_uses_multilingual_tokenizer_and_preserves_case(
+        self, mock_s3_tokenizer, mock_ve, mock_s3gen, mock_t3
+    ):
+        from mlx_audio.tts.models.chatterbox.chatterbox import Model
+        from mlx_audio.tts.models.chatterbox.config import ModelConfig
+
+        model = Model(ModelConfig.from_dict({"t3_model": "v3"}))
+        model.mtl_tokenizer = MagicMock()
+        model.mtl_tokenizer.text_to_tokens.return_value = mx.array([[1, 2]])
+
+        tokens = model._tokenize_text("hello V3", "en")
+
+        self.assertEqual(tokens.shape, (1, 2))
+        model.mtl_tokenizer.text_to_tokens.assert_called_once_with(
+            "hello V3.", language_id="en"
+        )
+
+
+class TestChatterboxV3Tokenizer(unittest.TestCase):
+    def test_v3_preprocessing_uses_fullcase_nfkd(self):
+        from unicodedata import normalize
+
+        from mlx_audio.tts.models.chatterbox.tokenizer import MTLTokenizer
+
+        tokenizer = MTLTokenizer.__new__(MTLTokenizer)
+        tokenizer.text_preprocessing = "NFKD,fullcase"
+        tokenizer.cangjie_converter = lambda text: text
+
+        self.assertEqual(
+            tokenizer.preprocess_text("ÄBC", language_id="ja"),
+            normalize("NFKD", "ÄBC"),
+        )
 
 
 class TestChatterboxFromPretrainedQuantization(unittest.TestCase):
