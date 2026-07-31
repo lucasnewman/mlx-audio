@@ -94,6 +94,16 @@ STR_TO_WINDOW_FN = {
 }
 
 
+# K-weighting stage parameters. These are the analogue prototypes behind the
+# BS.1770 Table 1 / Table 2 coefficients, so a redesign at any sampling rate
+# still matches the tabulated 48 kHz response.
+_K_WEIGHT_SHELF_FREQ = 1681.974450955533
+_K_WEIGHT_SHELF_Q = 0.7071752369554196
+_K_WEIGHT_SHELF_GAIN_DB = 3.999843853973347
+_K_WEIGHT_HIGHPASS_FREQ = 38.13547087602444
+_K_WEIGHT_HIGHPASS_Q = 0.5003270373238773
+
+
 def _validate_loudness_audio(data: np.ndarray, rate: int, block_size: float) -> None:
     if not isinstance(data, np.ndarray):
         raise ValueError("Data must be of type numpy.ndarray.")
@@ -115,44 +125,43 @@ def _biquad_coefficients(
     rate: int,
     filter_type: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    amplitude = 10 ** (gain_db / 40.0)
-    omega = 2.0 * math.pi * (center_freq / rate)
-    alpha = math.sin(omega) / (2.0 * q_factor)
+    """Build a K-weighting stage as specified by ITU-R BS.1770.
+
+    The Recommendation tabulates both stages only at 48 kHz (Tables 1 and 2) and
+    requires other rates to "provide the same frequency response". These designs
+    reproduce the tabulated coefficients exactly at 48 kHz and rescale correctly.
+    """
+    k = math.tan(math.pi * center_freq / rate)
+    denominator = 1.0 + k / q_factor + k * k
+    a = np.array(
+        [
+            1.0,
+            2.0 * (k * k - 1.0) / denominator,
+            (1.0 - k / q_factor + k * k) / denominator,
+        ]
+    )
 
     if filter_type == "high_shelf":
-        b0 = amplitude * (
-            (amplitude + 1)
-            + (amplitude - 1) * math.cos(omega)
-            + 2 * math.sqrt(amplitude) * alpha
-        )
-        b1 = -2 * amplitude * ((amplitude - 1) + (amplitude + 1) * math.cos(omega))
-        b2 = amplitude * (
-            (amplitude + 1)
-            + (amplitude - 1) * math.cos(omega)
-            - 2 * math.sqrt(amplitude) * alpha
-        )
-        a0 = (
-            (amplitude + 1)
-            - (amplitude - 1) * math.cos(omega)
-            + 2 * math.sqrt(amplitude) * alpha
-        )
-        a1 = 2 * ((amplitude - 1) - (amplitude + 1) * math.cos(omega))
-        a2 = (
-            (amplitude + 1)
-            - (amplitude - 1) * math.cos(omega)
-            - 2 * math.sqrt(amplitude) * alpha
+        shelf_gain = 10.0 ** (gain_db / 20.0)
+        # Exponent as used by the BS.1770 reference designs (libebur128, and
+        # pyloudnorm's "DeMan" filter class); it is what lands stage 1 on Table 1.
+        mid_gain = shelf_gain**0.4996667741545416
+        b = np.array(
+            [
+                (shelf_gain + mid_gain * k / q_factor + k * k) / denominator,
+                2.0 * (k * k - shelf_gain) / denominator,
+                (shelf_gain - mid_gain * k / q_factor + k * k) / denominator,
+            ]
         )
     elif filter_type == "high_pass":
-        b0 = (1 + math.cos(omega)) / 2
-        b1 = -(1 + math.cos(omega))
-        b2 = (1 + math.cos(omega)) / 2
-        a0 = 1 + alpha
-        a1 = -2 * math.cos(omega)
-        a2 = 1 - alpha
+        # Table 2 gives the numerator as exactly [1, -2, 1]. Normalising it by
+        # the denominator (as the RBJ cookbook high-pass does) costs 0.043 dB
+        # across the whole band above ~500 Hz.
+        b = np.array([1.0, -2.0, 1.0])
     else:
         raise ValueError(f"Unsupported filter type: {filter_type}")
 
-    return np.array([b0, b1, b2]) / a0, np.array([a0, a1, a2]) / a0
+    return b, a
 
 
 def lfilter(b: np.ndarray, a: np.ndarray, data: np.ndarray) -> np.ndarray:
@@ -206,9 +215,15 @@ def _k_weight_audio(data: np.ndarray, rate: int) -> np.ndarray:
     weighted = np.array(data, dtype=np.float64, copy=True)
 
     high_shelf_b, high_shelf_a = _biquad_coefficients(
-        4.0, 1 / math.sqrt(2), 1500.0, rate, "high_shelf"
+        _K_WEIGHT_SHELF_GAIN_DB,
+        _K_WEIGHT_SHELF_Q,
+        _K_WEIGHT_SHELF_FREQ,
+        rate,
+        "high_shelf",
     )
-    high_pass_b, high_pass_a = _biquad_coefficients(0.0, 0.5, 38.0, rate, "high_pass")
+    high_pass_b, high_pass_a = _biquad_coefficients(
+        0.0, _K_WEIGHT_HIGHPASS_Q, _K_WEIGHT_HIGHPASS_FREQ, rate, "high_pass"
+    )
 
     for channel in range(weighted.shape[1]):
         weighted[:, channel] = _apply_lfilter(
@@ -242,19 +257,20 @@ def integrated_loudness(
     absolute_threshold = -70.0
     step = 1.0 - overlap
 
-    duration_seconds = num_samples / rate
-    num_blocks = int(
-        np.round(((duration_seconds - block_size) / (block_size * step))) + 1
-    )
+    # BS.1770: a gating block is 400 ms "to the nearest sample", and "incomplete
+    # gating blocks at the end of the measurement interval are not used".
+    block_samples = int(round(block_size * rate))
+    hop_samples = int(round(block_size * step * rate))
+    num_blocks = 1 + (num_samples - block_samples) // hop_samples
     block_indices = np.arange(0, num_blocks)
     mean_square = np.zeros((num_channels, num_blocks), dtype=np.float64)
 
     for channel in range(num_channels):
         for block_index in block_indices:
-            lower = int(block_size * (block_index * step) * rate)
-            upper = int(block_size * (block_index * step + 1) * rate)
-            mean_square[channel, block_index] = (1.0 / (block_size * rate)) * np.sum(
-                np.square(input_data[lower:upper, channel])
+            lower = block_index * hop_samples
+            upper = lower + block_samples
+            mean_square[channel, block_index] = (
+                np.sum(np.square(input_data[lower:upper, channel])) / block_samples
             )
 
     with warnings.catch_warnings():
@@ -276,7 +292,7 @@ def integrated_loudness(
     gated_blocks = [
         block_index
         for block_index, loudness in enumerate(block_loudness)
-        if loudness >= absolute_threshold
+        if loudness > absolute_threshold
     ]
 
     with warnings.catch_warnings():
