@@ -16,7 +16,7 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 | [**Svara TTS**](svara.md) | 3B | 19 Indian langs (HI, BN, TA, TE, KN, ML, MR, GU, PA, OR, AS, BH, MAG, MAI, HNE, BRX, DOI, NE, SA, EN-IN) | -- | Yes | Orpheus-family, SNAC 24 kHz, 38 voices, 4-bit/8-bit MLX quants |
 | [**CSM / MisoTTS**](csm.md) | 1B / 8B | EN | Yes | Yes | Sesame-style conversational speech, voice cloning, multi-turn context |
 | [**Dia**](dia.md) | 1.6B | EN | -- | -- | Dialogue with `[S1]`/`[S2]` speaker tags |
-| [**Chatterbox**](chatterbox.md) | -- | EN + 15 languages | Yes | -- | Expressive, emotion exaggeration control |
+| [**Chatterbox**](chatterbox.md) | 0.5B | 23 languages | Yes | -- | Multilingual v2/v3, emotion exaggeration control |
 | [KugelAudio](kugelaudio.md) | 7B | 24 European languages | -- | -- | VibeVoice-based multilingual TTS with diffusion decoding |
 | [Spark](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/spark) | 0.5B | EN, ZH | -- | -- | SparkTTS model |
 | [OuteTTS](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) | 0.6B | EN | -- | -- | Efficient TTS |
@@ -55,6 +55,6 @@ All TTS models share a common interface:
 !!! tip "Choosing a model"
     - **Fastest / smallest:** Kokoro (82M) -- great for quick generation with many voice presets.
     - **Voice cloning:** CSM, Qwen3-TTS, Higgs Audio v3, or OmniVoice -- clone a voice from reference speech.
-    - **Multilingual:** Voxtral TTS (9 languages, 20 voices) or Chatterbox (16 languages).
+    - **Multilingual:** Voxtral TTS (9 languages, 20 voices) or Chatterbox (23 languages).
     - **Dialogue:** Dia -- built-in support for multi-speaker conversations.
     - **Emotion / style control:** Qwen3-TTS CustomVoice or VoiceDesign variants.
