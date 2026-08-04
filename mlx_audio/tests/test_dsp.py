@@ -311,6 +311,37 @@ def test_resample_noop_when_rates_equal():
     np.testing.assert_array_equal(np.asarray(out), x)
 
 
+@pytest.mark.parametrize("orig", [24000, 44100, 48000])
+def test_chunked_resample_matches_whole_buffer(orig):
+    from mlx_audio.resample import resample_audio_chunks
+    from mlx_audio.utils import resample_audio
+
+    target = 16000
+    rng = np.random.default_rng(orig)
+    audio = rng.normal(0.0, 0.1, size=(2 * orig + 137, 2)).astype(np.float32)
+    chunk_sizes = (137, 997, 4096, 53, 1201)
+
+    def chunks():
+        start = 0
+        chunk_index = 0
+        while start < len(audio):
+            end = start + chunk_sizes[chunk_index % len(chunk_sizes)]
+            yield audio[start:end]
+            start = end
+            chunk_index += 1
+
+    expected = resample_audio(audio, orig, target, axis=0)
+    actual = resample_audio_chunks(
+        chunks(),
+        orig,
+        target,
+        len(audio),
+        chunk_duration_seconds=0.025,
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+
+
 def test_integrated_loudness_validation_matches_previous_behavior():
     """Verify the public helper keeps the old validation semantics."""
     from mlx_audio.dsp import integrated_loudness
