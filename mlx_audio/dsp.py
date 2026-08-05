@@ -451,7 +451,11 @@ def istft(
         window: Window function name or array (default: "hann")
         center: If True, remove center padding (default: True)
         length: Target output length (default: None)
-        normalized: If True, use window squared (COLA) normalization. If False, use simple window normalization (default: True)
+        normalized: If True, divide the overlap-add by the summed squared
+            window (least-squares inversion, the division torch.istft always
+            performs). If False, divide by the summed window (default: False).
+            Note this is unrelated to torch.istft's `normalized` argument,
+            which selects FFT scaling.
 
     Returns:
         Reconstructed time-domain signal
