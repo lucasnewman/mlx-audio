@@ -4,6 +4,7 @@ import mlx.core as mx
 from mlx.utils import tree_flatten
 
 from mlx_audio.codec.models.nemotron_voicechat import (
+    CausalConv1dCache,
     NemotronVoiceChatCodec,
     NemotronVoiceChatCodecConfig,
 )
@@ -41,6 +42,22 @@ class TestNemotronVoiceChatCodec(unittest.TestCase):
         self.assertEqual(decoded.shape[0:2], (1, 1))
         self.assertEqual(decoded.shape[-1], codes.shape[-1] * 16)
         self.assertTrue(bool(mx.all(mx.isfinite(decoded))))
+
+    def test_streaming_decode_matches_offline_and_has_fixed_chunks(self):
+        model = NemotronVoiceChatCodec(tiny_config())
+        codes = mx.array([[[1, 2, 3], [4, 5, 6]]], dtype=mx.int32)
+        offline = model.decode(codes)
+
+        cache = CausalConv1dCache()
+        chunks = [
+            model.decode_step(codes[:, :, index : index + 1], cache)
+            for index in range(codes.shape[-1])
+        ]
+        streamed = mx.concatenate(chunks, axis=-1)
+        mx.eval(offline, streamed)
+
+        self.assertTrue(all(chunk.shape[-1] == 16 for chunk in chunks))
+        self.assertTrue(mx.allclose(streamed, offline, rtol=1e-4, atol=1e-4))
 
     def test_sanitize_convolution_layouts_and_strict_load(self):
         model = NemotronVoiceChatCodec(tiny_config())

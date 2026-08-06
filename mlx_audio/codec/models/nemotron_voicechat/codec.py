@@ -11,6 +11,49 @@ from mlx_audio.dsp import ISTFTCache, hanning, stft
 from .config import NemotronVoiceChatCodecConfig
 
 
+class CausalConv1dCache:
+    """Per-layer causal-convolution and spectrogram overlap state."""
+
+    def __init__(self):
+        self.cache: dict[int | str, mx.array] = {}
+
+    def update(
+        self,
+        states: mx.array,
+        layer_id: int | str,
+        padding: int,
+        *,
+        padding_value: float = 0.0,
+        flush: bool = False,
+    ) -> mx.array:
+        if padding < 0:
+            raise ValueError("padding must be non-negative")
+        if padding == 0:
+            return states
+
+        previous = self.cache.get(layer_id)
+        if previous is None:
+            previous = mx.full(
+                (states.shape[0], padding, states.shape[2]),
+                padding_value,
+                dtype=states.dtype,
+            )
+        elif previous.shape != (states.shape[0], padding, states.shape[2]):
+            raise ValueError(
+                f"cache entry {layer_id!r} has shape {previous.shape}, expected "
+                f"{(states.shape[0], padding, states.shape[2])}"
+            )
+
+        padded = mx.concatenate([previous, states], axis=1)
+        self.cache[layer_id] = padded[:, -padding:]
+        if flush:
+            self.cache.pop(layer_id, None)
+        return padded
+
+    def clear(self) -> None:
+        self.cache.clear()
+
+
 def _spectrogram(waveform: mx.array, n_fft: int, hop_length: int) -> mx.array:
     """Adapt the shared 1-D STFT to VoiceChat's batched padded layout."""
 
@@ -59,9 +102,10 @@ class ChannelLayerNorm(nn.Module):
 
 
 class ConvNeXtBlock1d(nn.Module):
-    def __init__(self, channels: int, kernel_size: int):
+    def __init__(self, channels: int, kernel_size: int, layer_id: int):
         super().__init__()
         self.kernel_size = kernel_size
+        self.layer_id = layer_id
         self.dwconv = nn.Conv1d(
             channels,
             channels,
@@ -73,9 +117,23 @@ class ConvNeXtBlock1d(nn.Module):
         self.pwconv1 = nn.Conv1d(channels, 4 * channels, 1, bias=True)
         self.pwconv2 = nn.Conv1d(4 * channels, channels, 1, bias=True)
 
-    def __call__(self, inputs: mx.array) -> mx.array:
+    def __call__(
+        self,
+        inputs: mx.array,
+        *,
+        cache: CausalConv1dCache | None = None,
+        flush: bool = False,
+    ) -> mx.array:
         residual = inputs
-        hidden = mx.pad(inputs, ((0, 0), (self.kernel_size - 1, 0), (0, 0)))
+        if cache is None:
+            hidden = mx.pad(inputs, ((0, 0), (self.kernel_size - 1, 0), (0, 0)))
+        else:
+            hidden = cache.update(
+                inputs,
+                self.layer_id,
+                self.kernel_size - 1,
+                flush=flush,
+            )
         hidden = self.dwconv(hidden)
         hidden = self.norm(hidden)
         hidden = self.pwconv1(hidden)
@@ -99,13 +157,19 @@ class AudioEncoder(nn.Module):
         layers: list[nn.Module] = [
             nn.Conv1d(config.stft_channels, channels[0], 1, bias=False)
         ]
+        block_index = 0
         for index, (stage_channels, rate) in enumerate(
             zip(channels, config.downsample_rates)
         ):
-            layers.extend(
-                ConvNeXtBlock1d(stage_channels, config.block_kernel_size)
-                for _ in range(config.blocks_per_stage)
-            )
+            for _ in range(config.blocks_per_stage):
+                layers.append(
+                    ConvNeXtBlock1d(
+                        stage_channels,
+                        config.block_kernel_size,
+                        block_index,
+                    )
+                )
+                block_index += 1
             next_channels = (
                 channels[index + 1] if index + 1 < len(channels) else config.latent_dim
             )
@@ -138,6 +202,7 @@ class AudioDecoder(nn.Module):
 
         layers: list[nn.Module] = []
         source_channels = config.latent_dim
+        block_index = 0
         for stage_channels, rate in zip(reversed_channels, reversed_rates):
             layers.append(
                 nn.ConvTranspose1d(
@@ -148,17 +213,31 @@ class AudioDecoder(nn.Module):
                     bias=False,
                 )
             )
-            layers.extend(
-                ConvNeXtBlock1d(stage_channels, config.block_kernel_size)
-                for _ in range(config.blocks_per_stage)
-            )
+            for _ in range(config.blocks_per_stage):
+                layers.append(
+                    ConvNeXtBlock1d(
+                        stage_channels,
+                        config.block_kernel_size,
+                        block_index,
+                    )
+                )
+                block_index += 1
             source_channels = stage_channels
         layers.append(nn.Conv1d(channels[0], config.stft_channels, 1, bias=False))
         self.layers = layers
 
-    def __call__(self, inputs: mx.array) -> mx.array:
+    def __call__(
+        self,
+        inputs: mx.array,
+        *,
+        cache: CausalConv1dCache | None = None,
+        flush: bool = False,
+    ) -> mx.array:
         for layer in self.layers:
-            inputs = layer(inputs)
+            if isinstance(layer, ConvNeXtBlock1d):
+                inputs = layer(inputs, cache=cache, flush=flush)
+            else:
+                inputs = layer(inputs)
         return inputs
 
 
@@ -249,8 +328,14 @@ class NemotronVoiceChatCodec(nn.Module):
         features = mx.concatenate([spectrum.real, spectrum.imag], axis=1)
         return self.encoder(features.transpose(0, 2, 1))
 
-    def decode_latents(self, latents: mx.array) -> mx.array:
-        features = self.decoder(latents).transpose(0, 2, 1)
+    def decode_latents(
+        self,
+        latents: mx.array,
+        *,
+        cache: CausalConv1dCache | None = None,
+        flush: bool = False,
+    ) -> mx.array:
+        features = self.decoder(latents, cache=cache, flush=flush).transpose(0, 2, 1)
         num_bins = self.config.n_fft // 2 + 1
         magnitude_logits = features[:, :num_bins, :]
         phase = features[:, num_bins:, :]
@@ -270,6 +355,35 @@ class NemotronVoiceChatCodec(nn.Module):
             ],
             axis=1,
         )
+        if cache is not None:
+            # Four spectrogram frames are sufficient for both sides of the
+            # 16-sample Hann window at a hop of four.  Prepending the previous
+            # frames and trimming the corresponding waveform context makes each
+            # call return exactly one sample-continuous codec chunk.
+            half_spec_padding = math.ceil(
+                ((self.config.n_fft - self.config.hop_length) // 2)
+                / self.config.hop_length
+            )
+            spec_padding = half_spec_padding * 2
+            real = cache.update(
+                real.transpose(0, 2, 1),
+                "istft_real",
+                spec_padding,
+                flush=flush,
+            ).transpose(0, 2, 1)
+            imag = cache.update(
+                imag.transpose(0, 2, 1),
+                "istft_imag",
+                spec_padding,
+                flush=flush,
+            ).transpose(0, 2, 1)
+            if flush:
+                tail = mx.zeros(
+                    (real.shape[0], real.shape[1], half_spec_padding),
+                    dtype=real.dtype,
+                )
+                real = mx.concatenate([real, tail], axis=2)
+                imag = mx.concatenate([imag, tail], axis=2)
         window = hanning(self.config.n_fft, periodic=True).astype(mx.float32)
         waveform = self._istft_cache.istft(
             real,
@@ -284,13 +398,39 @@ class NemotronVoiceChatCodec(nn.Module):
         pad_left = (self.config.n_fft - self.config.hop_length) // 2
         pad_right = self.config.n_fft - self.config.hop_length - pad_left
         waveform = waveform[:, pad_left : waveform.shape[-1] - pad_right]
+        if cache is not None:
+            half_wave_padding = half_spec_padding * self.config.hop_length
+            waveform = waveform[:, half_wave_padding:-half_wave_padding]
         return waveform[:, None, :]
 
     def encode(self, waveform: mx.array) -> mx.array:
         return self.prvq.encode(self.encode_latents(waveform))
 
-    def decode(self, codes: mx.array) -> mx.array:
-        return self.decode_latents(self.prvq.decode(codes))
+    def decode(
+        self,
+        codes: mx.array,
+        *,
+        cache: CausalConv1dCache | None = None,
+        flush: bool = False,
+    ) -> mx.array:
+        return self.decode_latents(
+            self.prvq.decode(codes),
+            cache=cache,
+            flush=flush,
+        )
+
+    def decode_step(
+        self,
+        codes: mx.array,
+        cache: CausalConv1dCache,
+        *,
+        flush: bool = False,
+    ) -> mx.array:
+        """Decode newly generated ``(B, Q, T)`` codes without replaying history."""
+
+        if cache is None:
+            raise ValueError("decode_step requires a per-stream cache")
+        return self.decode(codes, cache=cache, flush=flush)
 
     def sanitize(
         self, weights: Mapping[str, mx.array], prefix: str = ""
