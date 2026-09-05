@@ -3,6 +3,7 @@ from typing import Optional, Union
 
 import mlx.nn as nn
 
+from mlx_audio.registry import model_type_from_config
 from mlx_audio.utils import (
     base_load_model,
     get_model_name_parts,
@@ -19,6 +20,7 @@ MODEL_REMAPPING = {
     "lfm2.5": "lfm_audio",
     "moshi": "moshi",
     "moshiko": "moshi",
+    "mimo_audio": "mimo_audio",
     "mossformer2": "mossformer2_se",
     "mossformer2_se": "mossformer2_se",
     "nemotron_voicechat": "nemotron_voicechat",
@@ -31,7 +33,7 @@ def infer_model_type_from_config(config: dict) -> Optional[str]:
     if not config:
         return None
 
-    model_type = config.get("model_type", None)
+    model_type = model_type_from_config(config)
     if model_type is None:
         model_type = config.get("architecture", None)
 
@@ -139,6 +141,7 @@ def load_model(
 
     if model_type in {
         "lfm_audio",
+        "mimo_audio",
         "mossformer2_se",
         "deepfilternet",
         "sam_audio",
