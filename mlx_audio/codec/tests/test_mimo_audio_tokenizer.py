@@ -161,8 +161,10 @@ def test_strict_converted_loading_with_synthetic_weights(tmp_path):
     assert left.keys() == right.keys()
     for name in left:
         np.testing.assert_array_equal(np.asarray(left[name]), np.asarray(right[name]))
-    missing = mx.load(str(output / "model.safetensors"))
+    missing = dict(right)
     missing.pop("decoder.layer_norm.weight")
     mx.save_safetensors(str(output / "model.safetensors"), missing)
-    with pytest.raises(ValueError):
+    for name, weight in mx.load(str(output / "model.safetensors")).items():
+        np.testing.assert_array_equal(np.asarray(weight), np.asarray(right[name]))
+    with pytest.raises(ValueError, match=r"Missing.*parameters"):
         MiMoAudioTokenizer.from_pretrained(output)
