@@ -106,6 +106,7 @@ nav:
     - Speech-to-Speech:
       - models/sts/index.md
       - MiMo-Audio: models/sts/mimo-audio.md
+      - DialogueSidon: models/sts/dialogue-sidon.md
     - Voice Activity Detection: models/vad/index.md
   - Guides:
     - guides/index.md
