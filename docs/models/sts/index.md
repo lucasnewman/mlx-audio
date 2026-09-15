@@ -177,7 +177,9 @@ audio_codes = []
 for token, modality in model.generate_sequential(
     **dict(chat),
     max_new_tokens=2048,
-    temperature=0.8,
+    # Upstream TTS recipe: greedy text, sampled audio
+    audio_temperature=0.8,
+    audio_top_k=64,
 ):
     mx.eval(token)
     if modality == LFMModality.AUDIO_OUT:
@@ -207,13 +209,15 @@ audio, sr = audio_read("input.wav")
 audio = mx.array(audio.astype(np.float32))
 
 chat = ChatState(processor)
+chat.new_turn("system")
+chat.add_text("Perform ASR.")
+chat.end_turn()
 chat.new_turn("user")
 chat.add_audio(audio, sample_rate=sr)
-chat.add_text("Transcribe the audio.")
 chat.end_turn()
 chat.new_turn("assistant")
 
-for token, modality in model.generate_interleaved(**dict(chat), max_new_tokens=512):
+for token, modality in model.generate_sequential(**dict(chat), max_new_tokens=512):
     mx.eval(token)
     if modality == LFMModality.TEXT:
         print(processor.decode_text(token[None]), end="", flush=True)
@@ -245,7 +249,9 @@ chat.end_turn()
 chat.new_turn("assistant")
 
 text_out, audio_out = [], []
-for token, modality in model.generate_interleaved(**dict(chat), max_new_tokens=2048):
+for token, modality in model.generate_interleaved(
+    **dict(chat), max_new_tokens=2048, audio_temperature=1.0, audio_top_k=4
+):
     mx.eval(token)
     if modality == LFMModality.TEXT:
         text_out.append(token)
@@ -255,7 +261,7 @@ for token, modality in model.generate_interleaved(**dict(chat), max_new_tokens=2
 
 if audio_out:
     audio_codes = mx.stack(audio_out[:-1], axis=1)[None, :]
-    waveform = processor.decode_with_detokenizer(audio_codes)
+    waveform = processor.decode_audio(audio_codes, codec="detokenizer")
     audio_write("response.wav", waveform[0].tolist(), 24000)
 ```
 
@@ -266,13 +272,16 @@ from mlx_audio.sts.models.lfm_audio import GenerationConfig
 
 config = GenerationConfig(
     max_new_tokens=2048,
-    temperature=0.9,        # Text sampling temperature
-    top_k=50,               # Text top-k sampling
-    top_p=1.0,              # Text nucleus sampling
-    audio_temperature=0.7,  # Audio sampling temperature
-    audio_top_k=30,         # Audio top-k sampling
+    temperature=None,       # Text sampling temperature (None = greedy)
+    top_k=None,             # Text top-k sampling (None = no filtering)
+    audio_temperature=1.0,  # Audio sampling temperature (None = greedy)
+    audio_top_k=4,          # Audio top-k sampling (None = no filtering)
 )
 ```
+
+Every knob defaults to `None`, i.e. greedy decoding, matching `liquid-audio`. The
+upstream recipes are greedy text throughout, with `audio_temperature=1.0`/`audio_top_k=4`
+for interleaved chat and `audio_temperature=0.8`/`audio_top_k=64` for TTS.
 
 ---
 
