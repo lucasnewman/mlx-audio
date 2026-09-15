@@ -527,10 +527,7 @@ class TestInterleavedGeneration(unittest.TestCase):
         """<|text_end|> ends the text span before n_text is exhausted."""
         import mlx.core as mx
 
-        from mlx_audio.sts.models.lfm_audio.model import (
-            TEXT_END_TOKEN,
-            LFMModality,
-        )
+        from mlx_audio.sts.models.lfm_audio.model import TEXT_END_TOKEN, LFMModality
 
         model = _stub_model(
             text_tokens=[20, TEXT_END_TOKEN, 21],
