@@ -232,6 +232,7 @@ from mlx_audio.audio_io import read as audio_read, write as audio_write
 from mlx_audio.sts.models.lfm_audio import (
     LFM2AudioModel, LFM2AudioProcessor, ChatState, LFMModality,
 )
+from mlx_audio.sts.models.lfm_audio.model import AUDIO_EOS_TOKEN
 
 model = LFM2AudioModel.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
 processor = LFM2AudioProcessor.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
@@ -256,11 +257,11 @@ for token, modality in model.generate_interleaved(
     if modality == LFMModality.TEXT:
         text_out.append(token)
         print(processor.decode_text(token[None]), end="", flush=True)
-    else:
+    elif token[0].item() != AUDIO_EOS_TOKEN:  # skip end-of-audio frames
         audio_out.append(token)
 
 if audio_out:
-    audio_codes = mx.stack(audio_out[:-1], axis=1)[None, :]
+    audio_codes = mx.stack(audio_out, axis=1)[None, :]  # (1, 8, T)
     waveform = processor.decode_audio(audio_codes, codec="detokenizer")
     audio_write("response.wav", waveform[0].tolist(), 24000)
 ```

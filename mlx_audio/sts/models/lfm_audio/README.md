@@ -121,6 +121,7 @@ from mlx_audio.sts.models.lfm_audio import (
     ChatState,
     LFMModality,
 )
+from mlx_audio.sts.models.lfm_audio.model import AUDIO_EOS_TOKEN
 
 # Load model and processor
 model = LFM2AudioModel.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
@@ -149,12 +150,12 @@ for token, modality in model.generate_interleaved(
     if modality == LFMModality.TEXT:
         text_out.append(token)
         print(processor.decode_text(token[None]), end="", flush=True)
-    else:
+    elif token[0].item() != AUDIO_EOS_TOKEN:  # skip end-of-audio frames
         audio_out.append(token)
 
 # Decode audio response
 if audio_out:
-    audio_codes = mx.stack(audio_out[:-1], axis=1)[None, :]  # (1, 8, T)
+    audio_codes = mx.stack(audio_out, axis=1)[None, :]  # (1, 8, T)
     waveform = processor.decode_audio(audio_codes, codec="detokenizer")
     audio_write("response.wav", waveform[0].tolist(), 24000)
 ```
@@ -167,6 +168,7 @@ Each audio token returned by `generate_interleaved` is a complete frame of shape
 
 ```python
 from mlx_audio.sts.models.lfm_audio import LFMModality
+from mlx_audio.sts.models.lfm_audio.model import AUDIO_EOS_TOKEN
 
 text_out, audio_out = [], []
 for token, modality in model.generate_interleaved(
@@ -177,12 +179,13 @@ for token, modality in model.generate_interleaved(
         text_out.append(token)
         # Stream text output
         print(processor.decode_text(token[None]), end="", flush=True)
-    else:  # LFMModality.AUDIO_OUT
+    elif token[0].item() != AUDIO_EOS_TOKEN:  # LFMModality.AUDIO_OUT
         audio_out.append(token)  # token shape: (8,)
 
-# Stack audio frames: list of (8,) -> (8, T)
+# Stack audio frames: list of (8,) -> (8, T). An all-EOS frame (2048 in every
+# codebook) closes each audio span; it is not a codec token, so it is skipped.
 if audio_out:
-    audio_codes = mx.stack(audio_out[:-1], axis=1)[None, :]  # (1, 8, T)
+    audio_codes = mx.stack(audio_out, axis=1)[None, :]  # (1, 8, T)
     waveform = processor.decode_audio(audio_codes, codec="detokenizer")
 ```
 
@@ -237,6 +240,7 @@ For real-time audio playback during generation:
 
 ```python
 from mlx_audio.sts.models.lfm_audio import LFMModality
+from mlx_audio.sts.models.lfm_audio.model import AUDIO_EOS_TOKEN
 
 FRAMES_PER_CHUNK = 10  # Decode every 10 audio frames
 
@@ -246,7 +250,8 @@ for token, modality in model.generate_interleaved(
 ):
     mx.eval(token)
     if modality == LFMModality.AUDIO_OUT:
-        audio_buffer.append(token)
+        if token[0].item() != AUDIO_EOS_TOKEN:  # skip end-of-audio frames
+            audio_buffer.append(token)
 
         # Decode when we have enough frames
         if len(audio_buffer) >= FRAMES_PER_CHUNK:
