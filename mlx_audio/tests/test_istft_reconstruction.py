@@ -4,7 +4,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from mlx_audio.dsp import istft
+from mlx_audio.dsp import hanning, istft, stft
 
 
 def reference_istft(spectrum, hop, window, center, length, normalized=True):
@@ -25,6 +25,25 @@ def reference_istft(spectrum, hop, window, center, length, normalized=True):
     if length is not None and len(output) < length:
         output = np.pad(output, (0, length - len(output)))
     return output
+
+
+def test_stft_istft_reconstructs_with_short_window():
+    window = hanning(16, periodic=True)
+    waveform = mx.ones(256)
+
+    spectrum = stft(waveform, n_fft=32, hop_length=4, win_length=16, window=window).T
+    reconstructed = istft(
+        spectrum,
+        hop_length=4,
+        win_length=32,
+        window=window,
+        normalized=True,
+        length=waveform.shape[0],
+    )
+
+    np.testing.assert_allclose(
+        np.array(reconstructed), np.array(waveform), atol=2e-5, rtol=2e-5
+    )
 
 
 @pytest.mark.parametrize("n_fft", [16, 64, 256])

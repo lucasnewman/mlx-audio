@@ -405,8 +405,8 @@ def stft(
         w = window
 
     if w.shape[0] < n_fft:
-        pad_size = n_fft - w.shape[0]
-        w = mx.concatenate([w, mx.zeros((pad_size,))], axis=0)
+        padding = n_fft - w.shape[0]
+        w = mx.pad(w, [(padding // 2, padding - padding // 2)])
 
     def _pad(x, padding, pad_mode="reflect"):
         if pad_mode == "constant":
