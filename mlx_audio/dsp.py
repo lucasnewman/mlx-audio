@@ -693,10 +693,10 @@ class ISTFTCache:
         Returns:
             Reconstructed audio (batch, samples)
         """
-        # Window padding safety check
+        # Center-pad short windows to match stft and istft.
         if window.shape[0] < n_fft:
-            pad = n_fft - window.shape[0]
-            window = mx.concatenate([window, mx.zeros((pad,), dtype=window.dtype)])
+            padding = n_fft - window.shape[0]
+            window = mx.pad(window, [(padding // 2, padding - padding // 2)])
 
         # Inverse FFT
         stft_complex = real_part + 1j * imag_part

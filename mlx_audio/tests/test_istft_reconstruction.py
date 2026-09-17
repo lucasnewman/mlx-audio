@@ -4,7 +4,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from mlx_audio.dsp import hanning, istft, stft
+from mlx_audio.dsp import ISTFTCache, hanning, istft, stft
 
 
 def reference_istft(spectrum, hop, window, center, length, normalized=True):
@@ -44,6 +44,56 @@ def test_stft_istft_reconstructs_with_short_window():
     np.testing.assert_allclose(
         np.array(reconstructed), np.array(waveform), atol=2e-5, rtol=2e-5
     )
+
+
+@pytest.mark.parametrize("win_length", [16, 17])
+@pytest.mark.parametrize("center", [False, True])
+@pytest.mark.parametrize("constrain_value_range", [False, True])
+def test_stft_istft_cache_reconstructs_with_short_window(
+    win_length, center, constrain_value_range
+):
+    n_fft, hop_length = 32, 4
+    window = hanning(win_length, periodic=True)
+    rng = np.random.default_rng(958)
+    waveforms = mx.stack(
+        [mx.ones(256), mx.array(rng.uniform(-0.5, 0.5, 256).astype(np.float32))]
+    )
+    # Non-centered analysis needs context to cover the signal's endpoints with
+    # the short window. Only compare samples covered by the analysis windows.
+    padding = 0 if center else n_fft // 2
+    inputs = mx.pad(waveforms, [(0, 0), (padding, padding)])
+    spectra = mx.stack(
+        [
+            stft(
+                waveform,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                win_length=win_length,
+                window=window,
+                center=center,
+            ).T
+            for waveform in inputs
+        ]
+    )
+
+    cache = ISTFTCache()
+    # Reuse the cached geometry for a second, different batch of spectra.
+    for scale in (1.0, 0.5):
+        reconstructed = cache.istft(
+            spectra.real * scale,
+            spectra.imag * scale,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            win_length=win_length,
+            window=window,
+            center=center,
+            audio_length=inputs.shape[-1],
+            constrain_value_range=constrain_value_range,
+        )
+        reconstructed = reconstructed[:, padding : padding + waveforms.shape[-1]]
+        np.testing.assert_allclose(
+            np.array(reconstructed), np.array(waveforms * scale), atol=2e-5, rtol=2e-5
+        )
 
 
 @pytest.mark.parametrize("n_fft", [16, 64, 256])
