@@ -20,18 +20,6 @@ also available for 4-step inference instead of the usual 40 steps.
 | `mlx-community/Irodori-TTS-v4.1-Small-8bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4.1-Small-8bit) | Voice cloning + VoiceDesign + automatic duration |
 | `mlx-community/Irodori-TTS-v4.1-Small-MF-fp16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4.1-Small-MF-fp16) | Voice cloning + VoiceDesign + automatic duration (4-step, MeanFlow) |
 
-### v4-Large (not yet supported)
-
-Upstream's `train_v4_large.yaml` config exists, but as of this writing no
-`Irodori-TTS-v4-Large` checkpoint has been released, and the README marks it
-"forthcoming". It isn't just a bigger v4.1-Small either: it swaps the shared
-text/caption backbone from ModernBERT-ja-310m to
-[T5Gemma2](https://huggingface.co/google/t5gemma-2-1b-1b)
-(`text_tokenizer_repo: google/t5gemma-2-1b-1b`), and
-`PretrainedTextBackbone` in `model.py` currently only implements
-`ModernBertEncoder`. Porting a T5Gemma2 encoder to MLX is required before
-v4-Large can be converted or run here.
-
 ### v4
 
 | Model | HuggingFace | Conditioning |
