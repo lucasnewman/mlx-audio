@@ -97,8 +97,6 @@ def _supports_input_embeddings(model: nn.Module) -> bool:
 
 
 def _eos_ids(tokenizer) -> set[int]:
-    # mlx-lm's TokenizerWrapper exposes eos_token_ids as a set, but a plain
-    # transformers tokenizer exposes it as a single int, so normalize both.
     ids = getattr(tokenizer, "eos_token_ids", None)
     if ids is None:
         ids = getattr(tokenizer, "eos_token_id", None)
