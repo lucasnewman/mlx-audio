@@ -21,7 +21,14 @@ SOURCE_REPO = "nvidia/Nemotron-3-Diarization"
 
 
 def read_nemo(path):
-    import torch
+    try:
+        import torch
+    except ImportError as exc:
+        raise ImportError(
+            "PyTorch is required to convert NeMo checkpoints. "
+            "Install it with `pip install torch` and rerun the conversion."
+        ) from exc
+
     import yaml
 
     with tarfile.open(path, "r:*") as archive:
