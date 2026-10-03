@@ -29,6 +29,7 @@ class PreprocessArgs:
     log_zero_guard_value: float = 2.0**-24
     pad_to: int = 0
     pad_value: float = 0.0
+    pad_mode: str = "reflect"
 
     @property
     def win_length(self) -> int:
@@ -104,9 +105,7 @@ class NemotronASRConfig:
     joint: JointArgs
     vocabulary: List[str]
     model_type: str = "nemotron_asr"
-    target: str = (
-        "nemo.collections.asr.models.rnnt_bpe_models_prompt.EncDecRNNTBPEModelWithPrompt"
-    )
+    target: str = "nemo.collections.asr.models.rnnt_bpe_models_prompt.EncDecRNNTBPEModelWithPrompt"
     # Default language prompt key (e.g. "auto", "en-US"). "auto" lets the model
     # detect the language and emit a leading <lang> tag.
     default_language: str = "auto"
