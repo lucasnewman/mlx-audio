@@ -105,7 +105,9 @@ class NemotronASRConfig:
     joint: JointArgs
     vocabulary: List[str]
     model_type: str = "nemotron_asr"
-    target: str = "nemo.collections.asr.models.rnnt_bpe_models_prompt.EncDecRNNTBPEModelWithPrompt"
+    target: str = (
+        "nemo.collections.asr.models.rnnt_bpe_models_prompt.EncDecRNNTBPEModelWithPrompt"
+    )
     # Default language prompt key (e.g. "auto", "en-US"). "auto" lets the model
     # detect the language and emit a leading <lang> tag.
     default_language: str = "auto"
