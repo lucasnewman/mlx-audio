@@ -27,6 +27,7 @@ also available for 4-step inference instead of the usual 40 steps.
 | `mlx-community/Irodori-TTS-v4-Small-fp16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4-Small-fp16) | Voice cloning + VoiceDesign + automatic duration |
 | `mlx-community/Irodori-TTS-v4-Small-8bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4-Small-8bit) | Voice cloning + VoiceDesign + automatic duration |
 | `mlx-community/Irodori-TTS-v4-Large-bf16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4-Large-bf16) | Voice cloning + VoiceDesign + automatic duration |
+| `mlx-community/Irodori-TTS-v4-Large-8bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4-Large-8bit) | Voice cloning + VoiceDesign + automatic duration |
 
 v4-Large shares v4-Small's architecture but swaps the shared text/caption
 backbone from ModernBERT-ja-310m to the bidirectional text encoder half of
