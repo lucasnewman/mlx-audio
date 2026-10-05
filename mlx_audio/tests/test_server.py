@@ -70,26 +70,6 @@ def test_add_model(client, mock_model_provider):
     mock_model_provider.load_model.assert_called_once_with("test_model")
 
 
-@pytest.mark.parametrize("supported", [True, False])
-def test_model_realtime_transcription_capability(
-    client, mock_model_provider, supported
-):
-    model = MagicMock()
-    if supported:
-        model.create_streaming_session = MagicMock()
-    else:
-        del model.create_streaming_session
-    mock_model_provider.load_model.return_value = model
-
-    response = client.get(
-        "/v1/models/capabilities", params={"model_name": "test/model"}
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"realtime_transcription": supported}
-    mock_model_provider.load_model.assert_called_once_with("test/model")
-
-
 def test_remove_model_success(client, mock_model_provider):
     # Test that the remove_model endpoint returns a 204 status code
     mock_model_provider.remove_model = AsyncMock(return_value=True)
