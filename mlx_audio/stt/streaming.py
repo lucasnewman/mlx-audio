@@ -5,6 +5,11 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 
 
+def supports_realtime_transcription(model: object) -> bool:
+    """Return whether a loaded model can create a live-input STT session."""
+    return callable(getattr(model, "create_streaming_session", None))
+
+
 @runtime_checkable
 class StreamingSession(Protocol):
     """A producer queues audio while one consumer drives incremental decoding.
