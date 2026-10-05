@@ -153,18 +153,12 @@ Returns JSON with base64-encoded `target` and `residual` WAV buffers.
 # List loaded models
 curl http://localhost:8000/v1/models
 
-# Check whether a model supports live-input transcription
-curl --get http://localhost:8000/v1/models/capabilities \
-  --data-urlencode "model_name=mlx-community/nemotron-3.5-asr-streaming-0.6b"
-
 # Load a model
 curl -X POST "http://localhost:8000/v1/models?model_name=mlx-community/Kokoro-82M-bf16"
 
 # Unload a model
 curl -X DELETE "http://localhost:8000/v1/models?model_name=mlx-community/Kokoro-82M-bf16"
 ```
-
-The capabilities endpoint returns `{"realtime_transcription": true}` when the loaded model implements the shared live-input session contract.
 
 ### Real-Time WebSocket Transcription
 

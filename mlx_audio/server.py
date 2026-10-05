@@ -59,7 +59,7 @@ from mlx_audio.server_inference import (
     InferenceRequest,
     InferenceResultChunk,
 )
-from mlx_audio.stt.streaming import StreamingSession, supports_realtime_transcription
+from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.utils import load_model
 
@@ -935,14 +935,6 @@ async def add_model(model_name: str):
     return {"status": "success", "message": f"Model {model_name} added successfully"}
 
 
-@app.get("/v1/models/capabilities")
-async def model_capabilities(model_name: str):
-    model = model_provider.load_model(model_name)
-    return {
-        "realtime_transcription": supports_realtime_transcription(model),
-    }
-
-
 @app.delete("/v1/models")
 async def remove_model(model_name: str):
     """
@@ -1646,7 +1638,7 @@ async def realtime_ws(websocket: WebSocket):
         await websocket.close()
         return
 
-    if not supports_realtime_transcription(model):
+    if not hasattr(model, "create_streaming_session"):
         await send_error(f"model {model_name!r} does not support streaming")
         await websocket.close()
         return
@@ -1778,7 +1770,7 @@ async def realtime_ws(websocket: WebSocket):
                     except Exception as e:
                         await send_error(f"load failed: {e}")
                         continue
-                    if not supports_realtime_transcription(model):
+                    if not hasattr(model, "create_streaming_session"):
                         await send_error(
                             f"model {target_model_name!r} does not support streaming"
                         )

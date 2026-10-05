@@ -17,10 +17,7 @@ from mlx_audio.stt.models.voxtral_realtime.config import (
     ModelConfig,
 )
 from mlx_audio.stt.models.voxtral_realtime.voxtral_realtime import Model
-from mlx_audio.stt.streaming import (
-    StreamingSession,
-    supports_realtime_transcription,
-)
+from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.stt.tests.test_nemotron_session import model as nemotron_model
 
 
@@ -59,10 +56,8 @@ def voxtral_model():
     "factory", [nemotron_model, voxtral_model], ids=["nemotron", "voxtral"]
 )
 def test_shared_server_session_contract(factory):
-    model = factory()
-    assert supports_realtime_transcription(model)
     session: StreamingSession = _open_streaming_session(
-        model, temperature=0.0, delay_ms=80
+        factory(), temperature=0.0, delay_ms=80
     )
     assert isinstance(session, StreamingSession)
     assert session.input_sample_rate == 16000
@@ -83,7 +78,3 @@ def test_shared_server_session_contract(factory):
             break
     assert session.done
     assert session.step() == []
-
-
-def test_batch_model_does_not_advertise_realtime_transcription():
-    assert not supports_realtime_transcription(SimpleNamespace(generate=lambda: None))
