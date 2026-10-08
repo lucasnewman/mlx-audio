@@ -65,6 +65,7 @@ class NemotronStreamingSession:
         self._symbols = 0
         self._last_token = self.model.blank_id
         self._hidden = None
+        self._prediction = None
         self._flushed = False
         self._has_text = False
 
@@ -137,12 +138,14 @@ class NemotronStreamingSession:
             if not self._encoded:
                 break
             feature = self._encoded[0][:, self._frame : self._frame + 1]
-            token = (
-                mx.array([[self._last_token]], dtype=mx.int32)
-                if self._last_token != self.model.blank_id
-                else None
-            )
-            output, (h, c) = self.model.decoder(token, self._hidden)
+            if self._prediction is None:
+                token = (
+                    mx.array([[self._last_token]], dtype=mx.int32)
+                    if self._last_token != self.model.blank_id
+                    else None
+                )
+                self._prediction = self.model.decoder(token, self._hidden)
+            output, (h, c) = self._prediction
             hidden = (h.astype(feature.dtype), c.astype(feature.dtype))
             prediction = int(
                 mx.argmax(self.model.joint(feature, output.astype(feature.dtype)))
@@ -150,6 +153,7 @@ class NemotronStreamingSession:
             if prediction != self.model.blank_id:
                 self._last_token = prediction
                 self._hidden = hidden
+                self._prediction = None
                 mx.eval(*hidden)
                 text = tokenizer.decode([prediction], self.model.vocabulary)
                 if not self._has_text:

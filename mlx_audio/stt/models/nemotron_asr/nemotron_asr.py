@@ -19,7 +19,6 @@ from mlx.utils import tree_flatten
 
 from mlx_audio.stt.models.nemo.alignment import (
     AlignedResult,
-    AlignedToken,
     sentences_to_result,
     tokens_to_sentences,
 )
@@ -27,7 +26,6 @@ from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.stt.utils import load_audio
 from mlx_audio.utils import from_dict
 
-from . import tokenizer as tok
 from .audio import iter_log_mel_spectrogram, log_mel_spectrogram
 from .config import (
     ConformerArgs,
@@ -38,7 +36,7 @@ from .config import (
     PromptArgs,
 )
 from .conformer import Conformer
-from .rnnt import JointNetwork, PredictNetwork
+from .rnnt import GreedyDecoderState, JointNetwork, PredictNetwork
 
 
 class ModelConfig:
@@ -395,55 +393,7 @@ class Model(nn.Module):
         encoded = self.apply_prompt(encoded, language)
         mx.eval(encoded, lengths)
 
-        features = encoded
-        max_length = int(lengths[0])
-
-        frame_sec = (
-            self.encoder_config.subsampling_factor
-            * self.preprocessor_config.hop_length
-            / self.preprocessor_config.sample_rate
-        )
-
-        last_token = self.blank_id
-        decoder_hidden = None
-        hypothesis: list[AlignedToken] = []
-        time = 0
-        new_symbols = 0
-
-        while time < max_length:
-            feature = features[:, time : time + 1]
-            current_token = (
-                mx.array([[last_token]], dtype=mx.int32)
-                if last_token != self.blank_id
-                else None
-            )
-            decoder_output, (h, c) = self.decoder(current_token, decoder_hidden)
-            decoder_output = decoder_output.astype(feature.dtype)
-            proposed_hidden = (h.astype(feature.dtype), c.astype(feature.dtype))
-
-            joint_output = self.joint(feature, decoder_output)
-            pred_token = int(mx.argmax(joint_output))
-
-            if pred_token != self.blank_id:
-                last_token = pred_token
-                decoder_hidden = proposed_hidden
-                if not tok.is_special_token(last_token, self.vocabulary):
-                    hypothesis.append(
-                        AlignedToken(
-                            last_token,
-                            start=time * frame_sec,
-                            duration=frame_sec,
-                            text=tok.decode([last_token], self.vocabulary),
-                        )
-                    )
-                new_symbols += 1
-                if self.max_symbols is not None and new_symbols >= self.max_symbols:
-                    time += 1
-                    new_symbols = 0
-            else:
-                time += 1
-                new_symbols = 0
-
+        hypothesis = GreedyDecoderState(self).decode(encoded[:, : int(lengths[0])], 0)
         return sentences_to_result(tokens_to_sentences(hypothesis))
 
     # ---------------------------------------------------------------- generate
@@ -542,8 +492,6 @@ class Model(nn.Module):
             mx.clear_cache()
 
     def _decode_prompted_chunks(self, prompted_chunks):
-        from .rnnt import GreedyDecoderState
-
         decoder = GreedyDecoderState(self)
         hypothesis = []
         global_time = 0
