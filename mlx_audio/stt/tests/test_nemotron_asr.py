@@ -150,6 +150,17 @@ def test_log_mel_uses_nemo_reflect_padding():
     )
 
 
+def test_log_mel_supports_hf_constant_padding():
+    args = ModelConfig.from_dict(_tiny_config()).config.preprocessor
+    args.pad_mode = "constant"
+    audio = mx.array(np.linspace(-0.5, 0.75, args.n_fft * 2, dtype=np.float32))
+    full = log_mel_spectrogram(audio, args)
+    chunked = mx.concatenate(
+        list(iter_log_mel_spectrogram(audio, args, chunk_frames=7)), axis=1
+    )
+    np.testing.assert_allclose(np.array(chunked), np.array(full), atol=1e-6)
+
+
 def test_streaming_log_mel_matches_full_with_bounded_state():
     args = ModelConfig.from_dict(_tiny_config()).config.preprocessor
     audio = mx.array(
