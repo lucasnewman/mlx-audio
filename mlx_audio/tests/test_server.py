@@ -5,7 +5,7 @@ import json
 import queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import mlx.core as mx
 import numpy as np
 import pytest
@@ -144,8 +144,8 @@ def test_tts_speech(client, mock_model_provider):
 
 def _hf_repo_not_found(model_name: str) -> RepositoryNotFoundError:
     """Construct a RepositoryNotFoundError shaped like the real HF client raises."""
-    request = httpx.Request("GET", f"https://huggingface.co/api/models/{model_name}")
-    response = httpx.Response(404, request=request)
+    request = httpx2.Request("GET", f"https://huggingface.co/api/models/{model_name}")
+    response = httpx2.Response(404, request=request)
     return RepositoryNotFoundError(
         f"404 Client Error. Repository Not Found", response=response
     )
