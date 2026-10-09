@@ -129,7 +129,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 | `file` | file | required | Audio file to transcribe |
 | `model` | string | required | STT model ID |
 | `language` | string | `null` | Language code |
-| `max_tokens` | int | `1024` | Maximum output tokens |
+| `max_tokens` | int | `null` | Maximum output tokens. When omitted, the larger of 1024 and the model's own `generate()` default (8192 for Qwen3-ASR) |
 | `stream` | bool | `false` | Stream results as NDJSON |
 | `context` | string | `null` | Hotwords or metadata to guide transcription |
 | `verbose` | bool | `false` | Include extra details |
