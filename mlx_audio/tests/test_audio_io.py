@@ -487,3 +487,86 @@ class TestAudioIOCAF:
 
         assert read_samplerate == samplerate
         assert data.shape[0] > 0
+
+
+def _encode_with_ffmpeg(path, *codec_args, samplerate=16000, channels=1, seconds=1.0):
+    """Encode a 440 Hz tone with ffmpeg, which picks the container from the path."""
+    t = np.arange(int(samplerate * seconds)) / samplerate
+    tone = (np.sin(2 * np.pi * 440 * t) * 0.5 * 32767).astype(np.int16)
+    pcm = np.repeat(tone[:, None], channels, axis=1)
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "s16le", "-ar", str(samplerate), "-ac", str(channels)]
+        + ["-i", "pipe:0", *codec_args, str(path)],
+        input=pcm.tobytes(),
+        capture_output=True,
+        check=True,
+    )
+    return path
+
+
+def _mp4_top_level_atoms(data):
+    atoms, offset = [], 0
+    while offset + 8 <= len(data):
+        size = int.from_bytes(data[offset : offset + 4], "big")
+        atoms.append(data[offset + 4 : offset + 8].decode("latin-1"))
+        if size < 8:
+            break
+        offset += size
+    return atoms
+
+
+@pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+class TestAudioIOBytesThroughFFmpeg:
+    """Bytes that need ffmpeg are decoded from a seekable temporary file."""
+
+    def test_m4a_with_moov_at_end(self, tmp_path):
+        # Large enough that ffmpeg cannot seek back to mdat inside its pipe buffer.
+        path = _encode_with_ffmpeg(
+            tmp_path / "moov_last.m4a",
+            "-c:a",
+            "aac",
+            samplerate=44100,
+            channels=2,
+            seconds=10.0,
+        )
+        data = path.read_bytes()
+        atoms = _mp4_top_level_atoms(data)
+        assert atoms.index("moov") > atoms.index("mdat")
+
+        from_bytes, rate = read(io.BytesIO(data), dtype="int16")
+        from_path, _ = read(path, dtype="int16")
+
+        assert rate == 44100
+        assert from_bytes.shape[0] > 0
+        np.testing.assert_array_equal(from_bytes, from_path)
+
+    @pytest.mark.skipif(shutil.which("afconvert") is None, reason="needs afconvert")
+    @pytest.mark.parametrize("codec", ["aac", "LEI16"])
+    def test_afconvert_caf(self, tmp_path, codec):
+        """macOS writes CAF files that ffmpeg cannot read from a pipe."""
+        wav = tmp_path / "clip.wav"
+        write(wav, np.sin(np.arange(5 * 44100) / 10.0).astype(np.float32), 44100)
+        caf = tmp_path / "clip.caf"
+        subprocess.run(
+            ["afconvert", "-f", "caff", "-d", codec, str(wav), str(caf)],
+            capture_output=True,
+            check=True,
+        )
+
+        from_bytes, _ = read(io.BytesIO(caf.read_bytes()), dtype="int16")
+        from_path, _ = read(caf, dtype="int16")
+
+        assert from_bytes.shape[0] > 0
+        np.testing.assert_array_equal(from_bytes, from_path)
+
+    def test_temporary_file_is_removed(self, tmp_path, monkeypatch):
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+        path = _encode_with_ffmpeg(tmp_path / "clip.m4a", "-c:a", "aac")
+
+        read(io.BytesIO(path.read_bytes()))
+        with pytest.raises(RuntimeError):
+            read(io.BytesIO(b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 64))
+
+        assert list(scratch.iterdir()) == []

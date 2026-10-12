@@ -7,8 +7,10 @@ This module provides functions for reading and writing audio files.
 """
 
 import io
+import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
@@ -98,37 +100,32 @@ def _decode_ffmpeg(
         raise RuntimeError("ffprobe not found (usually installed with ffmpeg)")
 
     if isinstance(input_data, bytes):
-        # Use stdin for bytes input
-        probe_cmd = [
-            ffprobe_path,
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_streams",
-            "-select_streams",
-            "a:0",
-            "-i",
-            "pipe:0",
-        ]
-        probe_result = subprocess.run(
-            probe_cmd,
-            input=input_data,
-            capture_output=True,
-        )
-    else:
-        probe_cmd = [
-            ffprobe_path,
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_streams",
-            "-select_streams",
-            "a:0",
-            str(input_data),
-        ]
-        probe_result = subprocess.run(probe_cmd, capture_output=True)
+        # ffmpeg cannot seek in a pipe, so a container with its index after the
+        # audio (an M4A with moov last) decodes to nothing. A file is seekable.
+        fd, tmp_path = tempfile.mkstemp()
+        try:
+            with os.fdopen(fd, "wb") as tmp:
+                tmp.write(input_data)
+            return _decode_ffmpeg(
+                tmp_path, sample_rate=sample_rate, nchannels=nchannels
+            )
+        finally:
+            os.unlink(tmp_path)
+
+    probe_cmd = [
+        ffprobe_path,
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_streams",
+        "-select_streams",
+        "a:0",
+        str(input_data),
+    ]
+    probe_result = subprocess.run(
+        probe_cmd, stdin=subprocess.DEVNULL, capture_output=True
+    )
 
     if probe_result.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {probe_result.stderr.decode()}")
@@ -144,42 +141,23 @@ def _decode_ffmpeg(
     output_nchannels = nchannels or int(stream.get("channels", 2))
 
     # Decode to raw PCM using ffmpeg
-    if isinstance(input_data, bytes):
-        decode_cmd = [
-            ffmpeg_path,
-            "-i",
-            "pipe:0",
-            "-f",
-            "s16le",  # Output: signed 16-bit little-endian PCM
-            "-acodec",
-            "pcm_s16le",
-            "-ar",
-            str(output_sample_rate),
-            "-ac",
-            str(output_nchannels),
-            "pipe:1",
-        ]
-        decode_result = subprocess.run(
-            decode_cmd,
-            input=input_data,
-            capture_output=True,
-        )
-    else:
-        decode_cmd = [
-            ffmpeg_path,
-            "-i",
-            str(input_data),
-            "-f",
-            "s16le",
-            "-acodec",
-            "pcm_s16le",
-            "-ar",
-            str(output_sample_rate),
-            "-ac",
-            str(output_nchannels),
-            "pipe:1",
-        ]
-        decode_result = subprocess.run(decode_cmd, capture_output=True)
+    decode_cmd = [
+        ffmpeg_path,
+        "-i",
+        str(input_data),
+        "-f",
+        "s16le",  # Output: signed 16-bit little-endian PCM
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        str(output_sample_rate),
+        "-ac",
+        str(output_nchannels),
+        "pipe:1",
+    ]
+    decode_result = subprocess.run(
+        decode_cmd, stdin=subprocess.DEVNULL, capture_output=True
+    )
 
     if decode_result.returncode != 0:
         raise RuntimeError(f"ffmpeg decoding failed: {decode_result.stderr.decode()}")
