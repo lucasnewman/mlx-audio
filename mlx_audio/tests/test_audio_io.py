@@ -582,3 +582,80 @@ class TestAudioIOBytesThroughFFmpeg:
             read(io.BytesIO(b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 64))
 
         assert list(scratch.iterdir()) == []
+
+
+class TestAudioIOFormatDetection:
+    """The first bytes pick the decoder; the extension is only a fallback."""
+
+    @staticmethod
+    def _assert_detected(path, wrong_suffix, tmp_path):
+        expected, rate = read(path, dtype="int16")
+        assert expected.shape[0] > 0
+
+        no_suffix = tmp_path / "upload"
+        no_suffix.write_bytes(path.read_bytes())
+        wrong = tmp_path / f"upload{wrong_suffix}"
+        wrong.write_bytes(path.read_bytes())
+
+        for source in (no_suffix, wrong, io.BytesIO(path.read_bytes())):
+            data, read_rate = read(source, dtype="int16")
+            assert read_rate == rate
+            np.testing.assert_array_equal(data, expected)
+
+    def test_wav(self, tmp_path):
+        path = tmp_path / "clip.wav"
+        write(path, np.sin(np.arange(16000) / 10.0).astype(np.float32), 16000)
+        self._assert_detected(path, ".mp3", tmp_path)
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    @pytest.mark.parametrize(
+        "name, codec_args, samplerate",
+        [
+            pytest.param("clip.aiff", ["-c:a", "pcm_s16be"], 16000, id="aiff"),
+            pytest.param("clip.aifc", ["-c:a", "pcm_f32be"], 16000, id="aifc"),
+            pytest.param("clip.flac", [], 16000, id="flac"),
+            pytest.param("clip.caf", ["-c:a", "pcm_s16le"], 16000, id="caf"),
+            pytest.param("clip.m4a", ["-c:a", "aac"], 16000, id="m4a"),
+            pytest.param("clip.ogg", ["-c:a", "flac"], 16000, id="ogg"),
+            pytest.param("clip.mp3", ["-id3v2_version", "0"], 44100, id="mp3-44k"),
+            pytest.param("clip.mp3", ["-id3v2_version", "0"], 22050, id="mp3-22k"),
+            pytest.param("clip.mp3", ["-id3v2_version", "0"], 16000, id="mp3-16k"),
+            pytest.param(
+                "clip.mp3", ["-metadata", "title=clip"], 16000, id="mp3-16k-id3"
+            ),
+            pytest.param("clip.aac", ["-f", "adts"], 16000, id="adts"),
+            pytest.param(
+                "clip.aac",
+                ["-f", "adts", "-write_id3v2", "1", "-metadata", "title=clip"],
+                16000,
+                id="adts-id3",
+            ),
+        ],
+    )
+    def test_ffmpeg_encoded(self, tmp_path, name, codec_args, samplerate):
+        path = _encode_with_ffmpeg(tmp_path / name, *codec_args, samplerate=samplerate)
+        self._assert_detected(path, ".wav", tmp_path)
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_extension_is_the_fallback(self, tmp_path):
+        """Bytes that name no format still decode when the extension does."""
+        source = _encode_with_ffmpeg(tmp_path / "source.mp3", "-id3v2_version", "0")
+        path = tmp_path / "padded.mp3"
+        path.write_bytes(b"\x00" * 16 + source.read_bytes())
+
+        data, rate = read(path)
+
+        assert rate == 16000
+        assert data.shape[0] > 0
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_vorbis_extension_round_trip(self, tmp_path):
+        """write() puts FLAC in Ogg for .vorbis; the Ogg bytes route it to ffmpeg."""
+        path = tmp_path / "clip.vorbis"
+        tone = np.sin(np.arange(16000) / 10.0).astype(np.float32)
+        write(path, tone, 16000)
+
+        data, rate = read(path)
+
+        assert rate == 16000
+        assert data.shape[0] == tone.shape[0]

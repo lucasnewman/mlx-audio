@@ -1,8 +1,8 @@
 """Audio I/O utilities using miniaudio.
 
 This module provides functions for reading and writing audio files.
-- Reading: Uses miniaudio to support WAV, MP3, FLAC, and Vorbis formats.
-           Uses ffmpeg for M4A/AAC, OGG, Opus, and WebM format support.
+- Reading: Uses miniaudio to support WAV, AIFF, MP3, and FLAC formats.
+           Uses ffmpeg for M4A/AAC, OGG (Vorbis, Opus), WebM, CAF, and AIFC format support.
 - Writing: Uses miniaudio for WAV and ffmpeg for MP3, FLAC, OGG, Opus, Vorbis, and WebM encoding.
 """
 
@@ -38,16 +38,26 @@ _SAMPLE_FORMAT_MAP = {
 _RESAMPLE_CHUNK_DURATION_SECONDS = 1.0
 
 
-def _detect_format_from_bytes(data: bytes) -> str:
+# Formats ffmpeg decodes, named by _detect_format or by file extension.
+# miniaudio decodes the rest.
+_FFMPEG_FORMATS = ("m4a", "m4b", "mp4", "aac", "ogg", "opus", "webm", "caf", "aifc")
+
+
+def _detect_format_from_bytes(data: bytes) -> Optional[str]:
     """Detect audio format from bytes data using magic bytes."""
     if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
         return "wav"
-    elif data[:3] == b"ID3" or (data[0:2] == b"\xff\xfb" or data[0:2] == b"\xff\xfa"):
+    elif data[:4] == b"FORM" and data[8:12] in (b"AIFF", b"AIFC"):
+        return data[8:12].decode().lower()
+    elif data[:3] == b"ID3":
         return "mp3"
+    elif len(data) >= 2 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0:
+        # MPEG audio frame sync. ADTS AAC has the same sync and layer bits 00.
+        return "aac" if data[1] & 0x06 == 0 else "mp3"
     elif data[:4] == b"fLaC":
         return "flac"
     elif data[:4] == b"OggS":
-        return "vorbis"
+        return "ogg"
     elif data[4:8] == b"ftyp":
         # M4A/MP4/AAC container format
         return "m4a"
@@ -57,8 +67,19 @@ def _detect_format_from_bytes(data: bytes) -> str:
     elif data[:4] == b"caff":
         # Core Audio Format (macOS default recording container)
         return "caf"
-    else:
-        raise ValueError("Unable to detect audio format from bytes")
+    return None
+
+
+def _detect_format(f) -> Optional[str]:
+    """Detect the audio format of a binary file, read from offset 0."""
+    head = f.read(12)
+    if head[:3] == b"ID3" and len(head) >= 10:
+        # MP3 and ADTS AAC files can both start with an ID3v2 tag. Look past it.
+        size = (head[6] & 0x7F) << 21 | (head[7] & 0x7F) << 14
+        size |= (head[8] & 0x7F) << 7 | head[9] & 0x7F
+        f.seek(10 + size + (10 if head[5] & 0x10 else 0))
+        return _detect_format_from_bytes(f.read(12)) or "mp3"
+    return _detect_format_from_bytes(head)
 
 
 def _decode_ffmpeg(
@@ -224,10 +245,11 @@ def read(
     sample_rate: Optional[int] = None,
     nchannels: Optional[int] = None,
 ) -> Tuple[np.ndarray, int]:
-    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM/CAF).
+    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM/CAF/AIFC).
 
     Args:
-        file: Path to the audio file or a BytesIO object.
+        file: Path to the audio file or a BytesIO object. The format comes from the
+            first bytes, or from the extension when the bytes are not recognized.
         always_2d: If True, always return a 2D array (samples, channels).
         dtype: Data type for the output array. Supports 'float32', 'float64', 'int16'.
         sample_rate: Optional target sample rate. Preserves the input rate when omitted.
@@ -243,27 +265,25 @@ def read(
     if nchannels is not None and nchannels <= 0:
         raise ValueError(f"nchannels must be positive, got {nchannels}")
 
-    # Check if this is a file that needs ffmpeg
-    use_ffmpeg = False
+    # The first bytes name the format. The extension is the fallback.
     if isinstance(file, (str, Path)):
-        ext = Path(file).suffix.lstrip(".").lower()
-        if ext in ("m4a", "m4b", "mp4", "aac", "ogg", "opus", "webm", "caf"):
-            use_ffmpeg = True
+        try:
+            with open(file, "rb") as f:
+                fmt = _detect_format(f)
+        except OSError:
+            fmt = None
+        fmt = fmt or Path(file).suffix.lstrip(".").lower()
     elif isinstance(file, io.BytesIO):
         file.seek(0)
-        header = file.read(12)
+        fmt = _detect_format(file)
         file.seek(0)
-        if (
-            header[4:8] == b"ftyp"
-            or header[:4] == b"OggS"
-            or header[:4] == b"\x1a\x45\xdf\xa3"
-            or header[:4] == b"caff"
-        ):
-            use_ffmpeg = True
+        if fmt is None:
+            raise ValueError("Unable to detect audio format from bytes")
+    else:
+        raise TypeError(f"Unsupported file type: {type(file)}")
 
     samples_are_normalized = False
-    if use_ffmpeg:
-        # Use ffmpeg for M4A/AAC decoding
+    if fmt in _FFMPEG_FORMATS:
         if isinstance(file, io.BytesIO):
             file.seek(0)
             input_data = file.read()
@@ -278,28 +298,25 @@ def read(
         # Use miniaudio for other formats
         import miniaudio
 
-        if isinstance(file, (str, Path)):
-            # Get file info to preserve original sample rate and channels
-            info = miniaudio.get_file_info(str(file))
-            miniaudio_input = file
-        elif isinstance(file, io.BytesIO):
-            file.seek(0)
-            data = file.read()
-            # Detect format and get info to preserve original sample rate and channels
-            fmt = _detect_format_from_bytes(data)
-            if fmt == "wav":
-                info = miniaudio.wav_get_info(data)
-            elif fmt == "mp3":
-                info = miniaudio.mp3_get_info(data)
-            elif fmt == "flac":
-                info = miniaudio.flac_get_info(data)
-            elif fmt == "vorbis":
-                info = miniaudio.vorbis_get_info(data)
-            else:
-                raise ValueError(f"Unsupported format: {fmt}")
-            miniaudio_input = data
+        # Get file info to preserve original sample rate and channels.
+        # miniaudio reads AIFF with its WAV decoder.
+        decoder = "wav" if fmt == "aiff" else fmt
+        if isinstance(file, io.BytesIO):
+            miniaudio_input = file.read()
+            get_info = {
+                "wav": miniaudio.wav_get_info,
+                "mp3": miniaudio.mp3_get_info,
+                "flac": miniaudio.flac_get_info,
+            }[decoder]
+            info = get_info(miniaudio_input)
         else:
-            raise TypeError(f"Unsupported file type: {type(file)}")
+            miniaudio_input = file
+            get_info = {
+                "wav": miniaudio.wav_get_file_info,
+                "mp3": miniaudio.mp3_get_file_info,
+                "flac": miniaudio.flac_get_file_info,
+            }.get(decoder, miniaudio.get_file_info)
+            info = get_info(str(file))
 
         output_nchannels = nchannels or info.nchannels
         if sample_rate is not None and sample_rate != info.sample_rate:
