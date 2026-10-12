@@ -104,6 +104,8 @@ dev = [
 docs = [
     "mkdocs-material>=9.6",
     "mkdocstrings[python]>=0.29",
+    # mkdocstrings supports pymdown-extensions 12.2 from 1.0.7, which needs Python 3.11
+    "pymdown-extensions<12.2; python_version < '3.11'",
 ]
 
 [project.scripts]
