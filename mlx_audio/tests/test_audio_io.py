@@ -423,6 +423,18 @@ class TestAudioIOEdgeCases:
         assert output_file.exists()
 
     @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    @pytest.mark.parametrize("use_buffer", [False, True])
+    def test_ffmpeg_without_samples_raises(self, tmp_path, use_buffer):
+        """ffmpeg exits 0 and writes nothing for a CAF with no frames."""
+        path = _encode_with_ffmpeg(
+            tmp_path / "empty.caf", "-c:a", "pcm_s16le", seconds=0
+        )
+        source = io.BytesIO(path.read_bytes()) if use_buffer else path
+
+        with pytest.raises(RuntimeError, match="no audio samples"):
+            read(source)
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_different_sample_rates(self, tmp_path):
         """Test various sample rates."""
         data = np.sin(2 * np.pi * 440 * np.linspace(0, 1, 16000)).astype(np.float32)

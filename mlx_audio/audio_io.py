@@ -143,6 +143,8 @@ def _decode_ffmpeg(
     # Decode to raw PCM using ffmpeg
     decode_cmd = [
         ffmpeg_path,
+        "-v",
+        "error",
         "-i",
         str(input_data),
         "-f",
@@ -161,6 +163,11 @@ def _decode_ffmpeg(
 
     if decode_result.returncode != 0:
         raise RuntimeError(f"ffmpeg decoding failed: {decode_result.stderr.decode()}")
+    # ffmpeg can exit with status 0 without writing any audio.
+    if not decode_result.stdout:
+        message = "ffmpeg decoded no audio samples"
+        errors = decode_result.stderr.decode().strip()
+        raise RuntimeError(f"{message}: {errors}" if errors else message)
 
     # Convert raw PCM bytes to numpy array
     samples = np.frombuffer(decode_result.stdout, dtype=np.int16)
