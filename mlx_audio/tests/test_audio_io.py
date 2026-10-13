@@ -15,6 +15,18 @@ from mlx_audio.audio_io import read, write
 FFMPEG_AVAILABLE = shutil.which("ffmpeg") is not None
 
 
+def _ffmpeg_has_encoder(name):
+    if not FFMPEG_AVAILABLE:
+        return False
+    listing = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True
+    )
+    return f" {name} " in listing.stdout
+
+
+LIBVORBIS_AVAILABLE = _ffmpeg_has_encoder("libvorbis")
+
+
 class TestAudioIOFormats:
     """Test audio I/O for various formats."""
 
@@ -642,6 +654,125 @@ class TestAudioIOFormatDetection:
         source = _encode_with_ffmpeg(tmp_path / "source.mp3", "-id3v2_version", "0")
         path = tmp_path / "padded.mp3"
         path.write_bytes(b"\x00" * 16 + source.read_bytes())
+
+        data, rate = read(path)
+
+        assert rate == 16000
+        assert data.shape[0] > 0
+
+    @staticmethod
+    def _id3_tag(size):
+        """An ID3v2.4 tag with `size` zero bytes of content."""
+        return (
+            b"ID3\x04\x00\x00\x00\x00" + bytes([size >> 7, size & 0x7F]) + bytes(size)
+        )
+
+    @pytest.mark.parametrize("padding", [0, 1000], ids=["tags", "tags-padding"])
+    def test_detection_looks_past_id3_tags(self, padding):
+        """ID3v2 tags and zero padding in front of the signature are skipped."""
+        from mlx_audio.audio_io import _detect_format
+
+        tags = self._id3_tag(300) + self._id3_tag(5) + bytes(padding)
+
+        assert _detect_format(io.BytesIO(tags + b"fLaC" + bytes(8))) == "flac"
+        # Unknown bytes, or padding past the limit: the caller's fallback wins.
+        for rest in (b"unknown bytes", bytes(100_000) + b"fLaC"):
+            assert _detect_format(io.BytesIO(tags + rest), after_id3="ogg") == "ogg"
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    @pytest.mark.parametrize(
+        "name, codec_args",
+        [
+            pytest.param("clip.aac", ["-f", "adts"], id="adts"),
+            pytest.param("clip.flac", [], id="flac"),
+            pytest.param("clip.ogg", ["-c:a", "flac"], id="ogg"),
+        ],
+    )
+    def test_two_id3_tags(self, tmp_path, name, codec_args):
+        """A second ID3v2 tag does not turn the file into an MP3."""
+        plain = _encode_with_ffmpeg(tmp_path / name, *codec_args)
+        tagged = tmp_path / f"tagged{plain.suffix}"
+        tagged.write_bytes(self._id3_tag(300) + self._id3_tag(120) + plain.read_bytes())
+
+        np.testing.assert_array_equal(
+            read(tagged, dtype="int16")[0], read(plain, dtype="int16")[0]
+        )
+        self._assert_detected(tagged, ".wav", tmp_path)
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_padding_after_id3_tag(self, tmp_path):
+        """Zero bytes between the tag and the audio do not turn the file into an MP3."""
+        plain = _encode_with_ffmpeg(tmp_path / "clip.aac", "-f", "adts")
+        tagged = tmp_path / "tagged.aac"
+        tagged.write_bytes(self._id3_tag(64) + bytes(417) + plain.read_bytes())
+
+        np.testing.assert_array_equal(
+            read(tagged, dtype="int16")[0], read(plain, dtype="int16")[0]
+        )
+        self._assert_detected(tagged, ".wav", tmp_path)
+
+    def test_extension_names_the_format_after_id3_tag(self, tmp_path, monkeypatch):
+        """Unknown bytes after the tag: an .ogg file goes to ffmpeg, not to MP3."""
+        from mlx_audio import audio_io
+
+        decoded = []
+
+        def fake_ffmpeg(input_data, **kwargs):
+            decoded.append(input_data)
+            return np.zeros(16000, dtype=np.int16), 16000, 1
+
+        monkeypatch.setattr(audio_io, "_decode_ffmpeg", fake_ffmpeg)
+        path = tmp_path / "clip.ogg"
+        path.write_bytes(self._id3_tag(64) + b"unknown bytes")
+
+        data, rate = read(path)
+
+        assert decoded == [path]
+        assert (data.shape, rate) == ((16000,), 16000)
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_extension_is_tried_when_the_detected_decoder_fails(self, tmp_path):
+        """MP3 in a WAV container: the bytes say WAV, but only other decoders read it."""
+        from miniaudio import DecodeError
+
+        riff = _encode_with_ffmpeg(tmp_path / "riff.wav", "-c:a", "libmp3lame")
+        assert riff.read_bytes()[:4] == b"RIFF"
+
+        for suffix in (".mp3", ".m4a"):  # miniaudio's MP3 decoder, then ffmpeg
+            path = tmp_path / f"clip{suffix}"
+            path.write_bytes(riff.read_bytes())
+            data, rate = read(path)
+            assert rate == 16000
+            assert data.shape[0] > 0
+
+        # No other decoder to try, and the first error is the one raised.
+        with pytest.raises(DecodeError):
+            read(riff)
+        not_m4a = tmp_path / "not_m4a.mp3"
+        not_m4a.write_bytes(b"\x00\x00\x00\x18ftypM4A " + b"\x00" * 64)
+        with pytest.raises(RuntimeError):
+            read(not_m4a)
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_bytes_with_id3_tag_fall_back_to_mp3(self, tmp_path):
+        """An MP3 whose tag is followed by another format's signature still decodes."""
+        source = _encode_with_ffmpeg(tmp_path / "source.mp3", "-id3v2_version", "0")
+        tagged = self._id3_tag(64) + b"RIFF\x00\x00\x00\x00WAVE" + source.read_bytes()
+
+        data, rate = read(io.BytesIO(tagged))
+
+        assert rate == 16000
+        assert data.shape[0] > 0
+
+    @pytest.mark.skipif(
+        not LIBVORBIS_AVAILABLE, reason="ffmpeg has no libvorbis encoder"
+    )
+    def test_vorbis_extension_without_ffmpeg(self, tmp_path, monkeypatch):
+        """Ogg goes to ffmpeg; a .vorbis file falls back to miniaudio without it."""
+        source = _encode_with_ffmpeg(tmp_path / "clip.ogg", "-c:a", "libvorbis")
+        path = tmp_path / "clip.vorbis"
+        path.write_bytes(source.read_bytes())
+        monkeypatch.setattr(shutil, "which", lambda name: None)
 
         data, rate = read(path)
 

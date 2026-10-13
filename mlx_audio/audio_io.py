@@ -43,6 +43,13 @@ _RESAMPLE_CHUNK_DURATION_SECONDS = 1.0
 # miniaudio decodes the rest.
 _FFMPEG_FORMATS = ("m4a", "m4b", "mp4", "aac", "ogg", "opus", "webm", "caf", "aifc")
 
+# Extensions that pick a miniaudio decoder.
+_MINIAUDIO_FORMATS = ("wav", "mp3", "flac", "vorbis")
+
+# How far _detect_format looks past an ID3v2 tag: tags in a row, bytes of padding.
+_MAX_ID3_TAGS = 8
+_MAX_ID3_PADDING = 1 << 16
+
 
 def _detect_format_from_bytes(data: bytes) -> Optional[str]:
     """Detect audio format from bytes data using magic bytes."""
@@ -71,16 +78,41 @@ def _detect_format_from_bytes(data: bytes) -> Optional[str]:
     return None
 
 
-def _detect_format(f) -> Optional[str]:
-    """Detect the audio format of a binary file, read from offset 0."""
+def _detect_format(f, after_id3: str = "mp3") -> Optional[str]:
+    """Detect the audio format of a binary file, read from offset 0.
+
+    after_id3 is the answer when ID3v2 tags are followed by unknown bytes.
+    """
     head = f.read(12)
-    if head[:3] == b"ID3" and len(head) >= 10:
-        # MP3 and ADTS AAC files can both start with an ID3v2 tag. Look past it.
+    if head[:3] != b"ID3":
+        return _detect_format_from_bytes(head)
+    # MP3, AAC, FLAC and Ogg files can start with ID3v2 tags, and zero padding
+    # can follow a tag. Look past both.
+    offset = 0
+    for _ in range(_MAX_ID3_TAGS):
+        if len(head) < 10:
+            break
         size = (head[6] & 0x7F) << 21 | (head[7] & 0x7F) << 14
         size |= (head[8] & 0x7F) << 7 | head[9] & 0x7F
-        f.seek(10 + size + (10 if head[5] & 0x10 else 0))
-        return _detect_format_from_bytes(f.read(12)) or "mp3"
-    return _detect_format_from_bytes(head)
+        offset += 10 + size + (10 if head[5] & 0x10 else 0)
+        f.seek(offset)
+        head = f.read(12)
+        if head[:1] == b"\x00":
+            block = head + f.read(_MAX_ID3_PADDING)
+            offset += len(block) - len(block.lstrip(b"\x00"))
+            f.seek(offset)
+            head = f.read(12)
+        if head[:3] != b"ID3":
+            return _detect_format_from_bytes(head) or after_id3
+    return after_id3
+
+
+def _backend(fmt: str) -> str:
+    """Name the decoder for a format: ffmpeg, or one of miniaudio's."""
+    if fmt in _FFMPEG_FORMATS:
+        return "ffmpeg"
+    # miniaudio reads AIFF with its WAV decoder.
+    return "wav" if fmt == "aiff" else fmt
 
 
 def _decode_ffmpeg(
@@ -298,7 +330,8 @@ def read(
 
     Args:
         file: Path to the audio file or a BytesIO object. The format comes from the
-            first bytes, or from the extension when the bytes are not recognized.
+            first bytes, or from the extension when the bytes are not recognized
+            or do not decode.
         always_2d: If True, always return a 2D array (samples, channels).
         dtype: Data type for the output array. Supports 'float32', 'float64', 'int16'.
         sample_rate: Optional target sample rate. Preserves the input rate when omitted.
@@ -319,24 +352,63 @@ def read(
         raise ValueError(f"duration must be a positive finite number, got {duration}")
 
     # The first bytes name the format. The extension is the fallback.
+    fallback = None
     if isinstance(file, (str, Path)):
+        ext = Path(file).suffix.lstrip(".").lower()
+        if ext in _FFMPEG_FORMATS + _MINIAUDIO_FORMATS:
+            fallback = ext
         try:
             with open(file, "rb") as f:
-                fmt = _detect_format(f)
+                fmt = _detect_format(f, after_id3=fallback or "mp3")
         except OSError:
             fmt = None
-        fmt = fmt or Path(file).suffix.lstrip(".").lower()
+        fmt = fmt or ext
     elif isinstance(file, io.BytesIO):
         file.seek(0)
         fmt = _detect_format(file)
         file.seek(0)
         if fmt is None:
             raise ValueError("Unable to detect audio format from bytes")
+        if file.read(3) == b"ID3":
+            fallback = "mp3"
     else:
         raise TypeError(f"Unsupported file type: {type(file)}")
 
+    def decode(as_format):
+        return _read_as(
+            file, as_format, always_2d, dtype, sample_rate, nchannels, duration
+        )
+
+    if fallback is None or _backend(fallback) == _backend(fmt):
+        return decode(fmt)
+
+    # The extension used to pick the decoder, and a buffer that starts with an
+    # ID3 tag was read as MP3. Try that when the detected decoder fails.
+    import miniaudio
+
+    decode_errors = (RuntimeError, miniaudio.DecodeError)
+    try:
+        return decode(fmt)
+    except decode_errors as error:
+        try:
+            return decode(fallback)
+        except decode_errors:
+            raise error from None
+
+
+def _read_as(
+    file: Union[str, Path, io.BytesIO],
+    fmt: str,
+    always_2d: bool,
+    dtype: str,
+    sample_rate: Optional[int],
+    nchannels: Optional[int],
+    duration: Optional[float],
+) -> Tuple[np.ndarray, int]:
+    """Decode a file as the given format. See read() for the other arguments."""
+    decoder = _backend(fmt)
     samples_are_normalized = False
-    if fmt in _FFMPEG_FORMATS:
+    if decoder == "ffmpeg":
         if isinstance(file, io.BytesIO):
             file.seek(0)
             input_data = file.read()
@@ -353,9 +425,8 @@ def read(
         import miniaudio
 
         # Get file info to preserve original sample rate and channels.
-        # miniaudio reads AIFF with its WAV decoder.
-        decoder = "wav" if fmt == "aiff" else fmt
         if isinstance(file, io.BytesIO):
+            file.seek(0)
             miniaudio_input = file.read()
             get_info = {
                 "wav": miniaudio.wav_get_info,

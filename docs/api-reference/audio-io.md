@@ -36,7 +36,7 @@ Drop-in replacements for `soundfile.read()` and `soundfile.write()`:
 
 `read()` detects the format from the file's first bytes, so a wrong or missing
 extension does not matter. It falls back to the extension when the bytes are not
-recognized.
+recognized or do not decode.
 
 | Format | Backend | Notes |
 |--------|---------|-------|
