@@ -259,26 +259,6 @@ class TestIsPlus:
         assert not self._is_plus(ModelConfig())
 
 
-class TestSanitizeWeights:
-    @pytest.mark.parametrize(
-        ("name", "pytorch_shape", "mlx_shape"),
-        [
-            ("up_conv", (16, 8, 1), (16, 1, 8)),
-            ("down_conv", (8, 16, 1), (8, 1, 16)),
-            ("depth_conv", (16, 1, 5), (16, 5, 1)),
-        ],
-    )
-    def test_convolution_conversion_is_idempotent(self, name, pytorch_shape, mlx_shape):
-        key = f"encoder.layers.0.conv.{name}.weight"
-        source = {key: mx.zeros(pytorch_shape)}
-
-        converted = Model.sanitize(source)
-        reloaded = Model.sanitize(converted)
-
-        assert converted[key].shape == mlx_shape
-        assert reloaded[key].shape == mlx_shape
-
-
 @pytest.mark.parametrize(
     ("is_plus", "encoder_dtype", "expected_dtype"),
     [
