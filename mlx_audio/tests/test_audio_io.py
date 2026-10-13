@@ -513,11 +513,17 @@ class TestAudioIOCAF:
         assert data.shape[0] > 0
 
 
-def _encode_with_ffmpeg(path, *codec_args, samplerate=16000, channels=1, seconds=1.0):
-    """Encode a 440 Hz tone with ffmpeg, which picks the container from the path."""
-    t = np.arange(int(samplerate * seconds)) / samplerate
-    tone = (np.sin(2 * np.pi * 440 * t) * 0.5 * 32767).astype(np.int16)
-    pcm = np.repeat(tone[:, None], channels, axis=1)
+def _encode_with_ffmpeg(
+    path, *codec_args, samplerate=16000, channels=1, seconds=1.0, mono=None
+):
+    """Encode a 440 Hz tone, or the int16 samples in `mono`, with ffmpeg.
+
+    ffmpeg picks the container from the path.
+    """
+    if mono is None:
+        t = np.arange(int(samplerate * seconds)) / samplerate
+        mono = (np.sin(2 * np.pi * 440 * t) * 0.5 * 32767).astype(np.int16)
+    pcm = np.repeat(mono[:, None], channels, axis=1)
     subprocess.run(
         ["ffmpeg", "-y", "-f", "s16le", "-ar", str(samplerate), "-ac", str(channels)]
         + ["-i", "pipe:0", *codec_args, str(path)],
@@ -833,6 +839,45 @@ class TestAudioIODuration:
 
         assert part_rate == rate
         np.testing.assert_array_equal(part, full[: round(1.5 * rate)])
+
+    @pytest.mark.skipif(
+        not LIBVORBIS_AVAILABLE, reason="ffmpeg has no libvorbis encoder"
+    )
+    @pytest.mark.parametrize(
+        "kwargs", [{}, {"sample_rate": 8000}], ids=["native", "8k"]
+    )
+    def test_ogg_vorbis_matches_full_read(self, tmp_path, kwargs):
+        """ffmpeg's Ogg Vorbis timestamps run late where the block size changes."""
+        # A click every 0.1 s makes libvorbis switch between its two block sizes.
+        clicks = np.zeros(2 * 16000, dtype=np.int16)
+        clicks[::1600] = 20000
+        path = _encode_with_ffmpeg(
+            tmp_path / "clip.ogg", "-c:a", "libvorbis", mono=clicks
+        )
+        full, rate = read(path, dtype="int16", **kwargs)
+
+        for step in range(8):
+            duration = 1.0 + step * 0.0125
+            part, _ = read(path, dtype="int16", duration=duration, **kwargs)
+            np.testing.assert_array_equal(part, full[: round(duration * rate)])
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_timestamp_gap_matches_full_read(self, tmp_path):
+        """A recording with a pause: its timestamps skip a second, its samples do not."""
+        path = _encode_with_ffmpeg(
+            tmp_path / "clip.m4a",
+            "-af",
+            "aselect='not(between(t,1,2))'",
+            "-c:a",
+            "aac",
+            seconds=4.0,
+        )
+        full, rate = read(path, dtype="int16")
+        assert 2.5 * rate < full.shape[0] < 3.5 * rate
+
+        part, _ = read(path, dtype="int16", duration=2.5)
+
+        np.testing.assert_array_equal(part, full[: round(2.5 * rate)])
 
     @pytest.mark.parametrize(
         "kwargs", [{}, {"sample_rate": 8000}, {"sample_rate": 48000}]

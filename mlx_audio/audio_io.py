@@ -223,7 +223,9 @@ def _decode_ffmpeg(
         # One extra frame, so rounding in ffmpeg cannot leave the result short.
         # ffmpeg needs fixed-point seconds that fit in int64 microseconds.
         seconds = min((max_frames + 1) / output_sample_rate, 1e12)
-        decode_cmd += ["-t", f"{seconds:.6f}"]
+        # -t cuts by timestamp, and a file's timestamps can jump. asetpts sets
+        # them to the sample count, so the cut lands on the frame count.
+        decode_cmd += ["-af", "asetpts=N/SR/TB", "-t", f"{seconds:.6f}"]
     decode_cmd.append("pipe:1")
     decode_result = subprocess.run(
         decode_cmd, stdin=subprocess.DEVNULL, capture_output=True
