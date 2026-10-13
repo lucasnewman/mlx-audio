@@ -121,8 +121,8 @@ from mlx_audio.stt import load
 
 model = load("ibm-granite/granite-4.0-1b-speech")
 
-for result in model.generate("audio.wav", stream=True):
-    print(result.text, end="", flush=True)
+for text in model.generate("audio.wav", stream=True):
+    print(text, end="", flush=True)
 ```
 
 For `saa` and `timestamps`, the stream carries the raw tagged text; call `generate()` without `stream=True` to get parsed segments.
