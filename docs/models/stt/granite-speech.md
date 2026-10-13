@@ -11,7 +11,7 @@ IBM's Granite Speech combines an audio encoder with a language-model decoder. ML
 | [Granite 4.0 1B Speech](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) | Transcription, speech translation | EN, FR, DE, ES, PT, JA |
 | [Granite Speech 4.1 2B Plus](https://huggingface.co/ibm-granite/granite-speech-4.1-2b-plus) | Transcription, speaker attribution, word timestamps | EN, FR, DE, ES, PT |
 
-The examples below use IBM's native Plus checkpoint, which loads directly. Local MLX-converted and quantized checkpoints use the same API.
+The examples below use IBM's native Plus checkpoint, which loads directly. Checkpoints quantized with `mlx_audio.convert` use the same API.
 
 ## Python
 
