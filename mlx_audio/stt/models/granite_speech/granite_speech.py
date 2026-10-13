@@ -213,9 +213,8 @@ def _resolve_prompt(task: str, prompt: Optional[str], language: Optional[str]) -
     if prompt is not None:
         if task != "asr":
             raise ValueError(
-                f"prompt cannot override task={task!r}. Use hotwords=[...] for "
-                "contextual biasing, or use task='asr' for an unconstrained "
-                "custom instruction."
+                f"prompt cannot override task={task!r}. Use task='asr' for an "
+                "unconstrained custom instruction."
             )
         return prompt
     if task != "asr":
@@ -878,15 +877,12 @@ class Model(nn.Module):
         prompt: str = None,
         language: str = None,
         system_prompt: Optional[str] = None,
-        hotwords: Optional[List[str]] = None,
         word_timestamps: bool = False,
         prefill_step_size: int = 2048,
         verbose: bool = False,
         stream: bool = False,
         **kwargs,
     ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
-        from mlx_audio.stt.utils import merge_hotwords
-
         # 4.0/4.1 have no timestamp mode. Like other models without word
         # timings, they ignore the generic word_timestamps flag (the server
         # forwards it to every STT model); an explicit rich task still raises.
@@ -898,11 +894,6 @@ class Model(nn.Module):
                 "ibm-granite/granite-speech-4.1-2b-plus or use task='asr'."
             )
         prompt = _resolve_prompt(task, prompt, language)
-
-        # Granite biases toward rare vocabulary via an inline "Keywords:" clause.
-        keywords = merge_hotwords(None, hotwords)
-        if keywords:
-            prompt = f"{prompt} Keywords: {keywords}"
 
         if system_prompt is None and self.is_plus:
             system_prompt = PLUS_SYSTEM_PROMPT

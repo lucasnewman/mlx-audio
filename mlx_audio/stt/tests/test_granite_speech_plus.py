@@ -476,12 +476,6 @@ def test_word_timestamps_alias_rejects_saa_conflict():
         )
 
 
-def test_hotwords_append_keywords_clause_to_task_prompt():
-    assert _streamed_prompt(task="saa", hotwords=["Acme", " QFormer "]) == (
-        f"{TASK_PROMPTS['saa']} Keywords: Acme, QFormer"
-    )
-
-
 @pytest.mark.parametrize(
     ("task", "pieces", "expected_segments"),
     [

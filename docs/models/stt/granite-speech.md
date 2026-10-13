@@ -8,8 +8,8 @@ IBM's Granite Speech combines an audio encoder with a language-model decoder. ML
 
 | Checkpoint | Tasks | Languages |
 | --- | --- | --- |
-| [Granite 4.0 1B Speech](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) | Transcription, speech translation, keyword biasing | EN, FR, DE, ES, PT, JA |
-| [Granite Speech 4.1 2B Plus](https://huggingface.co/ibm-granite/granite-speech-4.1-2b-plus) | Transcription, speaker attribution, word timestamps, keyword biasing | EN, FR, DE, ES, PT |
+| [Granite 4.0 1B Speech](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) | Transcription, speech translation | EN, FR, DE, ES, PT, JA |
+| [Granite Speech 4.1 2B Plus](https://huggingface.co/ibm-granite/granite-speech-4.1-2b-plus) | Transcription, speaker attribution, word timestamps | EN, FR, DE, ES, PT |
 
 The examples below use IBM's native Plus checkpoint, which loads directly. Local MLX-converted and quantized checkpoints use the same API.
 
@@ -42,7 +42,6 @@ for segment in result.segments:
 | `task="saa"` | Speaker-attributed text; requires a Plus checkpoint |
 | `task="timestamps"` | Word timings in seconds; requires a Plus checkpoint |
 | `word_timestamps=True` | Alias for timestamp mode on Plus checkpoints, ignored by 4.0; cannot be combined with `task="saa"` |
-| `hotwords=["Acme", "QFormer"]` | Adds keyword hints to the task prompt |
 | `system_prompt="..."` | Replaces the system turn that Plus checkpoints send by default |
 
 Rich tasks use canonical prompts to select their output format, so `prompt=` cannot override `saa` or `timestamps`. If the model returns plain or malformed text instead of the requested tags, `generate()` raises `StructuredTranscriptError` (importable from `mlx_audio.stt.models.granite_speech.granite_speech`) with the model output on its `raw_text` attribute. The original 4.0 checkpoint also accepts `language="fr"` (or another supported target language) for translation.
@@ -55,7 +54,7 @@ mlx_audio.stt.generate \
   --audio meeting.wav \
   --output-path transcript \
   --format json \
-  --gen-kwargs '{"task": "saa", "hotwords": ["Acme", "QFormer"]}'
+  --gen-kwargs '{"task": "saa"}'
 ```
 
 For subtitles, use `--format srt` or `--format vtt` with `--gen-kwargs '{"task": "timestamps"}'`; the file holds one cue for the whole utterance followed by one cue per word. Speaker-only segments have no timestamps, so use JSON to preserve their speaker labels.
