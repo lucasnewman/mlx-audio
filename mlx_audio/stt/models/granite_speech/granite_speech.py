@@ -321,11 +321,13 @@ class ConformerAttention(nn.Module):
         rel_pos_emb = self.rel_pos_emb(attention_dists)
 
         C = self.context_size
-        # Contract the head dimension directly.  Expanding q and rel_pos_emb
-        # first creates a [B, blocks, heads, C, C, dim_head] temporary; for the
-        # supported nine-minute input that single allocation can exceed Metal's
-        # buffer-size limit by itself.
-        pos_attn = mx.einsum("bnhcd,crd->bnhcr", q, rel_pos_emb) * self.scale
+        pos_attn = (
+            mx.sum(
+                q[:, :, :, :, None, :] * rel_pos_emb[None, None, None, :, :, :],
+                axis=-1,
+            )
+            * self.scale
+        )
 
         if remainder > 0:
             row_valid = mx.arange(C)[:, None] < remainder
