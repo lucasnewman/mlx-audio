@@ -1,8 +1,9 @@
 """Convert fishaudio/drama-3 (block-FP8 experts) into an MLX checkpoint.
 
-Every routed expert is dequantized from 128x128 block-FP8, stacked per layer for
-SwitchGLU, and requantized with MLX affine quantization, so no FP8 work is left
-for inference. Shards are streamed and each layer's experts are written as soon
+Every routed expert is dequantized from 128x128 block-FP8 and stacked per layer
+for SwitchGLU, so no FP8 work is left for inference. By default every weight
+stays bfloat16; --expert-bits, --dense-bits and --tower-bits quantize the
+experts, the dense projections and the audio tower with MLX affine quantization. Shards are streamed and each layer's experts are written as soon
 as they are complete, which keeps peak memory near one layer.
 
     python -m mlx_audio.tts.models.fish_drama3.convert \\
@@ -106,9 +107,9 @@ class ShardWriter:
 def convert(
     src: Path,
     dst: Path,
-    expert_bits: Optional[int] = 4,
-    dense_bits: Optional[int] = 8,
-    tower_bits: Optional[int] = 8,
+    expert_bits: int = 0,
+    dense_bits: int = 0,
+    tower_bits: int = 0,
     codec: bool = True,
 ) -> None:
     """Writes the MLX checkpoint into dst, which must not exist or be empty:
@@ -237,11 +238,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--src", type=Path, required=True, help="drama-3 directory")
     parser.add_argument("--dst", type=Path, required=True, help="new, empty directory")
-    parser.add_argument("--expert-bits", type=int, default=4, help="0 keeps bf16")
-    parser.add_argument("--dense-bits", type=int, default=8, help="0 keeps bf16")
+    parser.add_argument("--expert-bits", type=int, default=0, help="0 keeps bf16")
+    parser.add_argument("--dense-bits", type=int, default=0, help="0 keeps bf16")
     # The tower samples nine codebooks per frame from its own heads; at 4 bits
-    # their top-1 agreement with bf16 dropped from about 88% to 40%.
-    parser.add_argument("--tower-bits", type=int, default=8, help="0 keeps bf16")
+    # their top-1 agreement with bf16 dropped from about 88% to 40%, so quantize
+    # it to 8 at most.
+    parser.add_argument("--tower-bits", type=int, default=0, help="0 keeps bf16")
     args = parser.parse_args()
     convert(args.src, args.dst, args.expert_bits, args.dense_bits, args.tower_bits)
 

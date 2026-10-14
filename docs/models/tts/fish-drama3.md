@@ -4,7 +4,7 @@ Fish Audio's multi-speaker text-to-speech model for scenes and long-form content
 
 ## Converting the checkpoint
 
-[`mlx-community/fish-audio-drama-3-4bit`](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) is converted with the defaults below and loads directly. The release stores its routed experts as block FP8, so for other bit widths convert it once into an MLX checkpoint:
+The release stores its routed experts as block FP8, so convert it once into an MLX checkpoint:
 
 ```bash
 hf download fishaudio/drama-3 --local-dir drama-3
@@ -12,23 +12,23 @@ python -m mlx_audio.tts.models.fish_drama3.convert \
     --src drama-3 --dst drama-3-mlx
 ```
 
-By default experts are quantized to 4 bits and the dense projections and audio tower to 8 bits, which comes to about 22 GB. `--expert-bits`, `--dense-bits` and `--tower-bits` change that, and `0` keeps bfloat16. Reading `codec.pth` needs PyTorch.
+By default every weight stays in bfloat16, so the numerics match the reference implementation; that comes to about 67 GB. `--expert-bits`, `--dense-bits` and `--tower-bits` quantize the routed experts, the dense projections and the audio tower. Reading `codec.pth` needs PyTorch.
 
-On an M3 Max the default checkpoint generates a frame (46 ms of audio) in about 22 ms, roughly twice real time, and peaks at about 26 GB of memory.
+[`mlx-community/fish-audio-drama-3-4bit`](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) is converted with `--expert-bits 4 --dense-bits 8 --tower-bits 8`, about 22 GB. On an M3 Max it generates a frame (46 ms of audio) in about 22 ms, roughly twice real time, and peaks at about 26 GB of memory. The bfloat16 checkpoint runs at about 1.4 times real time and peaks at about 74 GB.
 
 ### Choosing expert bits
 
-The routed experts hold most of the weights, so `--expert-bits` sets the size. Keep `--dense-bits 8`: quantizing the dense projections to 3 bits as well made 9 of 20 test clips fail.
+The routed experts hold most of the weights, so `--expert-bits` sets the size. Keep the dense projections at 8 bits or more: quantizing them to 3 bits as well made 9 of 20 test clips fail.
 
 | `--expert-bits` | Checkpoint | Quality vs 8-bit experts |
 |---|---|---|
-| 4 (default) | ~22 GB | Same |
+| 4 | ~22 GB | Same |
 | 3 | ~18.5 GB | Same; peaks at about 22.5–24 GB, so it fits a 32 GB Mac ([converted checkpoint](https://huggingface.co/Nav8ha/drama-3-mlx-mixed-3bit)) |
 | 2 | ~14.5 GB | Not recommended: dropped the end of a multi-speaker dialogue |
 
 Measured on 20 voice-cloned English clips (Whisper WER, speaker similarity, UTMOS) and a blind listening test.
 
-`--dense-bits 0 --tower-bits 0` keeps the dense projections and the audio tower in bfloat16. With 4-bit experts that brings the codebook heads slightly closer to the PyTorch reference, but needs about 2.3 GB more peak memory and runs about a quarter slower on an M3 Max.
+Without `--dense-bits` and `--tower-bits`, the dense projections and the audio tower stay in bfloat16. With 4-bit experts that brings the codebook heads slightly closer to the PyTorch reference, but needs about 2.3 GB more peak memory and runs about a quarter slower on an M3 Max.
 
 ## Usage
 

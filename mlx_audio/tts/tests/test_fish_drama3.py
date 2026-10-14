@@ -169,7 +169,8 @@ class TestConversion(unittest.TestCase):
             src, dst = Path(tmp, "src"), Path(tmp, "dst")
             src.mkdir()
             source = write_source(src)
-            convert(src, dst, expert_bits=0, dense_bits=0, tower_bits=0, codec=False)
+            # The defaults keep the release's precision.
+            convert(src, dst, codec=False)
             out = {}
             for shard in dst.glob("*.safetensors"):
                 out.update(mx.load(str(shard)))
@@ -220,7 +221,8 @@ class TestGeneration(unittest.TestCase):
         src, dst = Path(cls.tmp.name, "src"), Path(cls.tmp.name, "dst")
         src.mkdir()
         write_source(src)
-        convert(src, dst, codec=False)
+        # The mixed precision of the published 4-bit checkpoint.
+        convert(src, dst, expert_bits=4, dense_bits=8, tower_bits=8, codec=False)
         cls.codec = _tiny_streaming_dac(semantic_codebook_size=TOWER_VOCAB)
         with patch(
             "mlx_audio.codec.models.fish_s1_dac.DAC.from_pretrained",
