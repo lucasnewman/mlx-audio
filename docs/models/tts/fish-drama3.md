@@ -18,12 +18,12 @@ By default every weight stays in bfloat16, so the numerics match the reference i
 
 ### Choosing expert bits
 
-The routed experts hold most of the weights, so `--expert-bits` sets the size. Keep the dense projections at 8 bits or more: quantizing them to 3 bits as well made 9 of 20 test clips fail.
+The routed experts hold most of the weights, so `--expert-bits` sets the size. The sizes below also pass `--dense-bits 8 --tower-bits 8`. Keep the dense projections at 8 bits or more: quantizing them to 3 bits as well made 9 of 20 test clips fail.
 
 | `--expert-bits` | Checkpoint | Quality vs 8-bit experts |
 |---|---|---|
 | 4 | ~22 GB | Same |
-| 3 | ~18.5 GB | Same; peaks at about 22.5–24 GB, so it fits a 32 GB Mac ([converted checkpoint](https://huggingface.co/Nav8ha/drama-3-mlx-mixed-3bit)) |
+| 3 | ~18.5 GB | Same; peaks at about 22.5–24 GB, so it fits a 32 GB Mac ([converted checkpoint](https://huggingface.co/mlx-community/fish-audio-drama-3-3bit)) |
 | 2 | ~14.5 GB | Not recommended: dropped the end of a multi-speaker dialogue |
 
 Measured on 20 voice-cloned English clips (Whisper WER, speaker similarity, UTMOS) and a blind listening test.
