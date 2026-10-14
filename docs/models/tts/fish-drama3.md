@@ -16,6 +16,18 @@ By default experts are quantized to 4 bits and the dense projections and audio t
 
 On an M3 Max the default checkpoint generates a frame (46 ms of audio) in about 22 ms, roughly twice real time, and peaks at about 26 GB of memory.
 
+### Choosing expert bits
+
+The routed experts hold most of the weights, so `--expert-bits` sets the size. Keep `--dense-bits 8`: quantizing the dense projections to 3 bits as well made 9 of 20 test clips fail.
+
+| `--expert-bits` | Checkpoint | Quality vs 8-bit experts |
+|---|---|---|
+| 4 (default) | ~22 GB | Same |
+| 3 | ~18.5 GB | Same; peaks at about 22.5–24 GB, so it fits a 32 GB Mac ([converted checkpoint](https://huggingface.co/Nav8ha/drama-3-mlx-mixed-3bit)) |
+| 2 | ~14.5 GB | Not recommended: dropped the end of a multi-speaker dialogue |
+
+Measured on 20 voice-cloned English clips (Whisper WER, speaker similarity, UTMOS) and a blind listening test.
+
 ## Usage
 
 === "CLI"
