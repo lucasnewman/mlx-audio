@@ -4,7 +4,7 @@ Fish Audio's multi-speaker text-to-speech model for scenes and long-form content
 
 ## Converting the checkpoint
 
-The release stores its routed experts as block FP8, so convert it once into an MLX checkpoint:
+[`mlx-community/fish-audio-drama-3-4bit`](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) is converted with the defaults below and loads directly. The release stores its routed experts as block FP8, so for other bit widths convert it once into an MLX checkpoint:
 
 ```bash
 hf download fishaudio/drama-3 --local-dir drama-3
@@ -28,13 +28,15 @@ The routed experts hold most of the weights, so `--expert-bits` sets the size. K
 
 Measured on 20 voice-cloned English clips (Whisper WER, speaker similarity, UTMOS) and a blind listening test.
 
+`--dense-bits 0 --tower-bits 0` keeps the dense projections and the audio tower in bfloat16. With 4-bit experts that brings the codebook heads slightly closer to the PyTorch reference, but needs about 2.3 GB more peak memory and runs about a quarter slower on an M3 Max.
+
 ## Usage
 
 === "CLI"
 
     ```bash
     python -m mlx_audio.tts.generate \
-        --model drama-3-mlx \
+        --model mlx-community/fish-audio-drama-3-4bit \
         --text "[sighs] Fine. If we miss it, it's on you." \
         --ref_audio reference.wav \
         --ref_text "Transcript of the reference clip." \
@@ -46,7 +48,7 @@ Measured on 20 voice-cloned English clips (Whisper WER, speaker similarity, UTMO
     ```python
     from mlx_audio.tts.utils import load_model
 
-    model = load_model("drama-3-mlx")
+    model = load_model("mlx-community/fish-audio-drama-3-4bit")
 
     for result in model.generate(
         text="[sighs] Fine. If we miss it, it's on you.",
@@ -56,7 +58,7 @@ Measured on 20 voice-cloned English clips (Whisper WER, speaker similarity, UTMO
         print(result.audio_duration)
     ```
 
-Without a reference the model picks a voice itself. Delivery cues such as `[whispers]` or `[laughs]` go inline where they should happen. In Python, sampling arguments left unset use the reference recipe (temperature 0.7, top-p 0.7, top-k 30); the CLI has its own defaults, so pass them explicitly there.
+The output copies the bandwidth of the reference, so use references recorded at 44.1 kHz or higher; a 16 kHz clip gives duller speech. Without a reference the model picks a voice itself. Delivery cues such as `[whispers]` or `[laughs]` go inline where they should happen. In Python, sampling arguments left unset use the reference recipe (temperature 0.7, top-p 0.7, top-k 30); the CLI has its own defaults, so pass them explicitly there.
 
 ## Multiple speakers
 
