@@ -7,6 +7,7 @@ This module provides functions for reading and writing audio files.
 """
 
 import io
+import math
 import os
 import shutil
 import subprocess
@@ -86,6 +87,7 @@ def _decode_ffmpeg(
     input_data: Union[str, Path, bytes],
     sample_rate: Optional[int] = None,
     nchannels: Optional[int] = None,
+    duration: Optional[float] = None,
 ) -> Tuple[np.ndarray, int, int]:
     """Decode audio using ffmpeg (for formats not supported by miniaudio like M4A).
 
@@ -93,6 +95,7 @@ def _decode_ffmpeg(
         input_data: Path to the audio file or raw bytes data.
         sample_rate: Optional target sample rate. Preserves the input rate when omitted.
         nchannels: Optional target channel count. Preserves the input channels when omitted.
+        duration: Optional number of seconds to decode from the start.
 
     Returns:
         Tuple of (samples as int16 numpy array, sample_rate, nchannels).
@@ -128,7 +131,10 @@ def _decode_ffmpeg(
             with os.fdopen(fd, "wb") as tmp:
                 tmp.write(input_data)
             return _decode_ffmpeg(
-                tmp_path, sample_rate=sample_rate, nchannels=nchannels
+                tmp_path,
+                sample_rate=sample_rate,
+                nchannels=nchannels,
+                duration=duration,
             )
         finally:
             os.unlink(tmp_path)
@@ -176,8 +182,17 @@ def _decode_ffmpeg(
         str(output_sample_rate),
         "-ac",
         str(output_nchannels),
-        "pipe:1",
     ]
+    max_frames = None
+    if duration is not None:
+        max_frames = round(duration * output_sample_rate)
+        if max_frames == 0:
+            return np.empty(0, dtype=np.int16), output_sample_rate, output_nchannels
+        # One extra frame, so rounding in ffmpeg cannot leave the result short.
+        # ffmpeg needs fixed-point seconds that fit in int64 microseconds.
+        seconds = min((max_frames + 1) / output_sample_rate, 1e12)
+        decode_cmd += ["-t", f"{seconds:.6f}"]
+    decode_cmd.append("pipe:1")
     decode_result = subprocess.run(
         decode_cmd, stdin=subprocess.DEVNULL, capture_output=True
     )
@@ -192,8 +207,48 @@ def _decode_ffmpeg(
 
     # Convert raw PCM bytes to numpy array
     samples = np.frombuffer(decode_result.stdout, dtype=np.int16)
+    if max_frames is not None:
+        samples = samples[: max_frames * output_nchannels]
 
     return samples, output_sample_rate, output_nchannels
+
+
+def _stream_miniaudio(
+    input_data: Union[str, Path, bytes], sample_rate: int, nchannels: int
+):
+    """Stream interleaved int16 PCM from miniaudio in chunks of about one second."""
+    import miniaudio
+
+    stream_kwargs = {
+        "output_format": miniaudio.SampleFormat.SIGNED16,
+        "nchannels": nchannels,
+        "sample_rate": sample_rate,
+        "frames_to_read": max(1, int(_RESAMPLE_CHUNK_DURATION_SECONDS * sample_rate)),
+    }
+    if isinstance(input_data, bytes):
+        return miniaudio.stream_memory(input_data, **stream_kwargs)
+    return miniaudio.stream_file(str(input_data), **stream_kwargs)
+
+
+def _decode_miniaudio_head(
+    input_data: Union[str, Path, bytes],
+    sample_rate: int,
+    nchannels: int,
+    max_frames: int,
+) -> np.ndarray:
+    """Decode only the first max_frames frames as interleaved int16 PCM."""
+    pcm_stream = _stream_miniaudio(input_data, sample_rate, nchannels)
+    chunks, frames = [], 0
+    try:
+        for raw_samples in pcm_stream:
+            chunks.append(np.asarray(raw_samples, dtype=np.int16))
+            frames += chunks[-1].shape[0] // nchannels
+            if frames >= max_frames:
+                break
+    finally:
+        pcm_stream.close()
+    samples = np.concatenate(chunks) if chunks else np.empty(0, dtype=np.int16)
+    return samples[: max_frames * nchannels]
 
 
 def _decode_miniaudio_resampled(
@@ -202,23 +257,12 @@ def _decode_miniaudio_resampled(
     input_num_frames: int,
     output_sample_rate: int,
     output_nchannels: int,
+    max_output_frames: Optional[int] = None,
 ) -> np.ndarray:
     """Stream native-rate mono/stereo PCM through the high-quality FIR."""
-    import miniaudio
-
     from mlx_audio.resample import resample_audio_chunks
 
-    frames_per_chunk = max(1, int(_RESAMPLE_CHUNK_DURATION_SECONDS * input_sample_rate))
-    stream_kwargs = {
-        "output_format": miniaudio.SampleFormat.SIGNED16,
-        "nchannels": output_nchannels,
-        "sample_rate": input_sample_rate,
-        "frames_to_read": frames_per_chunk,
-    }
-    if isinstance(input_data, bytes):
-        pcm_stream = miniaudio.stream_memory(input_data, **stream_kwargs)
-    else:
-        pcm_stream = miniaudio.stream_file(str(input_data), **stream_kwargs)
+    pcm_stream = _stream_miniaudio(input_data, input_sample_rate, output_nchannels)
 
     def normalized_chunks():
         for raw_samples in pcm_stream:
@@ -229,13 +273,17 @@ def _decode_miniaudio_resampled(
             chunk /= 32768.0
             yield chunk
 
-    return resample_audio_chunks(
-        normalized_chunks(),
-        input_sample_rate,
-        output_sample_rate,
-        input_num_frames,
-        chunk_duration_seconds=_RESAMPLE_CHUNK_DURATION_SECONDS,
-    )
+    try:
+        return resample_audio_chunks(
+            normalized_chunks(),
+            input_sample_rate,
+            output_sample_rate,
+            input_num_frames,
+            chunk_duration_seconds=_RESAMPLE_CHUNK_DURATION_SECONDS,
+            max_output_frames=max_output_frames,
+        )
+    finally:
+        pcm_stream.close()
 
 
 def read(
@@ -244,6 +292,7 @@ def read(
     dtype: str = "float64",
     sample_rate: Optional[int] = None,
     nchannels: Optional[int] = None,
+    duration: Optional[float] = None,
 ) -> Tuple[np.ndarray, int]:
     """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM/CAF/AIFC).
 
@@ -255,6 +304,8 @@ def read(
         sample_rate: Optional target sample rate. Preserves the input rate when omitted.
             Miniaudio-backed resampling uses the high-quality chunked FIR path.
         nchannels: Optional target channel count. Preserves the input channels when omitted.
+        duration: Optional number of seconds to read from the start. Decoding stops
+            there, so time and memory follow the limit. Reads the whole file when omitted.
 
     Returns:
         Tuple of (audio_data, sample_rate).
@@ -264,6 +315,8 @@ def read(
         raise ValueError(f"sample_rate must be positive, got {sample_rate}")
     if nchannels is not None and nchannels <= 0:
         raise ValueError(f"nchannels must be positive, got {nchannels}")
+    if duration is not None and not (duration > 0 and math.isfinite(duration)):
+        raise ValueError(f"duration must be a positive finite number, got {duration}")
 
     # The first bytes name the format. The extension is the fallback.
     if isinstance(file, (str, Path)):
@@ -293,6 +346,7 @@ def read(
             input_data,
             sample_rate=sample_rate,
             nchannels=nchannels,
+            duration=duration,
         )
     else:
         # Use miniaudio for other formats
@@ -319,6 +373,10 @@ def read(
             info = get_info(str(file))
 
         output_nchannels = nchannels or info.nchannels
+        output_sample_rate = sample_rate or info.sample_rate
+        max_frames = None
+        if duration is not None:
+            max_frames = round(duration * output_sample_rate)
         if sample_rate is not None and sample_rate != info.sample_rate:
             samples = _decode_miniaudio_resampled(
                 miniaudio_input,
@@ -326,9 +384,16 @@ def read(
                 info.num_frames,
                 sample_rate,
                 output_nchannels,
+                max_output_frames=max_frames,
             )
             nchannels = output_nchannels
             samples_are_normalized = True
+        elif max_frames is not None:
+            samples = _decode_miniaudio_head(
+                miniaudio_input, output_sample_rate, output_nchannels, max_frames
+            )
+            sample_rate = output_sample_rate
+            nchannels = output_nchannels
         else:
             if isinstance(miniaudio_input, bytes):
                 decoded = miniaudio.decode(

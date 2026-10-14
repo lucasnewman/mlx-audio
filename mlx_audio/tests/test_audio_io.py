@@ -659,3 +659,125 @@ class TestAudioIOFormatDetection:
 
         assert rate == 16000
         assert data.shape[0] == tone.shape[0]
+
+
+class TestAudioIODuration:
+    """duration decodes only the start of a file, to the same samples."""
+
+    @pytest.fixture
+    def wav_path(self, tmp_path):
+        path = tmp_path / "clip.wav"
+        rng = np.random.default_rng(0)
+        write(path, rng.uniform(-0.5, 0.5, (5 * 44100, 2)).astype(np.float32), 44100)
+        return path
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{}, {"sample_rate": 16000, "nchannels": 1}, {"sample_rate": 48000}],
+        ids=["native", "downsampled", "upsampled"],
+    )
+    @pytest.mark.parametrize("use_buffer", [False, True])
+    def test_wav_matches_full_read(self, wav_path, kwargs, use_buffer):
+        full, rate = read(wav_path, dtype="float32", **kwargs)
+        source = io.BytesIO(wav_path.read_bytes()) if use_buffer else wav_path
+
+        part, part_rate = read(source, dtype="float32", duration=1.5, **kwargs)
+
+        assert part_rate == rate
+        np.testing.assert_array_equal(part, full[: round(1.5 * rate)])
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    @pytest.mark.parametrize(
+        "kwargs", [{}, {"sample_rate": 16000, "nchannels": 1}], ids=["native", "16k"]
+    )
+    @pytest.mark.parametrize("use_buffer", [False, True])
+    def test_m4a_matches_full_read(self, tmp_path, kwargs, use_buffer):
+        path = _encode_with_ffmpeg(
+            tmp_path / "clip.m4a", "-c:a", "aac", samplerate=44100, seconds=5.0
+        )
+        full, rate = read(path, dtype="float32", **kwargs)
+        source = io.BytesIO(path.read_bytes()) if use_buffer else path
+
+        part, part_rate = read(source, dtype="float32", duration=1.5, **kwargs)
+
+        assert part_rate == rate
+        np.testing.assert_array_equal(part, full[: round(1.5 * rate)])
+
+    @pytest.mark.parametrize(
+        "kwargs", [{}, {"sample_rate": 8000}, {"sample_rate": 48000}]
+    )
+    def test_miniaudio_stops_decoding(self, tmp_path, monkeypatch, kwargs):
+        from mlx_audio import audio_io
+
+        path = tmp_path / "long.wav"
+        write(path, np.zeros(60 * 16000, dtype=np.float32), 16000)
+        stream = audio_io._stream_miniaudio
+        chunks = []
+
+        def counting_stream(*args):
+            for chunk in stream(*args):
+                chunks.append(chunk)
+                yield chunk
+
+        monkeypatch.setattr(audio_io, "_stream_miniaudio", counting_stream)
+        data, rate = read(path, duration=2.0, **kwargs)
+
+        assert data.shape[0] == 2 * rate
+        assert len(chunks) <= 4  # of 60 one-second chunks
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_ffmpeg_gets_time_limit(self, tmp_path, monkeypatch):
+        path = _encode_with_ffmpeg(tmp_path / "clip.m4a", "-c:a", "aac", seconds=3.0)
+        commands = []
+        run = subprocess.run
+
+        def recording_run(cmd, *args, **kwargs):
+            commands.append(cmd)
+            return run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", recording_run)
+        data, rate = read(path, duration=1.0)
+
+        assert data.shape[0] == rate
+        assert "-t" in commands[-1]
+
+    @pytest.mark.parametrize(
+        "ext",
+        [
+            "wav",
+            pytest.param(
+                "m4a",
+                marks=pytest.mark.skipif(
+                    not FFMPEG_AVAILABLE, reason="ffmpeg not installed"
+                ),
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "kwargs", [{}, {"sample_rate": 16000}], ids=["native", "16k"]
+    )
+    def test_tiny_and_huge_limits(self, wav_path, tmp_path, ext, kwargs):
+        if ext == "m4a":
+            path = _encode_with_ffmpeg(
+                tmp_path / "clip.m4a", "-c:a", "aac", samplerate=44100, seconds=2.0
+            )
+        else:
+            path = wav_path
+        full, _ = read(path, **kwargs)
+
+        assert read(path, duration=1e-5, **kwargs)[0].shape == (0, *full.shape[1:])
+        np.testing.assert_array_equal(read(path, duration=1e300, **kwargs)[0], full)
+
+    @pytest.mark.parametrize("duration", [0, -1.0, float("inf"), float("nan")])
+    def test_rejects_invalid(self, wav_path, duration):
+        with pytest.raises(ValueError, match="duration"):
+            read(wav_path, duration=duration)
+
+    def test_load_audio_helpers(self, wav_path):
+        from mlx_audio.stt.utils import load_audio as stt_load_audio
+        from mlx_audio.utils import load_audio
+
+        assert stt_load_audio(str(wav_path), sr=16000, duration=0.5).shape == (8000,)
+        assert load_audio(str(wav_path), sample_rate=16000, duration=0.5).shape == (
+            8000,
+        )
