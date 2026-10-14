@@ -13,14 +13,14 @@ from ..models.fish_s1_dac.fish_s1_dac import (
 )
 
 
-def _tiny_streaming_dac(block_size: int = 64) -> DAC:
+def _tiny_streaming_dac(block_size: int = 64, semantic_codebook_size: int = 32) -> DAC:
     mx.random.seed(0)
     quantizer = DownsampleResidualVectorQuantize(
         input_dim=16,
         n_codebooks=2,
         codebook_dim=4,
         codebook_size=16,
-        semantic_codebook_size=32,
+        semantic_codebook_size=semantic_codebook_size,
         downsample_factor=(2,),
         pre_module=Identity(),
         post_module=WindowLimitedTransformer(
