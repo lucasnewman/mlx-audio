@@ -14,7 +14,7 @@ python -m mlx_audio.tts.models.fish_drama3.convert \
 
 By default every weight stays in bfloat16, so the numerics match the reference implementation; that comes to about 67 GB. `--expert-bits`, `--dense-bits` and `--tower-bits` quantize the routed experts, the dense projections and the audio tower. Reading `codec.pth` needs PyTorch.
 
-[`mlx-community/fish-audio-drama-3-4bit`](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) is converted with `--expert-bits 4 --dense-bits 8 --tower-bits 8`, about 22 GB. On an M3 Max it generates a frame (46 ms of audio) in about 22 ms, roughly twice real time, and peaks at about 26 GB of memory. The bfloat16 checkpoint runs at about 1.4 times real time and peaks at about 74 GB. [`cguldogan/drama-3-mlx-q8`](https://huggingface.co/cguldogan/drama-3-mlx-q8) is converted with `--expert-bits 8` alone, so everything but the routed experts stays in bfloat16: about 42 GB, peaking at about 49 GB, which fits a 64 GB Mac.
+[`mlx-community/fish-audio-drama-3-4bit`](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) is converted with `--expert-bits 4 --dense-bits 8 --tower-bits 8`, about 22 GB. On an M3 Max it generates a frame (46 ms of audio) in about 22 ms, roughly twice real time, and peaks at about 26 GB of memory. The bfloat16 checkpoint runs at about 1.4 times real time and peaks at about 74 GB. [`mlx-community/fish-audio-drama-3-8bit`](https://huggingface.co/mlx-community/fish-audio-drama-3-8bit) is converted with `--expert-bits 8` alone, so everything but the routed experts stays in bfloat16: about 42 GB, peaking at about 49 GB, which fits a 64 GB Mac.
 
 ### Choosing expert bits
 
