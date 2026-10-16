@@ -11,7 +11,6 @@ class ModelConfig(ParakeetTDTArgs):
 
     phonon2_modules: list[dict]
     model_type: str = "phonon2"
-    phonon2_conversion_version: Optional[int] = None
     model_path: Optional[str] = None
 
     @classmethod

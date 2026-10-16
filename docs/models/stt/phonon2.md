@@ -27,4 +27,4 @@ not supported.
 
 Weights are CC-BY-4.0; adapted code is Apache-2.0.
 See the [model README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/phonon2/README.md)
-for input requirements, CLI usage, and optional conversion.
+for input requirements and CLI usage.

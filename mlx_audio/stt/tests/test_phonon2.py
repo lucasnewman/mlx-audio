@@ -1,10 +1,6 @@
-"""Offline format, standard-loader, and inference regression tests for Phonon-2."""
+"""Offline standard-loader and inference regression tests for Phonon-2."""
 
-import hashlib
-import io
 import json
-import re
-import tarfile
 from dataclasses import asdict
 
 import mlx.core as mx
@@ -17,78 +13,24 @@ from mlx_audio.stt import load
 from mlx_audio.stt.models.parakeet.audio import PreprocessArgs, log_mel_spectrogram
 from mlx_audio.stt.models.parakeet.parakeet import ParakeetTDT, ParakeetTDTArgs
 from mlx_audio.stt.models.phonon2 import Model, ModelConfig
-from mlx_audio.stt.models.phonon2.convert import FORMAT, convert, dense_record, records
-from mlx_audio.stt.models.phonon2.packed import (
-    ENCODER_SUFFIXES,
-    PackedFiveValueLinear,
-    pack_planes,
-)
+from mlx_audio.stt.models.phonon2.packed import ENCODER_SUFFIXES, PackedFiveValueLinear
 from mlx_audio.utils import from_dict
 
 
-def write_container(path, rows):
-    header = {
-        "format": FORMAT,
-        "index": [dict(n=n, k=k, shape=list(s), b=len(b)) for n, k, s, b in rows],
-    }
-    data = json.dumps(header).encode()
-    path.write_bytes(
-        len(data).to_bytes(8, "little") + data + b"".join(r[3] for r in rows)
-    )
+def packed_weights(sign, mask):
+    """Encode synthetic five-value weights directly in the checkpoint layout."""
 
+    def pack(codes):
+        codes = codes.astype(np.uint32).reshape(sign.shape[0], -1, 16)
+        return np.bitwise_or.reduce(
+            codes << (2 * np.arange(16, dtype=np.uint32)), axis=-1
+        )
 
-def pack_record(sign, mask, lo, hi):
-    codes = (sign + 1).astype(np.uint8)
-    codes = np.pad(codes, ((0, 0), (0, (-codes.shape[1]) % 5)), constant_values=1)
-    trits = np.sum(
-        codes.reshape(sign.shape[0], -1, 5) * np.array([1, 3, 9, 27, 81]), axis=-1
-    ).astype(np.uint8)
-    return (
-        trits.tobytes()
-        + np.packbits(mask[sign != 0], bitorder="little").tobytes()
-        + lo.astype("<f2").tobytes()
-        + hi.astype("<f2").tobytes()
-    )
-
-
-def hf_name(name, value):
-    replacements = (
-        ("encoder.pre_encode.conv.", "encoder.subsampling.layers."),
-        ("encoder.pre_encode.out.", "encoder.subsampling.linear."),
-        (".conv.batch_norm.", ".conv.norm."),
-        (".self_attn.linear_q.", ".self_attn.q_proj."),
-        (".self_attn.linear_k.", ".self_attn.k_proj."),
-        (".self_attn.linear_v.", ".self_attn.v_proj."),
-        (".self_attn.linear_out.", ".self_attn.o_proj."),
-        (".self_attn.linear_pos.", ".self_attn.relative_k_proj."),
-        (".self_attn.pos_bias_u", ".self_attn.bias_u"),
-        (".self_attn.pos_bias_v", ".self_attn.bias_v"),
-        ("decoder.prediction.embed.", "decoder.embedding."),
-        ("joint.enc.", "encoder_projector."),
-        ("joint.pred.", "decoder.decoder_projector."),
-        ("joint.joint_net.2.", "joint.head."),
-    )
-    original = name
-    for old, new in replacements:
-        name = name.replace(old, new)
-    match = re.fullmatch(r"decoder.prediction.dec_rnn.lstm.(\d+).(Wx|Wh|bias)", name)
-    if match:
-        layer, part = match.groups()
-        if part == "bias":
-            return [
-                (f"decoder.lstm.bias_ih_l{layer}", value),
-                (f"decoder.lstm.bias_hh_l{layer}", np.zeros_like(value)),
-            ]
-        name = f"decoder.lstm.weight_{'ih' if part == 'Wx' else 'hh'}_l{layer}"
-    if original.startswith("encoder.pre_encode.conv.") and value.ndim == 4:
-        value = value.transpose(0, 3, 1, 2)
-    elif ".conv." in original and original.endswith(".weight") and value.ndim == 3:
-        value = value.transpose(0, 2, 1)
-    return [(name, value)]
+    return pack(sign + 1), pack(sign * mask + 1)
 
 
 @pytest.fixture
-def source_checkpoint(tmp_path):
+def checkpoint(tmp_path):
     config = {
         "preprocessor": dict(
             sample_rate=16000,
@@ -133,124 +75,42 @@ def source_checkpoint(tmp_path):
     }
     mx.random.seed(7)
     model = ParakeetTDT(from_dict(ParakeetTDTArgs, config))
-    rows = []
-    packed = {f"encoder.layers.0.{s}.weight" for s in ENCODER_SUFFIXES}
+    projections = {f"encoder.layers.0.{s}.weight" for s in ENCODER_SUFFIXES}
+    weights, modules = {}, []
     for name, weight in tree_flatten(model.parameters()):
-        value = np.asarray(weight.astype(mx.float32))
-        for mapped, array in hf_name(name, value):
-            if name in packed:
-                shape = (array.shape[0], int(np.prod(array.shape[1:])))
-                sign = np.resize(np.array([-1, 0, 1], np.int8), shape)
-                mask = np.resize(
-                    np.array([True, False, False, False, False, True]), shape
-                ) & (sign != 0)
-                lo, hi = np.full(shape[0], 0.125), np.full(shape[0], 0.375)
-                rows.append(
-                    (mapped[:-7], "five_value", shape, pack_record(sign, mask, lo, hi))
-                )
-            else:
-                # Force the blank token and duration 1 so synthetic audio terminates deterministically.
-                if mapped == "joint.head.weight":
-                    array = np.zeros_like(array)
-                if mapped == "joint.head.bias":
-                    array = np.zeros_like(array)
-                    array[8] = array[10] = 20
-                rows.append(
-                    (mapped, "fp16", array.shape, array.astype("<f2").tobytes())
-                )
-    rows.append(
-        (
-            "encoder.layers.0.conv.norm.num_batches_tracked",
-            "fp16",
-            (),
-            np.float16(0).tobytes(),
-        )
-    )
-    source = tmp_path / "unpacked"
-    source.mkdir()
-    (source / "config.json").write_text(json.dumps(config))
-    write_container(source / "model.fermion", rows)
-    (source / "packed_manifest.json").write_text(
-        json.dumps(
-            {
-                "format": FORMAT,
-                "container_sha256": hashlib.sha256(
-                    (source / "model.fermion").read_bytes()
-                ).hexdigest(),
-            }
-        )
-    )
-    return source
+        if name in projections:
+            outputs, inputs = weight.shape[0], int(np.prod(weight.shape[1:]))
+            shape = (outputs, inputs)
+            sign = np.resize(np.array([-1, 0, 1], np.int8), shape)
+            mask = np.resize(
+                np.array([True, False, False, False, False, True]), shape
+            ) & (sign != 0)
+            base, residual = packed_weights(sign, mask)
+            module = name.removesuffix(".weight")
+            modules.append({"name": module, "shape": list(shape)})
+            weights[f"{module}.base_q"] = mx.array(base)
+            weights[f"{module}.residual_q"] = mx.array(residual)
+            weights[f"{module}.row_lo"] = mx.full((outputs,), 0.125, mx.float16)
+            weights[f"{module}.row_hi"] = mx.full((outputs,), 0.375, mx.float16)
+        else:
+            # Force blank and duration 1 so synthetic audio terminates deterministically.
+            if name == "joint.joint_net.2.weight":
+                weight = mx.zeros_like(weight)
+            elif name == "joint.joint_net.2.bias":
+                weight = mx.zeros_like(weight)
+                weight[8] = weight[10] = 20
+            weights[name] = weight.astype(mx.bfloat16)
+    config.update(model_type="phonon2", phonon2_modules=modules)
+    path = tmp_path / "mlx-model"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config))
+    mx.save_safetensors(str(path / "model.safetensors"), weights)
+    return path
 
 
-@pytest.fixture
-def checkpoint(source_checkpoint, tmp_path):
-    return convert(str(source_checkpoint), str(tmp_path / "mlx-model"))
-
-
-def archive_checkpoint(source, root):
-    import zstandard
-
-    root.mkdir()
-    files = {
-        name: (source / name).read_bytes()
-        for name in ("config.json", "model.fermion", "packed_manifest.json")
-    }
-    for name in (
-        "NOTICE",
-        "LICENSE-WEIGHTS-CC-BY-4.0.txt",
-        "LICENSE-CODE-Apache-2.0.txt",
-    ):
-        if (source / name).is_file():
-            files[name] = (source / name).read_bytes()
-    manifest = {
-        "release_format": "phonon-byteplane-tar-zstd-v1",
-        "files": [
-            {
-                "path": n,
-                "original_bytes": len(b),
-                "original_sha256": hashlib.sha256(b).hexdigest(),
-            }
-            for n, b in files.items()
-        ],
-    }
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w") as tar:
-        for name, blob in {
-            "bps_manifest.json": json.dumps(manifest).encode(),
-            **files,
-        }.items():
-            info = tarfile.TarInfo(name)
-            info.size = len(blob)
-            tar.addfile(info, io.BytesIO(blob))
-    archive = zstandard.ZstdCompressor().compress(stream.getvalue())
-    (root / "phonon-2.bps.tar.zst").write_bytes(archive)
-    (root / "config.json").write_text(
-        json.dumps(
-            {
-                "model_type": "parakeet_tdt_five_value",
-                "artifact": {
-                    "filename": "phonon-2.bps.tar.zst",
-                    "sha256": hashlib.sha256(archive).hexdigest(),
-                    "unpacked_bytes": sum(map(len, files.values())),
-                },
-            }
-        )
-    )
-    return root
-
-
-def test_standard_local_loader(checkpoint, monkeypatch):
-    import importlib
-
+def test_standard_local_loader(checkpoint):
     from mlx_audio.stt.models.parakeet import parakeet
 
-    converter = importlib.import_module("mlx_audio.stt.models.phonon2.convert")
-
-    def unexpected_conversion(*args, **kwargs):
-        pytest.fail("Runtime loading must not extract or convert model archives")
-
-    monkeypatch.setattr(converter, "unpack_source", unexpected_conversion)
     original_frontend = parakeet.log_mel_spectrogram
     model = load(checkpoint)
     assert isinstance(model, Model)
@@ -269,67 +129,10 @@ def test_standard_local_loader(checkpoint, monkeypatch):
         again.load_weights(list(weights.items()), strict=False)
 
 
-def test_hub_converter_forwards_revision(source_checkpoint, tmp_path, monkeypatch):
-    import importlib
-
-    converter = importlib.import_module("mlx_audio.stt.models.phonon2.convert")
-
-    root = archive_checkpoint(source_checkpoint, tmp_path / "snapshot")
-    archive = root / "phonon-2.bps.tar.zst"
-    download = tmp_path / "download.bps.tar.zst"
-    archive.rename(download)
-    calls = []
-
-    def get_path(repo, **kwargs):
-        assert repo == "FermionResearch/Phonon-2"
-        assert kwargs["revision"] == "pinned"
-        assert kwargs["force_download"]
-        return root
-
-    def fetch(repo, filename, **kwargs):
-        calls.append((repo, filename, kwargs))
-        return str(download)
-
-    monkeypatch.setattr(converter, "get_model_path", get_path)
-    monkeypatch.setattr(converter, "hf_hub_download", fetch)
-    output = convert(
-        "FermionResearch/Phonon-2",
-        str(tmp_path / "mlx"),
-        revision="pinned",
-        force_download=True,
-    )
-    assert isinstance(load(output), Model)
-    assert calls == [
-        (
-            "FermionResearch/Phonon-2",
-            "phonon-2.bps.tar.zst",
-            {"revision": "pinned", "force_download": True},
-        )
-    ]
-
-
-def test_archive_checksum_and_source_preserved(source_checkpoint, tmp_path):
-    root = archive_checkpoint(source_checkpoint, tmp_path / "snapshot")
-    source_hashes = {
-        p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()
-    }
-    output = convert(str(root), str(tmp_path / "mlx"))
-    assert isinstance(load(output), Model)
-    assert source_hashes == {
-        p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()
-    }
-    archive = root / "phonon-2.bps.tar.zst"
-    archive.write_bytes(archive.read_bytes() + b"corrupt")
-    target = tmp_path / "failed"
-    with pytest.raises(ValueError, match="SHA-256"):
-        convert(str(root), str(target))
-    assert not target.exists()
-
-
 def test_packed_forward_matches_independent_dense_math():
     sign = np.resize(np.array([-1, 0, 1], np.int8), (3, 128))
     mask = (np.indices(sign.shape)[1] % 2 == 0) & (sign != 0)
-    a, b = pack_planes(sign, mask)
+    a, b = packed_weights(sign, mask)
     layer = PackedFiveValueLinear(128, 3, bias=True)
     layer.base_q, layer.residual_q = mx.array(a), mx.array(b)
     lo = np.array([0.1, 0.2, 0.3], np.float16)
@@ -346,44 +149,6 @@ def test_packed_forward_matches_independent_dense_math():
     )
 
 
-@pytest.mark.parametrize("kind,bits", [("int6", 6), ("int8", 8)])
-def test_integer_tables(kind, bits):
-    q = np.array([-31, -1, 0, 31, -2, 2, 3, 4], dtype=np.int8)
-    if bits == 6:
-        u = (q.astype(np.int32) + 32).astype(np.uint32).reshape(-1, 4)
-        words = np.sum(u << np.array([0, 6, 12, 18]), axis=1)
-        body = (
-            ((words[:, None] >> np.array([0, 8, 16])) & 255).astype(np.uint8).tobytes()
-        )
-    else:
-        body = q.tobytes()
-    blob = body + np.array([0.5, 0.25], dtype="<f2").tobytes()
-    np.testing.assert_array_equal(
-        dense_record(blob, (2, 4), kind), q.reshape(2, 4) * [[0.5], [0.25]]
-    )
-
-
-@pytest.mark.parametrize(
-    "mutation", ["truncated", "trailing", "duplicate", "bad_format", "huge_header"]
-)
-def test_invalid_container_rejected(tmp_path, mutation):
-    path = tmp_path / "model.fermion"
-    row = ("x", "fp16", (1,), np.float16(1).tobytes())
-    write_container(path, [row, row] if mutation == "duplicate" else [row])
-    data = path.read_bytes()
-    if mutation == "truncated":
-        data = data[:-1]
-    elif mutation == "trailing":
-        data += b"x"
-    elif mutation == "bad_format":
-        data = data.replace(FORMAT.encode(), b"x" * len(FORMAT))
-    elif mutation == "huge_header":
-        data = (2**63).to_bytes(8, "little") + data[8:]
-    path.write_bytes(data)
-    with pytest.raises(ValueError):
-        list(records(path))
-
-
 def test_model_config_round_trip_and_nested_types(checkpoint):
     path = checkpoint
     raw = json.loads((path / "config.json").read_text())
@@ -396,7 +161,6 @@ def test_model_config_round_trip_and_nested_types(checkpoint):
         assert getattr(config, name) == getattr(parakeet, name)
     assert config.model_type == "phonon2"
     assert config.model_path == str(path)
-    assert config.phonon2_conversion_version == raw["phonon2_conversion_version"]
     assert config.phonon2_modules == raw["phonon2_modules"]
     assert ModelConfig.from_dict(asdict(config)) == config
     assert json.dumps(raw, sort_keys=True) == original
@@ -454,40 +218,14 @@ def test_chunk_streaming_uses_instance_frontend(checkpoint):
 
 
 def test_missing_projection_and_wrong_shape_rejected(checkpoint):
-    converted = checkpoint
-    config = json.loads((converted / "config.json").read_text())
+    config = json.loads((checkpoint / "config.json").read_text())
     config["phonon2_modules"].pop()
     with pytest.raises(ValueError, match="every encoder"):
         Model(ModelConfig.from_dict(config))
-    config = json.loads((converted / "config.json").read_text())
+    config = json.loads((checkpoint / "config.json").read_text())
     config["phonon2_modules"][0]["shape"] = [1, 128]
     with pytest.raises(ValueError, match="shape mismatch"):
         Model(ModelConfig.from_dict(config))
-
-
-@pytest.mark.parametrize("bad", ["base3", "palette", "width", "zero_high"])
-def test_malformed_packed_record_rejected(tmp_path, bad):
-    path = tmp_path / "model.fermion"
-    sign = np.ones((1, 128), np.int8)
-    mask = np.zeros_like(sign, dtype=bool)
-    blob = pack_record(sign, mask, np.array([0.1]), np.array([0.3]))
-    if bad == "base3":
-        blob = b"\xff" + blob[1:]
-    elif bad == "palette":
-        blob = blob[:-2] + np.float16(-1).tobytes()
-    elif bad == "width":
-        with pytest.raises(ValueError):
-            pack_planes(sign[:, :127], mask[:, :127])
-        return
-    else:
-        with pytest.raises(ValueError):
-            pack_planes(np.zeros_like(sign), np.ones_like(mask))
-        return
-    write_container(
-        path, [("encoder.layers.0.self_attn.q_proj", "five_value", sign.shape, blob)]
-    )
-    with pytest.raises(ValueError):
-        list(records(path))
 
 
 @pytest.mark.parametrize("samples", [1, 319])
@@ -510,47 +248,6 @@ def test_short_audio_and_chunk_tail(checkpoint, samples):
     )
     assert chunks[-1].is_final
     assert chunks[-1].audio_position == (8000 + samples) / 16000
-
-
-def test_converter_refuses_overwrite_and_source(source_checkpoint, checkpoint):
-    original = (checkpoint / "model.safetensors").read_bytes()
-    with pytest.raises(ValueError, match="not an empty directory"):
-        convert(str(source_checkpoint), str(checkpoint))
-    assert (checkpoint / "model.safetensors").read_bytes() == original
-    with pytest.raises(ValueError, match="differ"):
-        convert(str(source_checkpoint), str(source_checkpoint))
-
-
-def test_converter_accepts_empty_destination(source_checkpoint, tmp_path):
-    output = tmp_path / "empty"
-    output.mkdir()
-    assert isinstance(load(convert(str(source_checkpoint), str(output))), Model)
-
-
-@pytest.mark.parametrize(
-    "artifact",
-    [None, [], "bad", {"filename": None}, {"filename": "x.bps.tar.zst", "sha256": 3}],
-)
-def test_invalid_artifact_metadata(source_checkpoint, tmp_path, artifact):
-    (source_checkpoint / "config.json").write_text(json.dumps({"artifact": artifact}))
-    with pytest.raises(ValueError, match="artifact metadata"):
-        convert(str(source_checkpoint), str(tmp_path / "failed"))
-
-
-@pytest.mark.parametrize("header", [[], {"format": FORMAT, "index": [None]}])
-def test_malformed_json_container_structure(tmp_path, header):
-    blob = json.dumps(header).encode()
-    path = tmp_path / "model.fermion"
-    path.write_bytes(len(blob).to_bytes(8, "little") + blob)
-    with pytest.raises(ValueError, match="Phonon-2"):
-        list(records(path))
-
-
-@pytest.mark.parametrize("manifest", ["broken json", "[]", "null"])
-def test_invalid_source_manifest(source_checkpoint, tmp_path, manifest):
-    (source_checkpoint / "packed_manifest.json").write_text(manifest)
-    with pytest.raises(ValueError):
-        convert(str(source_checkpoint), str(tmp_path / "failed"))
 
 
 @pytest.mark.parametrize("suffix", ["base_q", "residual_q", "row_lo", "row_hi"])
@@ -586,25 +283,8 @@ def test_generic_conversion_guard(checkpoint):
         == "phonon2"
     )
     config = json.loads((checkpoint / "config.json").read_text())
-    with pytest.raises(ValueError, match="phonon2.convert"):
+    with pytest.raises(ValueError, match="mlx-community/Phonon-2"):
         prepare_config(config, checkpoint)
-
-
-def test_archive_notices_survive_conversion(source_checkpoint, tmp_path):
-    for name in (
-        "NOTICE",
-        "LICENSE-WEIGHTS-CC-BY-4.0.txt",
-        "LICENSE-CODE-Apache-2.0.txt",
-    ):
-        (source_checkpoint / name).write_text("archive-only attribution")
-    root = archive_checkpoint(source_checkpoint, tmp_path / "snapshot")
-    output = convert(str(root), str(tmp_path / "mlx"))
-    for name in (
-        "NOTICE",
-        "LICENSE-WEIGHTS-CC-BY-4.0.txt",
-        "LICENSE-CODE-Apache-2.0.txt",
-    ):
-        assert (output / name).read_text() == "archive-only attribution"
 
 
 @pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16, mx.float32])

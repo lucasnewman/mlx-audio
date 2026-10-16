@@ -439,8 +439,8 @@ result = model.generate("audio.wav", chunk_duration=30, overlap_duration=2)
 print(result.text)
 ```
 
-See the [Phonon-2 README](mlx_audio/stt/models/phonon2/README.md) for timestamps,
-chunk streaming, and optional conversion.
+See the [Phonon-2 README](mlx_audio/stt/models/phonon2/README.md) for timestamps
+and chunk streaming.
 
 ### Parakeet (Multilingual STT)
 

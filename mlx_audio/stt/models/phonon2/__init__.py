@@ -7,9 +7,8 @@ __all__ = ["Model", "ModelConfig"]
 
 
 def prepare_config(config, model_path):
-    # The generic converter casts every tensor, including packed uint32 codes,
-    # and may requantize tables. Use the lossless model-specific converter.
+    # Generic conversion would cast packed codes and may requantize row palettes.
     raise ValueError(
-        "Use python -m mlx_audio.stt.models.phonon2.convert to convert Phonon-2 "
-        "without casting or requantizing its packed codes and row palettes."
+        "Phonon-2 conversion and requantization are unsupported. "
+        "Load mlx-community/Phonon-2 directly with mlx_audio.stt.load."
     )

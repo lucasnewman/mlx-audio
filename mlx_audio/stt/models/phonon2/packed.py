@@ -1,12 +1,11 @@
 """Exact five-value encoder weights as two native MLX affine 2-bit planes.
 
 Adapted from fermion-research 0.2.11, Copyright 2026 Fermion Research,
-Apache-2.0. Native preparation replaced with NumPy/MLX.
+Apache-2.0. Packed planes execute with MLX quantized matrix multiplication.
 """
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 
 GROUP_SIZE = 128
 ENCODER_SUFFIXES = (
@@ -22,30 +21,6 @@ ENCODER_SUFFIXES = (
     "conv.pointwise_conv1",
     "conv.pointwise_conv2",
 )
-
-
-def pack_planes(sign, is_hi):
-    sign, is_hi = np.asarray(sign), np.asarray(is_hi)
-    if (
-        sign.ndim != 2
-        or sign.shape != is_hi.shape
-        or sign.shape[1] % GROUP_SIZE
-        or np.any((sign < -1) | (sign > 1))
-        or np.any(sign != np.floor(sign))
-        or np.any((is_hi != 0) & (is_hi != 1))
-        or np.any(is_hi & (sign == 0))
-    ):
-        raise ValueError("Invalid Phonon-2 five-value record")
-    sign = sign.astype(np.int8)
-    shifts = 2 * np.arange(16, dtype=np.uint32)
-
-    def pack(codes):
-        return np.bitwise_or.reduce(
-            codes.astype(np.uint32).reshape(sign.shape[0], -1, 16) << shifts,
-            axis=-1,
-        )
-
-    return pack(sign + 1), pack(sign * is_hi + 1)
 
 
 class PackedFiveValueLinear(nn.Module):

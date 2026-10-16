@@ -29,24 +29,11 @@ mlx_audio.stt.generate \
 `stream=True` or CLI `--stream` emits overlapping chunks from a recording.
 Live-input streaming, translation, diarization, and hotword biasing are not supported.
 
-## Optional conversion
-
-To reproduce the MLX checkpoint from the official weights:
-
-```bash
-python -m mlx_audio.stt.models.phonon2.convert \
-  --hf-path FermionResearch/Phonon-2 --mlx-path ./phonon2-mlx
-```
-
-The converter verifies the source archive and extracted files, preserves the
-five-value codes and fp16 row palettes, and writes dense tables in bf16.
-`--hf-path` also accepts local snapshots or unpacked official directories.
-Use `--revision` to pin a remote source and `--force-download` to refresh it.
-Output directories must be empty or absent. Load the result with
-`load("./phonon2-mlx")`. Generic conversion is disabled to protect packed weights.
+Generic conversion and requantization are unsupported because they can alter
+packed codes and row palettes. Load the published MLX checkpoint directly.
 
 ## Attribution
 
-Parsing, weight mapping, and packing are adapted from fermion-research 0.2.11
+Packed layer integration is adapted from fermion-research 0.2.11
 (Copyright 2026 Fermion Research, Apache-2.0). Weights derive from NVIDIA
 Parakeet TDT 0.6B v3 and are CC-BY-4.0.
