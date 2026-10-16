@@ -48,6 +48,5 @@ Output directories must be empty or absent. Load the result with
 ## Attribution
 
 Parsing, weight mapping, and packing are adapted from fermion-research 0.2.11
-(Copyright 2026 Fermion Research, Apache-2.0). License and notices are packaged
-in `mlx_audio/licenses/`. Weights derive from NVIDIA Parakeet TDT 0.6B v3
-and are CC-BY-4.0. Preserve the included notices when redistributing.
+(Copyright 2026 Fermion Research, Apache-2.0). Weights derive from NVIDIA
+Parakeet TDT 0.6B v3 and are CC-BY-4.0.

@@ -1,7 +1,7 @@
 """Phonon-2 on the standard Parakeet graph, with exact packed encoder layers.
 
 Packed layer integration adapted from fermion-research 0.2.11, Copyright
-2026 Fermion Research, Apache-2.0. See mlx_audio/licenses/NOTICE.
+2026 Fermion Research, Apache-2.0.
 """
 
 from os import PathLike

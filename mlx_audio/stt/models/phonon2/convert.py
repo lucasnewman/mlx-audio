@@ -8,7 +8,7 @@ remaining tables use bf16, matching Fermion's packed MLX runtime.
 
 Container parsing adapted from fermion-research 0.2.11, Copyright 2026
 Fermion Research, Apache-2.0. Streaming records and explicit format checks
-added. See mlx_audio/licenses/NOTICE.
+added.
 """
 
 import argparse
