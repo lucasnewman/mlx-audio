@@ -1,0 +1,21 @@
+Phonon-2 MLX Audio integration
+
+Portions adapted from fermion-research 0.2.11:
+Copyright 2026 Fermion Research
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+https://pypi.org/project/fermion-research/0.2.11/
+
+Source components:
+  fermion/_speech/_engine_phonon2/fermion_container.py
+  fermion/_speech/_engine_phonon2/hf_to_mlx_parakeet.py
+  fermion/_speech/_engine_phonon2/packed_runtime.py
+  fermion/_speech/_engine_phonon2/fast_decode.py
+
+Changes: streaming container parsing and explicit validation, NumPy/MLX
+weight preparation instead of native binaries, standard loader/cache
+integration, and a model subclass instead of runtime method replacement.
+
+Model weights are not included in this package. Phonon-2 weights derive from
+nvidia/parakeet-tdt-0.6b-v3 (Copyright NVIDIA Corporation) and are CC-BY-4.0.
+Their own license and NOTICE are distributed by FermionResearch/Phonon-2:
+https://huggingface.co/FermionResearch/Phonon-2/blob/main/NOTICE

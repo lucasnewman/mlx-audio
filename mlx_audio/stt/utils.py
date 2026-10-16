@@ -91,6 +91,8 @@ MODEL_REMAPPING = {
     "vibevoice": "vibevoice_asr",
     "qwen3_asr": "qwen3_asr",
     "phonon": "phonon",
+    "phonon2": "phonon2",
+    "parakeet_tdt_five_value": "phonon2",
     "moss_transcribe_diarize": "moss_transcribe_diarize",
     "fun_asr_nano": "fun_asr_nano",
     "canary": "canary",
@@ -168,6 +170,25 @@ def load_model(
         )
 
     config = load_config(model_path)
+    from mlx_audio.stt.models.phonon2.transport import is_phonon2_model
+    from mlx_audio.stt.models.phonon2.transport import (
+        prepare_model_path as prepare_phonon2,
+    )
+
+    if is_phonon2_model(model_path, config):
+        remote_source = (
+            source
+            if isinstance(source, str) and not Path(source).expanduser().exists()
+            else None
+        )
+        model_path = prepare_phonon2(
+            model_path,
+            source=remote_source,
+            revision=kwargs.get("revision"),
+            force_download=kwargs.get("force_download", False),
+        )
+        config = load_config(model_path)
+        kwargs["model_type"] = "phonon2"
     # Resolve the HF alias here so the shared loader recognizes Parakeet even
     # when a local checkpoint directory has an unrelated model family name.
     source_model_type = kwargs.get("model_type") or config.get("model_type")
