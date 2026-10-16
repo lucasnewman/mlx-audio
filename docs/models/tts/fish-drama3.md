@@ -14,7 +14,7 @@ python -m mlx_audio.tts.models.fish_drama3.convert \
 
 By default every weight stays in bfloat16, so the numerics match the reference implementation; that comes to about 67 GB. `--expert-bits`, `--dense-bits` and `--tower-bits` quantize the routed experts, the dense projections and the audio tower. Reading `codec.pth` needs PyTorch.
 
-[`mlx-community/fish-audio-drama-3-4bit`](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) is converted with `--expert-bits 4 --dense-bits 8 --tower-bits 8`, about 22 GB. On an M3 Max it generates a frame (46 ms of audio) in about 22 ms, roughly twice real time, and peaks at about 26 GB of memory. The bfloat16 checkpoint runs at about 1.4 times real time and peaks at about 74 GB.
+[`mlx-community/fish-audio-drama-3-4bit`](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) is converted with `--expert-bits 4 --dense-bits 8 --tower-bits 8`, about 22 GB. On an M3 Max it generates a frame (46 ms of audio) in about 22 ms, roughly twice real time, and peaks at about 26 GB of memory. The bfloat16 checkpoint runs at about 1.4 times real time and peaks at about 74 GB. [`mlx-community/fish-audio-drama-3-8bit`](https://huggingface.co/mlx-community/fish-audio-drama-3-8bit) is converted with `--expert-bits 8` alone, so everything but the routed experts stays in bfloat16: about 42 GB, peaking at about 49 GB, which fits a 64 GB Mac.
 
 ### Choosing expert bits
 
@@ -29,6 +29,14 @@ The routed experts hold most of the weights, so `--expert-bits` sets the size. K
 Measured on 20 voice-cloned English clips (Whisper WER, speaker similarity, UTMOS) and a blind listening test.
 
 Without `--dense-bits` and `--tower-bits`, the dense projections and the audio tower stay in bfloat16. With 4-bit experts that brings the codebook heads slightly closer to the PyTorch reference, but needs about 2.3 GB more peak memory and runs about a quarter slower on an M3 Max.
+
+Three more options give finer control. They only change how the checkpoint is written; the result loads like any other.
+
+- `--head-bits` quantizes the tower's nine codebook heads separately from the rest of the tower. It defaults to `--tower-bits`; `0` keeps the heads in bfloat16.
+- `--expert-group-size` sets the experts' quantization group size: 32, 64 (the default) or 128.
+- `--expert-bits-map` takes a JSON file that maps layer index to expert bits, such as `{"38": 4, "39": 4}`. Layers it does not list use `--expert-bits`.
+
+For example, [`fcmeyer/drama-3-MLX-3bit-HQ`](https://huggingface.co/fcmeyer/drama-3-MLX-3bit-HQ) uses `--expert-bits 3 --dense-bits 8 --tower-bits 8 --head-bits 0` with a map that keeps the experts of 15 layers at 4 bits.
 
 ## Usage
 
