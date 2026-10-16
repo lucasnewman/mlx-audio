@@ -692,6 +692,15 @@ class TestAudioIOFormatDetection:
             pytest.param("clip.aac", ["-f", "adts"], id="adts"),
             pytest.param("clip.flac", [], id="flac"),
             pytest.param("clip.ogg", ["-c:a", "flac"], id="ogg"),
+            pytest.param(
+                "clip.ogg",
+                ["-c:a", "libvorbis"],
+                id="vorbis",
+                marks=pytest.mark.skipif(
+                    not LIBVORBIS_AVAILABLE, reason="ffmpeg has no libvorbis encoder"
+                ),
+            ),
+            pytest.param("clip.opus", ["-c:a", "libopus"], id="opus"),
         ],
     )
     def test_two_id3_tags(self, tmp_path, name, codec_args):
@@ -744,7 +753,7 @@ class TestAudioIOFormatDetection:
         riff = _encode_with_ffmpeg(tmp_path / "riff.wav", "-c:a", "libmp3lame")
         assert riff.read_bytes()[:4] == b"RIFF"
 
-        for suffix in (".mp3", ".m4a"):  # miniaudio's MP3 decoder, then ffmpeg
+        for suffix in (".mp3", ".m4a", ".ogg"):
             path = tmp_path / f"clip{suffix}"
             path.write_bytes(riff.read_bytes())
             data, rate = read(path)

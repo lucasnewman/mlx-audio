@@ -120,6 +120,7 @@ def _decode_ffmpeg(
     sample_rate: Optional[int] = None,
     nchannels: Optional[int] = None,
     duration: Optional[float] = None,
+    input_format: Optional[str] = None,
 ) -> Tuple[np.ndarray, int, int]:
     """Decode audio using ffmpeg (for formats not supported by miniaudio like M4A).
 
@@ -128,6 +129,7 @@ def _decode_ffmpeg(
         sample_rate: Optional target sample rate. Preserves the input rate when omitted.
         nchannels: Optional target channel count. Preserves the input channels when omitted.
         duration: Optional number of seconds to decode from the start.
+        input_format: Optional demuxer hint when automatic probing fails.
 
     Returns:
         Tuple of (samples as int16 numpy array, sample_rate, nchannels).
@@ -167,6 +169,7 @@ def _decode_ffmpeg(
                 sample_rate=sample_rate,
                 nchannels=nchannels,
                 duration=duration,
+                input_format=input_format,
             )
         finally:
             os.unlink(tmp_path)
@@ -185,6 +188,13 @@ def _decode_ffmpeg(
     probe_result = subprocess.run(
         probe_cmd, stdin=subprocess.DEVNULL, capture_output=True
     )
+    input_options = []
+    if probe_result.returncode != 0 and input_format is not None:
+        input_options = ["-f", input_format]
+        probe_cmd[-1:-1] = input_options
+        probe_result = subprocess.run(
+            probe_cmd, stdin=subprocess.DEVNULL, capture_output=True
+        )
 
     if probe_result.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {probe_result.stderr.decode()}")
@@ -204,6 +214,7 @@ def _decode_ffmpeg(
         ffmpeg_path,
         "-v",
         "error",
+        *input_options,
         "-i",
         str(input_data),
         "-f",
@@ -384,8 +395,6 @@ def read(
     if fallback is None or _backend(fallback) == _backend(fmt):
         return decode(fmt)
 
-    # The extension used to pick the decoder, and a buffer that starts with an
-    # ID3 tag was read as MP3. Try that when the detected decoder fails.
     import miniaudio
 
     decode_errors = (RuntimeError, miniaudio.DecodeError)
@@ -421,6 +430,7 @@ def _read_as(
             sample_rate=sample_rate,
             nchannels=nchannels,
             duration=duration,
+            input_format="ogg" if fmt == "ogg" else None,
         )
     else:
         # Use miniaudio for other formats
