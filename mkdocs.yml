@@ -101,6 +101,7 @@ nav:
       - Whisper: models/stt/whisper.md
       - Parakeet: models/stt/parakeet.md
       - Phonon-1: models/stt/phonon.md
+      - Phonon-2: models/stt/phonon2.md
       - Voxtral Realtime: models/stt/voxtral-realtime.md
       - VibeVoice ASR: models/stt/vibevoice-asr.md
       - Fun-ASR-Nano: models/stt/fun-asr-nano.md

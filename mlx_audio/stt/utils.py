@@ -91,6 +91,7 @@ MODEL_REMAPPING = {
     "vibevoice": "vibevoice_asr",
     "qwen3_asr": "qwen3_asr",
     "phonon": "phonon",
+    "phonon2": "phonon2",
     "moss_transcribe_diarize": "moss_transcribe_diarize",
     "fun_asr_nano": "fun_asr_nano",
     "canary": "canary",
