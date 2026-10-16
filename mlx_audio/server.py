@@ -441,13 +441,7 @@ _SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "repetition_penalty")
 
 
 def _resolve_sampling_params(model, speech_request: SpeechRequest) -> dict[str, Any]:
-    """Return the sampling parameters to use for a TTS request.
-
-    Values the client sent always win. For omitted fields, a model that loaded
-    its checkpoint's generation config (``model.generate_config``, e.g.
-    Qwen3-TTS) supplies the value; otherwise the ``SpeechRequest`` default
-    applies, as before.
-    """
+    """Use explicit request values, then model config, then request defaults."""
     params = {name: getattr(speech_request, name) for name in _SAMPLING_FIELDS}
     generate_config = getattr(model, "generate_config", None)
     if isinstance(generate_config, dict):
