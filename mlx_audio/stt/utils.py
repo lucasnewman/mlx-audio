@@ -117,6 +117,7 @@ def load_audio(
     sr: int = SAMPLE_RATE,
     from_stdin=False,
     dtype: mx.Dtype = mx.float32,
+    duration: Optional[float] = None,
 ):
     """
     Open an audio file and read as mono waveform, resampling as necessary
@@ -129,13 +130,18 @@ def load_audio(
     sr: int
         The sample rate to resample the audio if necessary
 
+    duration: float, optional
+        Only read this many seconds from the start of the file
+
     Returns
     -------
     A NumPy array containing the audio waveform, in float32 dtype.
     """
     from mlx_audio.audio_io import read as audio_read
 
-    audio, _ = audio_read(file, dtype="float32", sample_rate=sr, nchannels=1)
+    audio, _ = audio_read(
+        file, dtype="float32", sample_rate=sr, nchannels=1, duration=duration
+    )
     return mx.array(audio, dtype=dtype)
 
 

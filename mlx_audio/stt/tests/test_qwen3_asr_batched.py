@@ -294,6 +294,40 @@ class TestPerChunkLanguage(unittest.TestCase):
             [("", "None"), ("hello", "English"), ("", "English")],
         )
 
+    def test_streaming_finalized_text_keeps_chunk_language(self):
+        for language, tokens, expected_language in (
+            (None, [1, 2, 3, 4], "English"),
+            ("French", [4], "French"),
+        ):
+            with self.subTest(language=language):
+                model = _make_minimal_model()
+                model._tokenizer.clean_up_tokenization_spaces = True
+                pieces = {
+                    1: "language ",
+                    2: "English",
+                    3: "<asr_text>",
+                    4: "hello ",
+                }
+                model._tokenizer.decode = lambda ids, skip_special_tokens=True: "".join(
+                    pieces[int(i)] for i in ids
+                )
+                model.stream_generate = Mock(
+                    return_value=iter((mx.array(token), None) for token in tokens)
+                )
+
+                results = list(
+                    model.stream_transcribe(np.zeros(16000), language=language)
+                )
+
+                self.assertEqual(
+                    [(result.text, result.language) for result in results],
+                    [
+                        ("hello", expected_language),
+                        (" ", expected_language),
+                        ("", expected_language),
+                    ],
+                )
+
 
 class TestListInputGeneration(unittest.TestCase):
     def make_model(self):
