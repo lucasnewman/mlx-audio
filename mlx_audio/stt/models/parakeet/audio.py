@@ -20,7 +20,6 @@ class PreprocessArgs:
     preemph: float = 0.97
     log_zero_guard_value: float = 2**-24
     normalize_valid_frames: bool = False
-    compute_in_float32: bool = False
 
     @property
     def win_length(self) -> int:
@@ -33,19 +32,10 @@ class PreprocessArgs:
 
 def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     original_dtype = x.dtype
-    if args.compute_in_float32:
-        if x.ndim != 1 or x.size == 0:
-            raise ValueError("Expected a nonempty mono audio waveform")
-        # A short final chunk still contains valid audio. Pad it so the encoder
-        # receives at least two frames, without changing ordinary recordings.
-        minimum = 2 * args.hop_length
-        if x.size < minimum:
-            x = mx.pad(x, (0, minimum - x.size))
     valid_frames = x.shape[-1] // args.hop_length
     if args.normalize_valid_frames:
         if valid_frames < 2:
             raise ValueError("Parakeet Redux requires at least 320 audio samples.")
-    if args.normalize_valid_frames or args.compute_in_float32:
         x = x.astype(mx.float32)
 
     if args.pad_to > 0:
@@ -77,7 +67,7 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
 
     x = stft(x, args.n_fft, args.hop_length, args.n_fft, window, pad_mode="constant")
     x = mx.square(mx.abs(x))
-    if not (args.normalize_valid_frames or args.compute_in_float32):
+    if not args.normalize_valid_frames:
         x = x.astype(original_dtype)
     filters = mel_filters(
         args.sample_rate, args.n_fft, args.features, norm="slaney", mel_scale="slaney"

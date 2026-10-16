@@ -5,6 +5,7 @@ import io
 import json
 import re
 import tarfile
+from dataclasses import asdict
 
 import mlx.core as mx
 import numpy as np
@@ -13,17 +14,15 @@ from mlx.utils import tree_flatten
 
 from mlx_audio.registry import classify_model
 from mlx_audio.stt import load
-from mlx_audio.stt import utils as stt_utils
 from mlx_audio.stt.models.parakeet.audio import PreprocessArgs, log_mel_spectrogram
 from mlx_audio.stt.models.parakeet.parakeet import ParakeetTDT, ParakeetTDTArgs
-from mlx_audio.stt.models.phonon2 import Model
-from mlx_audio.stt.models.phonon2.container import FORMAT, dense_record, records
+from mlx_audio.stt.models.phonon2 import Model, ModelConfig
+from mlx_audio.stt.models.phonon2.convert import FORMAT, convert, dense_record, records
 from mlx_audio.stt.models.phonon2.packed import (
     ENCODER_SUFFIXES,
     PackedFiveValueLinear,
     pack_planes,
 )
-from mlx_audio.stt.models.phonon2.transport import prepare_model_path
 from mlx_audio.utils import from_dict
 
 
@@ -89,8 +88,7 @@ def hf_name(name, value):
 
 
 @pytest.fixture
-def checkpoint(tmp_path, monkeypatch):
-    monkeypatch.setenv("MLX_AUDIO_CACHE_DIR", str(tmp_path / "cache"))
+def source_checkpoint(tmp_path):
     config = {
         "preprocessor": dict(
             sample_rate=16000,
@@ -185,6 +183,11 @@ def checkpoint(tmp_path, monkeypatch):
     return source
 
 
+@pytest.fixture
+def checkpoint(source_checkpoint, tmp_path):
+    return convert(str(source_checkpoint), str(tmp_path / "mlx-model"))
+
+
 def archive_checkpoint(source, root):
     import zstandard
 
@@ -193,7 +196,11 @@ def archive_checkpoint(source, root):
         name: (source / name).read_bytes()
         for name in ("config.json", "model.fermion", "packed_manifest.json")
     }
-    for name in ("NOTICE", "LICENSE-WEIGHTS-CC-BY-4.0.txt"):
+    for name in (
+        "NOTICE",
+        "LICENSE-WEIGHTS-CC-BY-4.0.txt",
+        "LICENSE-CODE-Apache-2.0.txt",
+    ):
         if (source / name).is_file():
             files[name] = (source / name).read_bytes()
     manifest = {
@@ -233,34 +240,41 @@ def archive_checkpoint(source, root):
     return root
 
 
-def test_standard_local_loader_and_cache(checkpoint, monkeypatch):
+def test_standard_local_loader(checkpoint, monkeypatch):
+    import importlib
+
     from mlx_audio.stt.models.parakeet import parakeet
 
+    converter = importlib.import_module("mlx_audio.stt.models.phonon2.convert")
+
+    def unexpected_conversion(*args, **kwargs):
+        pytest.fail("Runtime loading must not extract or convert model archives")
+
+    monkeypatch.setattr(converter, "unpack_source", unexpected_conversion)
     original_frontend = parakeet.log_mel_spectrogram
     model = load(checkpoint)
     assert isinstance(model, Model)
+    assert isinstance(model.config, ModelConfig)
     assert parakeet.log_mel_spectrogram is original_frontend
     assert len(model._packed_modules) == 11
-    assert model.preprocessor_config.compute_in_float32
-    assert classify_model("parakeet_tdt_five_value") == "stt"
-    result = model.generate(mx.zeros(16000))
-    assert result.text == ""
-    materialized = prepare_model_path(checkpoint)
-    mtime = (materialized / "model.safetensors").stat().st_mtime_ns
+    assert classify_model("phonon2") == "stt"
+    assert model.generate(mx.zeros(16000)).text == ""
+    config = json.loads((checkpoint / "config.json").read_text())
+    assert PreprocessArgs(**config["preprocessor"]) == model.preprocessor_config
     again = load(str(checkpoint), lazy=True)
     assert isinstance(again, Model)
-    assert (materialized / "model.safetensors").stat().st_mtime_ns == mtime
-    assert isinstance(load(materialized), Model)
-    weights = mx.load(str(materialized / "model.safetensors"))
+    weights = mx.load(str(checkpoint / "model.safetensors"))
     weights.pop(next(iter(weights)))
     with pytest.raises(ValueError):
         again.load_weights(list(weights.items()), strict=False)
 
 
-def test_hub_loader_download_forwards_revision(checkpoint, tmp_path, monkeypatch):
-    from mlx_audio.stt.models.phonon2 import transport
+def test_hub_converter_forwards_revision(source_checkpoint, tmp_path, monkeypatch):
+    import importlib
 
-    root = archive_checkpoint(checkpoint, tmp_path / "snapshot")
+    converter = importlib.import_module("mlx_audio.stt.models.phonon2.convert")
+
+    root = archive_checkpoint(source_checkpoint, tmp_path / "snapshot")
     archive = root / "phonon-2.bps.tar.zst"
     download = tmp_path / "download.bps.tar.zst"
     archive.rename(download)
@@ -268,17 +282,23 @@ def test_hub_loader_download_forwards_revision(checkpoint, tmp_path, monkeypatch
 
     def get_path(repo, **kwargs):
         assert repo == "FermionResearch/Phonon-2"
+        assert kwargs["revision"] == "pinned"
+        assert kwargs["force_download"]
         return root
 
     def fetch(repo, filename, **kwargs):
         calls.append((repo, filename, kwargs))
         return str(download)
 
-    monkeypatch.setattr(stt_utils, "get_model_path", get_path)
-    monkeypatch.setattr(transport, "hf_hub_download", fetch)
-    assert isinstance(
-        load("FermionResearch/Phonon-2", revision="pinned", force_download=True), Model
+    monkeypatch.setattr(converter, "get_model_path", get_path)
+    monkeypatch.setattr(converter, "hf_hub_download", fetch)
+    output = convert(
+        "FermionResearch/Phonon-2",
+        str(tmp_path / "mlx"),
+        revision="pinned",
+        force_download=True,
     )
+    assert isinstance(load(output), Model)
     assert calls == [
         (
             "FermionResearch/Phonon-2",
@@ -288,15 +308,22 @@ def test_hub_loader_download_forwards_revision(checkpoint, tmp_path, monkeypatch
     ]
 
 
-def test_archive_checksum_and_cache_repair(checkpoint, tmp_path):
-    root = archive_checkpoint(checkpoint, tmp_path / "snapshot")
-    materialized = prepare_model_path(root)
-    (materialized / "model.safetensors").write_bytes(b"corrupt")
-    assert isinstance(load(root), Model)
+def test_archive_checksum_and_source_preserved(source_checkpoint, tmp_path):
+    root = archive_checkpoint(source_checkpoint, tmp_path / "snapshot")
+    source_hashes = {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()
+    }
+    output = convert(str(root), str(tmp_path / "mlx"))
+    assert isinstance(load(output), Model)
+    assert source_hashes == {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir()
+    }
     archive = root / "phonon-2.bps.tar.zst"
     archive.write_bytes(archive.read_bytes() + b"corrupt")
+    target = tmp_path / "failed"
     with pytest.raises(ValueError, match="SHA-256"):
-        load(root)
+        convert(str(root), str(target))
+    assert not target.exists()
 
 
 def test_packed_forward_matches_independent_dense_math():
@@ -357,46 +384,62 @@ def test_invalid_container_rejected(tmp_path, mutation):
         list(records(path))
 
 
-def test_fp32_frontend_is_opt_in_and_finite():
-    args = PreprocessArgs(
-        16000, "per_feature", 0.025, 0.01, "hann", 8, 512, 0, compute_in_float32=True
-    )
-    x = mx.random.normal((36 * 16000,)).astype(mx.float16)
-    mel = log_mel_spectrogram(x, args)
-    ref_args = PreprocessArgs(16000, "per_feature", 0.025, 0.01, "hann", 8, 512, 0)
-    reference = log_mel_spectrogram(x.astype(mx.float32), ref_args).astype(mx.float16)
-    assert bool(mx.all(mx.isfinite(mel)))
-    np.testing.assert_array_equal(np.asarray(mel), np.asarray(reference))
-    assert not ref_args.compute_in_float32
-    with pytest.raises(ValueError, match="nonempty"):
-        log_mel_spectrogram(mx.zeros(0), args)
+def test_model_config_round_trip_and_nested_types(checkpoint):
+    path = checkpoint
+    raw = json.loads((path / "config.json").read_text())
+    raw["model_path"] = str(path)
+    raw["unrelated_metadata"] = "ignored"
+    original = json.dumps(raw, sort_keys=True)
+    config = ModelConfig.from_dict(raw)
+    parakeet = from_dict(ParakeetTDTArgs, raw)
+    for name in ("preprocessor", "encoder", "decoder", "joint", "decoding"):
+        assert getattr(config, name) == getattr(parakeet, name)
+    assert config.model_type == "phonon2"
+    assert config.model_path == str(path)
+    assert config.phonon2_conversion_version == raw["phonon2_conversion_version"]
+    assert config.phonon2_modules == raw["phonon2_modules"]
+    assert ModelConfig.from_dict(asdict(config)) == config
+    assert json.dumps(raw, sort_keys=True) == original
 
 
-def test_decoder_matches_stock_control_flow_including_batch_and_padding(checkpoint):
+def test_inherited_decoder_handles_batch_lengths_and_blank_state(checkpoint):
     model = load(checkpoint)
-    # Frame 0 emits blank and must preserve LSTM state. A partial final
-    # 16-step block must not emit tokens from clamped frames past the end.
+    assert Model.decode is ParakeetTDT.decode
     model.encoder = lambda mel: (
         mx.array([[[0.0], [1.0], [1.0]], [[0.0], [1.0], [1.0]]]),
         mx.array([3, 2]),
     )
+    states = []
 
     def step(feature, token, h, c):
+        states.append(int(h[0, 0, 0]))
         pred = mx.where(feature[0, 0, 0] == 0, model.blank_id, 3).astype(mx.int32)
         return pred, mx.array(1), h + 1, c + 1
 
-    model._tdt_step = step
-    model._compiled_tdt_step = mx.compile(step)
-    model._step = model._make_step()
-    mel = mx.zeros((2, 6, 8))
-    stock = ParakeetTDT.decode(model, mel)
-    compiled = model.decode(mel)
+    model._compiled_tdt_step = step
+    results = model.decode(mx.zeros((2, 6, 8)))
+    tokens = [[t for s in result.sentences for t in s.tokens] for result in results]
+    assert [len(batch) for batch in tokens] == [2, 1]
+    assert [[t.id for t in batch] for batch in tokens] == [[3, 3], [3]]
+    assert states == [0, 0, 1, 0, 0]
+    assert [[t.start for t in batch] for batch in tokens] == [[0.02, 0.04], [0.02]]
 
-    def tokens(result):
-        return [(t.id, t.start, t.duration) for s in result.sentences for t in s.tokens]
 
-    assert [tokens(r) for r in stock] == [tokens(r) for r in compiled]
-    assert [len(tokens(r)) for r in compiled] == [2, 1]
+def test_inherited_decoder_bounds_zero_duration_emissions(checkpoint):
+    model = load(checkpoint)
+    model.encoder = lambda mel: (mx.zeros((1, 2, 1)), mx.array([2]))
+    model._compiled_tdt_step = lambda feature, token, h, c: (
+        mx.array(3),
+        mx.array(0),
+        h + 1,
+        c + 1,
+    )
+    result = model.decode(mx.zeros((1, 6, 8)))[0]
+    tokens = [t for sentence in result.sentences for t in sentence.tokens]
+    assert len(tokens) == 2 * model.max_symbols
+    assert [t.start for t in tokens] == [0.0] * model.max_symbols + [
+        0.02
+    ] * model.max_symbols
 
 
 def test_chunk_streaming_uses_instance_frontend(checkpoint):
@@ -411,15 +454,15 @@ def test_chunk_streaming_uses_instance_frontend(checkpoint):
 
 
 def test_missing_projection_and_wrong_shape_rejected(checkpoint):
-    converted = prepare_model_path(checkpoint)
+    converted = checkpoint
     config = json.loads((converted / "config.json").read_text())
     config["phonon2_modules"].pop()
     with pytest.raises(ValueError, match="every encoder"):
-        Model(config)
+        Model(ModelConfig.from_dict(config))
     config = json.loads((converted / "config.json").read_text())
     config["phonon2_modules"][0]["shape"] = [1, 128]
     with pytest.raises(ValueError, match="shape mismatch"):
-        Model(config)
+        Model(ModelConfig.from_dict(config))
 
 
 @pytest.mark.parametrize("bad", ["base3", "palette", "width", "zero_high"])
@@ -469,21 +512,29 @@ def test_short_audio_and_chunk_tail(checkpoint, samples):
     assert chunks[-1].audio_position == (8000 + samples) / 16000
 
 
-@pytest.mark.parametrize("value", [[], None, "broken"])
-def test_corrupt_cache_marker_is_rebuilt(checkpoint, value):
-    converted = prepare_model_path(checkpoint)
-    (converted / "conversion.json").write_text(json.dumps(value))
-    assert isinstance(load(checkpoint), Model)
+def test_converter_refuses_overwrite_and_source(source_checkpoint, checkpoint):
+    original = (checkpoint / "model.safetensors").read_bytes()
+    with pytest.raises(ValueError, match="not an empty directory"):
+        convert(str(source_checkpoint), str(checkpoint))
+    assert (checkpoint / "model.safetensors").read_bytes() == original
+    with pytest.raises(ValueError, match="differ"):
+        convert(str(source_checkpoint), str(source_checkpoint))
+
+
+def test_converter_accepts_empty_destination(source_checkpoint, tmp_path):
+    output = tmp_path / "empty"
+    output.mkdir()
+    assert isinstance(load(convert(str(source_checkpoint), str(output))), Model)
 
 
 @pytest.mark.parametrize(
     "artifact",
     [None, [], "bad", {"filename": None}, {"filename": "x.bps.tar.zst", "sha256": 3}],
 )
-def test_invalid_artifact_metadata(checkpoint, artifact):
-    (checkpoint / "config.json").write_text(json.dumps({"artifact": artifact}))
+def test_invalid_artifact_metadata(source_checkpoint, tmp_path, artifact):
+    (source_checkpoint / "config.json").write_text(json.dumps({"artifact": artifact}))
     with pytest.raises(ValueError, match="artifact metadata"):
-        prepare_model_path(checkpoint)
+        convert(str(source_checkpoint), str(tmp_path / "failed"))
 
 
 @pytest.mark.parametrize("header", [[], {"format": FORMAT, "index": [None]}])
@@ -496,17 +547,16 @@ def test_malformed_json_container_structure(tmp_path, header):
 
 
 @pytest.mark.parametrize("manifest", ["broken json", "[]", "null"])
-def test_detector_ignores_invalid_unrelated_manifest(checkpoint, manifest):
-    from mlx_audio.stt.models.phonon2.transport import is_phonon2_model
-
-    (checkpoint / "packed_manifest.json").write_text(manifest)
-    assert not is_phonon2_model(checkpoint, {})
+def test_invalid_source_manifest(source_checkpoint, tmp_path, manifest):
+    (source_checkpoint / "packed_manifest.json").write_text(manifest)
+    with pytest.raises(ValueError):
+        convert(str(source_checkpoint), str(tmp_path / "failed"))
 
 
 @pytest.mark.parametrize("suffix", ["base_q", "residual_q", "row_lo", "row_hi"])
 def test_weight_cast_rejected(checkpoint, suffix):
     model = load(checkpoint)
-    weights = mx.load(str(prepare_model_path(checkpoint) / "model.safetensors"))
+    weights = mx.load(str(checkpoint / "model.safetensors"))
     name = next(k for k in weights if k.endswith("." + suffix))
     weights[name] = weights[name].astype(mx.float32)
     with pytest.raises(ValueError, match="must remain"):
@@ -518,11 +568,11 @@ def test_weight_cast_rejected(checkpoint, suffix):
     [(None, [0, 1, 2]), (0, [0, 1, 2]), (4, [0, -1, 2]), (4, [0, 1])],
 )
 def test_invalid_decoder_config_rejected(checkpoint, maximum, durations):
-    config = json.loads((prepare_model_path(checkpoint) / "config.json").read_text())
+    config = json.loads((checkpoint / "config.json").read_text())
     config["decoding"]["greedy"]["max_symbols"] = maximum
     config["decoding"]["durations"] = durations
     with pytest.raises(ValueError, match="durations"):
-        Model(config)
+        Model(ModelConfig.from_dict(config))
 
 
 def test_generic_conversion_guard(checkpoint):
@@ -535,16 +585,66 @@ def test_generic_conversion_guard(checkpoint):
         )
         == "phonon2"
     )
-    for path in (checkpoint, prepare_model_path(checkpoint)):
-        config = json.loads((path / "config.json").read_text())
-        with pytest.raises(ValueError, match="mlx_audio.stt.load"):
-            prepare_config(config, path)
+    config = json.loads((checkpoint / "config.json").read_text())
+    with pytest.raises(ValueError, match="phonon2.convert"):
+        prepare_config(config, checkpoint)
 
 
-def test_archive_notices_survive_conversion(checkpoint, tmp_path):
-    for name in ("NOTICE", "LICENSE-WEIGHTS-CC-BY-4.0.txt"):
-        (checkpoint / name).write_text("archive-only attribution")
-    root = archive_checkpoint(checkpoint, tmp_path / "snapshot")
-    converted = prepare_model_path(root)
-    for name in ("NOTICE", "LICENSE-WEIGHTS-CC-BY-4.0.txt"):
-        assert (converted / name).read_text() == "archive-only attribution"
+def test_archive_notices_survive_conversion(source_checkpoint, tmp_path):
+    for name in (
+        "NOTICE",
+        "LICENSE-WEIGHTS-CC-BY-4.0.txt",
+        "LICENSE-CODE-Apache-2.0.txt",
+    ):
+        (source_checkpoint / name).write_text("archive-only attribution")
+    root = archive_checkpoint(source_checkpoint, tmp_path / "snapshot")
+    output = convert(str(root), str(tmp_path / "mlx"))
+    for name in (
+        "NOTICE",
+        "LICENSE-WEIGHTS-CC-BY-4.0.txt",
+        "LICENSE-CODE-Apache-2.0.txt",
+    ):
+        assert (output / name).read_text() == "archive-only attribution"
+
+
+@pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16, mx.float32])
+def test_phonon2_frontend_matches_fp32_reference(checkpoint, dtype):
+    model = load(checkpoint)
+    assert not hasattr(model.preprocessor_config, "compute_in_float32")
+    waveform = mx.random.normal((36 * 16000,)).astype(dtype)
+    expected = log_mel_spectrogram(
+        waveform.astype(mx.float32), model.preprocessor_config
+    ).astype(dtype)
+    actual = model._log_mel_spectrogram(waveform)
+    assert bool(mx.all(mx.isfinite(actual)))
+    np.testing.assert_array_equal(
+        np.asarray(actual.astype(mx.float32)), np.asarray(expected.astype(mx.float32))
+    )
+    with pytest.raises(ValueError, match="nonempty"):
+        model._log_mel_spectrogram(mx.zeros(0))
+    with pytest.raises(ValueError, match="mono"):
+        model._log_mel_spectrogram(mx.zeros((2, 16000)))
+
+
+def test_all_generation_paths_use_local_frontend(checkpoint, monkeypatch):
+    model = load(checkpoint)
+    calls = []
+    frontend = model._log_mel_spectrogram
+
+    def record(audio):
+        calls.append(audio.size)
+        return frontend(audio)
+
+    monkeypatch.setattr(model, "_log_mel_spectrogram", record)
+    model.generate(mx.zeros(8001), chunk_duration=0.5, overlap_duration=0)
+    assert calls == [8000, 1]
+    calls.clear()
+    list(
+        model.generate(
+            mx.zeros(8001), stream=True, chunk_duration=0.5, overlap_duration=0
+        )
+    )
+    assert calls == [8000, 1]
+    calls.clear()
+    model.generate(mx.zeros(1))
+    assert calls == [1]

@@ -48,5 +48,5 @@ This file acknowledges the original authors and contributors of models ported to
 
 - **Original**: [FermionResearch/Phonon-2](https://huggingface.co/FermionResearch/Phonon-2)
 - **Copyright**: Fermion Research; NVIDIA
-- **License**: Apache-2.0 (runtime code); CC-BY-4.0 (weights)
+- **License**: Apache-2.0 (adapted code; see `mlx_audio/licenses/`); CC-BY-4.0 (weights)
 - **MLX Port**: [@atesahmet0](https://github.com/atesahmet0)

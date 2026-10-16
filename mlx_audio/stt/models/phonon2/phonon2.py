@@ -1,7 +1,7 @@
 """Phonon-2 on the standard Parakeet graph, with exact packed encoder layers.
 
-TDT scheduling adapted from fermion-research 0.2.11, Copyright 2026
-Fermion Research, Apache-2.0. See LICENSE/NOTICE.
+Packed layer integration adapted from fermion-research 0.2.11, Copyright
+2026 Fermion Research, Apache-2.0. See mlx_audio/licenses/NOTICE.
 """
 
 from os import PathLike
@@ -9,43 +9,39 @@ from os import PathLike
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_audio.stt.models.nemo.alignment import (
-    AlignedToken,
-    sentences_to_result,
-    tokens_to_sentences,
-)
-from mlx_audio.stt.models.parakeet import tokenizer
-from mlx_audio.stt.models.parakeet.parakeet import ParakeetTDT, ParakeetTDTArgs
-from mlx_audio.utils import from_dict
+from mlx_audio.stt.models.parakeet.audio import log_mel_spectrogram
+from mlx_audio.stt.models.parakeet.parakeet import ParakeetTDT
 
+from .config import ModelConfig
 from .packed import ENCODER_SUFFIXES, PackedFiveValueLinear
 
 
 class Model(ParakeetTDT):
-    def __init__(self, config):
-        decoding = config.get("decoding", {})
-        durations = decoding.get("durations")
-        greedy = decoding.get("greedy") or {}
+    def __init__(self, config: ModelConfig):
+        decoding = config.decoding
+        durations = decoding.durations
+        greedy = decoding.greedy or {}
         maximum = greedy.get("max_symbols")
         if (
-            decoding.get("model_type") != "tdt"
+            decoding.model_type != "tdt"
             or not isinstance(durations, list)
             or not durations
             or any(type(d) is not int or d < 0 for d in durations)
-            or len(durations) != config["joint"]["num_extra_outputs"]
+            or len(durations) != config.joint.num_extra_outputs
             or type(maximum) is not int
             or maximum <= 0
         ):
             raise ValueError(
                 "Phonon-2 requires valid durations and a positive max_symbols"
             )
-        super().__init__(from_dict(ParakeetTDTArgs, config))
+        super().__init__(config)
+        self.config = config
         expected = {
             f"encoder.layers.{i}.{suffix}"
             for i in range(self.encoder_config.n_layers)
             for suffix in ENCODER_SUFFIXES
         }
-        modules = config["phonon2_modules"]
+        modules = config.phonon2_modules
         names = [r["name"] for r in modules]
         if len(names) != len(set(names)) or set(names) != expected:
             raise ValueError(
@@ -69,7 +65,19 @@ class Model(ParakeetTDT):
             layer = PackedFiveValueLinear(inputs, outputs, bias="bias" in old)
             setattr(parent, parts[-1], layer)
             self._packed_modules.append(layer)
-        self._step = self._make_step()
+
+    def _log_mel_spectrogram(self, audio_data: mx.array) -> mx.array:
+        if audio_data.ndim != 1 or audio_data.size == 0:
+            raise ValueError("Expected a nonempty mono audio waveform")
+        dtype = audio_data.dtype
+        minimum = 2 * self.preprocessor_config.hop_length
+        if audio_data.size < minimum:
+            audio_data = mx.pad(audio_data, (0, minimum - audio_data.size))
+        # Match Fermion's frontend: compute features in fp32, then cast for
+        # inference. Keep this policy local to Phonon-2, including chunk tails.
+        return log_mel_spectrogram(
+            audio_data.astype(mx.float32), self.preprocessor_config
+        ).astype(dtype)
 
     def load_weights(self, weights, strict=False):
         # Partial loads invalidate the source model's numerical contract.
@@ -86,86 +94,3 @@ class Model(ParakeetTDT):
         for module in self._packed_modules:
             module.materialize()
         return result
-
-    def _make_step(self):
-        durations = mx.array(self.durations, mx.int32)
-
-        def step(feature, last, h, c, time, symbols, length):
-            valid = time < length
-            pred, dec, h2, c2 = self._tdt_step(feature, last.reshape(1, 1), h, c)
-            duration = mx.take(durations, dec)
-            emit = valid & (pred != self.blank_id)
-            token = mx.where(emit, pred, -1)
-            last = mx.where(emit, pred, last)
-            h, c = mx.where(emit, h2, h), mx.where(emit, c2, c)
-            symbols = symbols + 1
-            advanced = time + duration
-            if self.max_symbols is not None:
-                hit = (duration == 0) & (symbols >= self.max_symbols)
-                advanced = mx.where(hit, advanced + 1, advanced)
-                symbols = mx.where((duration != 0) | hit, 0, symbols)
-            else:
-                symbols = mx.where(duration != 0, 0, symbols)
-            new_time = mx.where(valid, advanced, time)
-            return (
-                token,
-                time,
-                duration,
-                new_time,
-                last,
-                h,
-                c,
-                symbols,
-                mx.minimum(new_time, length - 1),
-            )
-
-        return mx.compile(step)
-
-    def decode(self, mel):
-        if mel.ndim == 2:
-            mel = mel[None]
-        features, lengths = self.encoder(mel)
-        mx.eval(features, lengths)
-        results = []
-        sub = self.encoder_config.subsampling_factor
-        sr, hop = (
-            self.preprocessor_config.sample_rate,
-            self.preprocessor_config.hop_length,
-        )
-        for b in range(mel.shape[0]):
-            length = int(lengths[b])
-            if length <= 0:
-                results.append(sentences_to_result([]))
-                continue
-            h, c = self._make_initial_decoder_state(1, features.dtype)
-            time, last, symbols = mx.array(0), mx.array(self.blank_id), mx.array(0)
-            index, limit = mx.array([0]), mx.array(length)
-            hypothesis = []
-            host_time = 0
-            while host_time < length:
-                tokens, starts, durations = [], [], []
-                for _ in range(16):
-                    frame = mx.take(features[b : b + 1], index, axis=1)
-                    token, at, duration, time, last, h, c, symbols, next_index = (
-                        self._step(frame, last, h, c, time, symbols, limit)
-                    )
-                    index = next_index.reshape(1)
-                    tokens.append(token)
-                    starts.append(at)
-                    durations.append(duration)
-                values = mx.stack(tokens + starts + durations + [time]).tolist()
-                host_time = values[-1]
-                for i in range(16):
-                    token = values[i]
-                    if token < 0 or tokenizer.is_special_token(token, self.vocabulary):
-                        continue
-                    hypothesis.append(
-                        AlignedToken(
-                            token,
-                            text=tokenizer.decode([token], self.vocabulary),
-                            start=values[16 + i] * sub / sr * hop,
-                            duration=values[32 + i] * sub / sr * hop,
-                        )
-                    )
-            results.append(sentences_to_result(tokens_to_sentences(hypothesis)))
-        return results

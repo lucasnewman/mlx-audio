@@ -1,5 +1,5 @@
 """From fermion-research 0.2.11 (Copyright 2026 Fermion Research,
-Apache-2.0), with explicit validation errors. See LICENSE/NOTICE.
+Apache-2.0), with explicit validation errors. See mlx_audio/licenses/NOTICE.
 HF-transformers ParakeetForTDT names -> MLX Audio Parakeet-TDT names.
 
 Target key set = mlx-community/parakeet-tdt-0.6b-v3 @ ed2b7e8c (697 tensors),

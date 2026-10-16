@@ -1,7 +1,7 @@
 """Exact five-value encoder weights as two native MLX affine 2-bit planes.
 
 Adapted from fermion-research 0.2.11, Copyright 2026 Fermion Research,
-Apache-2.0. Native preparation replaced with NumPy/MLX. See LICENSE/NOTICE.
+Apache-2.0. Native preparation replaced with NumPy/MLX. See mlx_audio/licenses/NOTICE.
 """
 
 import mlx.core as mx
