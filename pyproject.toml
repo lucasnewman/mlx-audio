@@ -133,7 +133,6 @@ include = ["mlx_audio", "mlx_audio.*"]
 
 [tool.setuptools.package-data]
 mlx_audio = [
-    "stt/models/phonon2/*.md",
     "tts/*.html",
     "tts/*.js",
     "tts/*.css",
