@@ -976,6 +976,7 @@ dependencies = [
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "sentencepiece" },
     { name = "sounddevice" },
     { name = "tqdm" },
     { name = "transformers" },
@@ -987,7 +988,6 @@ all = [
     { name = "mistral-common", extra = ["audio"] },
     { name = "mlx-lm" },
     { name = "python-multipart" },
-    { name = "sentencepiece" },
     { name = "setuptools" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "webrtcvad" },
@@ -1020,17 +1020,14 @@ server = [
 ]
 sts = [
     { name = "mlx-lm" },
-    { name = "sentencepiece" },
     { name = "setuptools" },
     { name = "webrtcvad" },
 ]
 stt = [
-    { name = "sentencepiece" },
     { name = "zstandard" },
 ]
 tts = [
     { name = "mistral-common", extra = ["audio"] },
-    { name = "sentencepiece" },
 ]
 
 [package.metadata]
@@ -1058,10 +1055,7 @@ requires-dist = [
     { name = "python-multipart", marker = "extra == 'all'", specifier = ">=0.0.22" },
     { name = "python-multipart", marker = "extra == 'server'", specifier = ">=0.0.22" },
     { name = "scipy", specifier = ">=1.10.0" },
-    { name = "sentencepiece", marker = "extra == 'all'", specifier = ">=0.2.0" },
-    { name = "sentencepiece", marker = "extra == 'sts'", specifier = ">=0.2.0" },
-    { name = "sentencepiece", marker = "extra == 'stt'", specifier = ">=0.2.0" },
-    { name = "sentencepiece", marker = "extra == 'tts'", specifier = ">=0.2.0" },
+    { name = "sentencepiece", specifier = ">=0.2.0" },
     { name = "setuptools", marker = "extra == 'all'", specifier = "<81" },
     { name = "setuptools", marker = "extra == 'server'", specifier = "<81" },
     { name = "setuptools", marker = "extra == 'sts'", specifier = "<81" },
