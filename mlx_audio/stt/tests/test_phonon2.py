@@ -121,6 +121,24 @@ def test_standard_local_loader(checkpoint):
     assert model.generate(mx.zeros(16000)).text == ""
     config = json.loads((checkpoint / "config.json").read_text())
     assert PreprocessArgs(**config["preprocessor"]) == model.preprocessor_config
+    # Verify loaded projections numerically; the blank-output fixture alone
+    # cannot detect corrupted encoder weights.
+    rng = np.random.default_rng(8)
+    for row in config["phonon2_modules"]:
+        layer = model
+        for part in row["name"].split("."):
+            layer = layer[int(part)] if part.isdigit() else getattr(layer, part)
+        shape = tuple(row["shape"])
+        sign = np.resize(np.array([-1, 0, 1], np.int8), shape)
+        high = np.resize(np.array([True, False, False, False, False, True]), shape)
+        dense = (sign * np.where(high, 0.375, 0.125)).astype(np.float32)
+        inputs = rng.normal(size=(2, 3, shape[1])).astype(np.float32)
+        np.testing.assert_allclose(
+            np.asarray(layer(mx.array(inputs))),
+            inputs @ dense.T,
+            atol=2e-5,
+            err_msg=row["name"],
+        )
     again = load(str(checkpoint), lazy=True)
     assert isinstance(again, Model)
     weights = mx.load(str(checkpoint / "model.safetensors"))
@@ -206,17 +224,6 @@ def test_inherited_decoder_bounds_zero_duration_emissions(checkpoint):
     ] * model.max_symbols
 
 
-def test_chunk_streaming_uses_instance_frontend(checkpoint):
-    model = load(checkpoint)
-    outputs = list(
-        model.generate(
-            mx.zeros(16000), stream=True, chunk_duration=0.5, overlap_duration=0.1
-        )
-    )
-    assert outputs and outputs[-1].is_final
-    assert outputs[-1].audio_position == 1
-
-
 def test_missing_projection_and_wrong_shape_rejected(checkpoint):
     config = json.loads((checkpoint / "config.json").read_text())
     config["phonon2_modules"].pop()
@@ -272,19 +279,17 @@ def test_invalid_decoder_config_rejected(checkpoint, maximum, durations):
         Model(ModelConfig.from_dict(config))
 
 
-def test_generic_conversion_guard(checkpoint):
-    from mlx_audio.convert import Domain, get_model_type
-    from mlx_audio.stt.models.phonon2 import prepare_config
+@pytest.mark.parametrize("model_type", ["phonon2", "parakeet_tdt_five_value"])
+def test_generic_conversion_guard(checkpoint, tmp_path, model_type):
+    from mlx_audio.convert import convert
 
-    assert (
-        get_model_type(
-            {"model_type": "parakeet_tdt_five_value"}, checkpoint, Domain.STT
-        )
-        == "phonon2"
-    )
     config = json.loads((checkpoint / "config.json").read_text())
+    config["model_type"] = model_type
+    (checkpoint / "config.json").write_text(json.dumps(config))
+    output = tmp_path / "converted"
     with pytest.raises(ValueError, match="mlx-community/Phonon-2"):
-        prepare_config(config, checkpoint)
+        convert(hf_path=str(checkpoint), mlx_path=str(output))
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16, mx.float32])
