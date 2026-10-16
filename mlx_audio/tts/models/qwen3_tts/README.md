@@ -76,6 +76,18 @@ for result in model.generate(
 
 The `streaming_interval` controls how frequently chunks are emitted (in seconds). Smaller values give lower latency but more overhead per chunk.
 
+CustomVoice and VoiceDesign condition generation on the complete input text,
+matching Qwen's `non_streaming_mode=True` default. This is independent of
+`stream=True`: the complete text is available before generation, while audio
+chunks are emitted incrementally. Conditioning only on a growing text prefix
+can produce unusually slow speaking rates for some sampled sequences.
+
+For single-request generation, pass `non_streaming_mode=False` to
+`generate()`, `generate_custom_voice()`, or `generate_voice_design()` to use
+the previous simulated streaming-text behavior. Base/voice-cloning defaults
+are unchanged. Full-text conditioning does not enforce a fixed speaking rate;
+sampling and voice/style instructions can still affect duration.
+
 ## Batch Generation
 
 Generate multiple texts with different voices in a single batched forward pass. Near-linear throughput scaling with minimal memory overhead:

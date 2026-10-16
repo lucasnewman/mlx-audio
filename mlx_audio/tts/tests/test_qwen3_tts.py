@@ -416,6 +416,90 @@ def _make_dtype_test_model():
     return model
 
 
+class TestQwen3TTSTextConditioning(unittest.TestCase):
+    @staticmethod
+    def make_model(model_type="custom_voice"):
+        model = _make_dtype_test_model()
+        model.config.tts_model_type = model_type
+        model.config.tts_model_size = "1b7"
+        model.supported_speakers = ["serena"]
+        # Encode token IDs into the embeddings so the reference prompt layout
+        # can be checked without downloading model weights.
+        model.talker.embedding = lambda ids: mx.broadcast_to(
+            ids.astype(mx.bfloat16)[..., None], (*ids.shape, 4)
+        )
+        return model
+
+    def test_custom_voice_and_voice_design_prefill_complete_text(self):
+        # Role + codec prefix + (all text and EOS over codec PAD) +
+        # (text PAD over codec BOS), as in Qwen's non_streaming_mode=True.
+        expected = [0, 1, 2, 7, 8, 9, 9, 11, 12, 13, 14, 10, 12]
+        for model_type in ("custom_voice", "voice_design"):
+            with self.subTest(model_type=model_type):
+                model = self.make_model(model_type)
+                inputs, trailing, pad = model._prepare_generation_inputs("text")
+                self.assertEqual(inputs[0, :, 0].tolist(), expected)
+                self.assertEqual(trailing.tolist(), pad.tolist())
+                self.assertEqual(trailing.shape, (1, 1, 4))
+                self.assertEqual(inputs.dtype, mx.bfloat16)
+
+    def test_explicit_streaming_text_preserves_legacy_prompt(self):
+        model = self.make_model()
+        inputs, trailing, _ = model._prepare_generation_inputs(
+            "text", non_streaming_mode=False
+        )
+        self.assertEqual(inputs[0, :, 0].tolist(), [0, 1, 2, 7, 8, 9, 9, 12])
+        self.assertEqual(trailing[0, :, 0].tolist(), [4, 5, 6, 2])
+
+    def test_base_default_preserves_streaming_text(self):
+        model = self.make_model("base")
+        inputs, trailing, _ = model._prepare_generation_inputs("text")
+        self.assertEqual(inputs.shape[1], 8)
+        self.assertEqual(trailing[0, :, 0].tolist(), [4, 5, 6, 2])
+
+    def test_instructions_remain_before_role_and_complete_text(self):
+        model = self.make_model()
+        inputs, trailing, _ = model._prepare_generation_inputs(
+            "text", instruct="Speak calmly."
+        )
+        self.assertEqual(inputs[0, :12, 0].tolist(), list(range(12)))
+        self.assertEqual(inputs.shape[1], 25)
+        self.assertEqual(trailing.shape[1], 1)
+
+    def test_batch_prefill_uses_same_complete_text_conditioning(self):
+        model = self.make_model()
+        batch = model._prepare_batch_inputs(["one", "two"], return_metadata=True)
+        self.assertEqual(batch.prefill_lens, [13, 13])
+        self.assertEqual(batch.trailing_lens, [1, 1])
+        self.assertEqual(batch.trailing_text_hidden.shape, (2, 1, 4))
+
+    def test_generate_forwards_text_mode_to_custom_voice_and_voice_design(self):
+        for model_type in ("custom_voice", "voice_design"):
+            with self.subTest(model_type=model_type):
+                model = self.make_model(model_type)
+                with patch.object(
+                    Model, "_generate_with_instruct", return_value=iter(())
+                ) as generate:
+                    list(
+                        model.generate(
+                            "text",
+                            voice="Serena",
+                            instruct="Speak calmly.",
+                            non_streaming_mode=False,
+                            stream=True,
+                        )
+                    )
+                self.assertIs(generate.call_args.kwargs["non_streaming_mode"], False)
+                self.assertIs(generate.call_args.kwargs["stream"], True)
+
+    def test_explicit_text_mode_does_not_enter_batch_with_different_options(self):
+        model = self.make_model()
+        self.assertTrue(model.supports_tts_batch(voice="Serena"))
+        self.assertFalse(
+            model.supports_tts_batch(voice="Serena", non_streaming_mode=False)
+        )
+
+
 class TestQwen3TTSSpeakerEmbeddingDtype(unittest.TestCase):
     def test_xvector_prefill_uses_talker_dtype(self):
         model = _make_dtype_test_model()

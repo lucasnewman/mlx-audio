@@ -224,6 +224,9 @@ class Model(nn.Module):
         pitch: Optional[float] = 1.0,
         **kwargs,
     ) -> bool:
+        # Batch options do not carry an explicit text-conditioning override.
+        if kwargs.get("non_streaming_mode") is not None:
+            return False
         del kwargs
         if stream:
             return False
@@ -331,6 +334,7 @@ class Model(nn.Module):
         ref_audio: Optional[mx.array] = None,
         ref_text: Optional[str] = None,
         instruct: Optional[str] = None,
+        non_streaming_mode: Optional[bool] = None,
     ) -> Tuple[mx.array, mx.array, mx.array]:
         """Prepare inputs for generation.
 
@@ -341,6 +345,8 @@ class Model(nn.Module):
             ref_audio: Reference audio for voice cloning
             ref_text: Reference text for voice cloning
             instruct: Instruction text for voice style (for VoiceDesign/CustomVoice models)
+            non_streaming_mode: Prefill all text before generating codec frames.
+                Defaults to True for CustomVoice/VoiceDesign, matching Qwen.
 
         Returns:
             input_embeds: Input embeddings for the talker
@@ -471,7 +477,29 @@ class Model(nn.Module):
         else:
             input_embeds = mx.concatenate([role_embed, combined_embed], axis=1)
 
-        # Add first text token (token index 3)
+        if non_streaming_mode is None:
+            non_streaming_mode = getattr(self.config, "tts_model_type", "base") in {
+                "custom_voice",
+                "voice_design",
+            }
+
+        if non_streaming_mode:
+            # Qwen's complete-text mode conditions the first codec frame on the
+            # entire utterance. Audio can still be decoded and yielded in chunks.
+            full_text_embed = mx.concatenate(
+                [text_embed[:, 3:-5, :], tts_eos_embed], axis=1
+            )
+            input_embeds = mx.concatenate(
+                [
+                    input_embeds,
+                    full_text_embed + codec_embed_suffix[:, :1, :],
+                    tts_pad_embed + codec_embed_suffix[:, 1:, :],
+                ],
+                axis=1,
+            )
+            return input_embeds, tts_pad_embed, tts_pad_embed
+
+        # Simulated streaming text: add one text token per codec frame.
         first_text_embed = text_embed[:, 3:4, :] + codec_embed[:, -1:, :]
         input_embeds = mx.concatenate([input_embeds, first_text_embed], axis=1)
 
@@ -1142,6 +1170,7 @@ class Model(nn.Module):
         top_k: int = 50,
         top_p: float = 1.0,
         repetition_penalty: float = 1.05,
+        non_streaming_mode: Optional[bool] = None,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         """Generate audio from text.
@@ -1170,6 +1199,9 @@ class Model(nn.Module):
             top_k: Top-k sampling
             top_p: Top-p (nucleus) sampling
             repetition_penalty: Repetition penalty
+            non_streaming_mode: Text conditioning for CustomVoice/VoiceDesign.
+                Defaults to full-text prefill; False restores token-by-token text
+                input. Independent of streamed audio output (stream).
 
         Yields:
             GenerationResult objects with generated audio
@@ -1199,6 +1231,7 @@ class Model(nn.Module):
                 verbose=verbose,
                 stream=stream,
                 streaming_interval=streaming_interval,
+                non_streaming_mode=non_streaming_mode,
             )
             return
 
@@ -1221,6 +1254,7 @@ class Model(nn.Module):
                 verbose=verbose,
                 stream=stream,
                 streaming_interval=streaming_interval,
+                non_streaming_mode=non_streaming_mode,
             )
             return
 
@@ -2077,6 +2111,7 @@ class Model(nn.Module):
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
+        non_streaming_mode: Optional[bool] = None,
     ) -> Generator[GenerationResult, None, None]:
         """Generate speech with the CustomVoice model using a predefined speaker.
 
@@ -2094,6 +2129,8 @@ class Model(nn.Module):
             top_p: Top-p (nucleus) sampling
             repetition_penalty: Repetition penalty
             verbose: Print verbose output
+            non_streaming_mode: Prefill the full text (default), or use simulated
+                streaming text input when False. Does not disable streamed audio.
 
         Yields:
             GenerationResult objects with generated audio
@@ -2135,6 +2172,7 @@ class Model(nn.Module):
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
+            non_streaming_mode=non_streaming_mode,
         )
 
     def generate_voice_design(
@@ -2150,6 +2188,7 @@ class Model(nn.Module):
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
+        non_streaming_mode: Optional[bool] = None,
     ) -> Generator[GenerationResult, None, None]:
         """Generate speech with the VoiceDesign model using natural language voice description.
 
@@ -2166,6 +2205,8 @@ class Model(nn.Module):
             top_p: Top-p (nucleus) sampling
             repetition_penalty: Repetition penalty
             verbose: Print verbose output
+            non_streaming_mode: Prefill the full text (default), or use simulated
+                streaming text input when False. Does not disable streamed audio.
 
         Yields:
             GenerationResult objects with generated audio
@@ -2196,6 +2237,7 @@ class Model(nn.Module):
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
+            non_streaming_mode=non_streaming_mode,
         )
 
     def _generate_icl(
@@ -2525,6 +2567,7 @@ class Model(nn.Module):
         stream: bool = False,
         streaming_interval: float = 2.0,
         streaming_context_size: int = 25,
+        non_streaming_mode: Optional[bool] = None,
     ) -> Generator[GenerationResult, None, None]:
         """Internal method for generation with instruct support."""
         if self.speech_tokenizer is None:
@@ -2539,6 +2582,7 @@ class Model(nn.Module):
                 language=language,
                 speaker=speaker,
                 instruct=instruct,
+                non_streaming_mode=non_streaming_mode,
             )
         )
 
