@@ -109,7 +109,8 @@ def _unpack_base5_numpy(encoded, in_features):
     return tuple(planes)
 
 
-_UNPACK_SHAPES = [(1, 16), (2, 80), (2, 144)]
+# metal_kernel binds inputs under 8 elements as constant, which the kernel can't read.
+_UNPACK_SHAPES = [(1, 32), (2, 80), (2, 144)]
 
 
 def forbidden():
