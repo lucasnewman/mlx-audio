@@ -121,6 +121,7 @@ for result in model.generate(
 | **KittenTTS** | Compact KittenTTS 0.8 models for edge-friendly TTS | EN | [nano](https://huggingface.co/mlx-community/kitten-tts-nano-0.8), [micro](https://huggingface.co/mlx-community/kitten-tts-micro-0.8), [mini](https://huggingface.co/mlx-community/kitten-tts-mini-0.8), [collection](https://huggingface.co/collections/mlx-community/kittentts) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
 | **Higgs Audio v3** | 4B conversational TTS with voice cloning and inline control tokens | 100 languages | [bosonai/higgs-audio-v3-tts-4b](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b) |
+| **Fish Audio Drama 3** | 35B MoE multi-speaker TTS with voice cloning, inline cues and streaming ([convert](docs/models/tts/fish-drama3.md)) | 83 languages | [mlx-community/fish-audio-drama-3-4bit](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) |
 | **OmniVoice** | Zero-shot multilingual TTS with voice cloning, batch generation, and nonverbal tags | 646+ languages | [mlx-community/OmniVoice-bf16](https://huggingface.co/mlx-community/OmniVoice-bf16) |
 | **CSM / MisoTTS** | Sesame-style conversational speech models with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b), [MisoTTS bf16](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-bf16), [MisoTTS 8bit](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-8bit) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
@@ -151,6 +152,7 @@ for result in model.generate(
 | **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **MOSS-Transcribe-Diarize** | Timestamped transcription with speaker labels | Multiple major languages | https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize |
 | **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
+| **Phonon-2** | Five-value Parakeet TDT | EN | [mlx-community/Phonon-2](https://huggingface.co/mlx-community/Phonon-2) · [README](mlx_audio/stt/models/phonon2/README.md) |
 | **Nemotron 3.5 ASR (streaming)** | NVIDIA's cache-aware streaming FastConformer-RNNT with language-ID prompting | 40 language-locales | [mlx-community/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Nemotron Speech Streaming 0.6B** | NVIDIA's English FastConformer-RNNT with 80/160/560/1120 ms streaming modes | EN | [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
@@ -423,6 +425,22 @@ python -m mlx_audio.stt.generate \
     --context "MLX, Apple Silicon, PyTorch, Transformer" \
     --verbose
 ```
+
+### Phonon-2
+
+English speech recognition with Fermion Research's five-value Parakeet TDT model.
+Load the preconverted MLX weights directly; no converter or Fermion runtime is needed.
+
+```python
+from mlx_audio.stt import load
+
+model = load("mlx-community/Phonon-2")
+result = model.generate("audio.wav", chunk_duration=30, overlap_duration=2)
+print(result.text)
+```
+
+See the [Phonon-2 README](mlx_audio/stt/models/phonon2/README.md) for timestamps
+and chunk streaming.
 
 ### Parakeet (Multilingual STT)
 
