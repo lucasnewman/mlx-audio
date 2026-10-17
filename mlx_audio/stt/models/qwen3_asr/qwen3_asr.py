@@ -1147,7 +1147,7 @@ class Qwen3ASRModel(nn.Module):
                 input_ids = self._build_prompt(n_audio, language, system_prompt)
                 embeds.append(self._build_inputs_embeds(input_ids, af)[0])
                 if token_histories is not None:
-                    token_histories.append(input_ids[0, -1:])
+                    token_histories.append(input_ids[0])
 
             x = mx.stack(embeds, axis=0)  # (B, L, H), equal L
             bsz = x.shape[0]

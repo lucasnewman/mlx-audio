@@ -54,8 +54,6 @@ class TestLSTMFallback(unittest.TestCase):
                     np.float32
                 )
                 b = rng.normal(0, 0.2, (4 * hidden_size,)).astype(np.float32)
-                layer = LSTM(inputs, hidden_size, bias=True)
-                layer.Wx, layer.Wh, layer.bias = mx.array(wx), mx.array(wh), mx.array(b)
                 projected = x @ wx.T + b
                 hidden = np.zeros((batch, hidden_size), dtype=np.float32)
                 cell = np.zeros_like(hidden)
@@ -63,18 +61,34 @@ class TestLSTMFallback(unittest.TestCase):
                 for t in range(steps):
                     hidden, cell = _lstm_step_numpy(projected, hidden @ wh.T, cell, t)
                     expected.append(hidden)
-                with (
-                    mock.patch.object(mx.metal, "is_available", return_value=False),
-                    mock.patch(
-                        "mlx_audio.codec.models.encodec.encodec._lstm_kernel",
-                        side_effect=AssertionError("Metal kernel called without Metal"),
-                    ),
-                ):
-                    actual = layer(mx.array(x))
-                    mx.eval(actual)
-                np.testing.assert_allclose(
-                    np.array(actual), np.stack(expected, axis=1), atol=1e-5, rtol=0
-                )
+                devices = [mx.cpu, mx.gpu] if mx.metal.is_available() else [mx.cpu]
+                for device in devices:
+                    with self.subTest(device=device), mx.stream(device):
+                        layer = LSTM(inputs, hidden_size, bias=True)
+                        layer.Wx = mx.array(wx)
+                        layer.Wh = mx.array(wh)
+                        layer.bias = mx.array(b)
+                        with (
+                            mock.patch.object(
+                                mx.metal, "is_available", return_value=False
+                            ),
+                            mock.patch(
+                                "mlx_audio.codec.models.encodec.encodec._lstm_kernel",
+                                side_effect=AssertionError(
+                                    "Metal kernel called without Metal"
+                                ),
+                            ),
+                        ):
+                            actual = layer(mx.array(x))
+                            mx.eval(actual)
+                        # GPU float32 matmuls may use TF32 products.
+                        atol, rtol = (5e-4, 2e-3) if device == mx.gpu else (1e-5, 0)
+                        np.testing.assert_allclose(
+                            np.array(actual),
+                            np.stack(expected, axis=1),
+                            atol=atol,
+                            rtol=rtol,
+                        )
 
     @unittest.skipUnless(mx.metal.is_available(), "Metal is not available")
     def test_metal_matches_fallback(self):

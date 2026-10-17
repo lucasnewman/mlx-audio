@@ -41,7 +41,7 @@ recognized or do not decode.
 | Format | Backend | Notes |
 |--------|---------|-------|
 | WAV | miniaudio | No external dependencies |
-| AIFF | miniaudio | No external dependencies |
+| AIFF | ffmpeg | Requires ffmpeg |
 | MP3 | miniaudio | No external dependencies |
 | FLAC | miniaudio | No external dependencies |
 | Vorbis / OGG | ffmpeg | Requires ffmpeg |
@@ -62,7 +62,7 @@ recognized or do not decode.
 
 ## Installing ffmpeg
 
-ffmpeg is required for non-WAV encoding and for M4A/AAC/OGG decoding:
+ffmpeg is required for non-WAV encoding and for AIFF/M4A/AAC/OGG decoding:
 
 === "macOS"
 
