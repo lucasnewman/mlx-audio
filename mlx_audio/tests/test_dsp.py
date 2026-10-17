@@ -378,6 +378,31 @@ def test_chunked_resample_matches_whole_buffer(orig):
     np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parametrize("orig", [8000, 16000, 44100])
+def test_chunked_resample_stops_at_max_output_frames(orig):
+    from mlx_audio.resample import resample_audio_chunks
+    from mlx_audio.utils import resample_audio
+
+    target = 16000
+    rng = np.random.default_rng(orig)
+    audio = rng.normal(0.0, 0.1, size=(10 * orig, 2)).astype(np.float32)
+    consumed = 0
+
+    def chunks():
+        nonlocal consumed
+        for start in range(0, len(audio), orig // 10):
+            consumed += 1
+            yield audio[start : start + orig // 10]
+
+    expected = resample_audio(audio, orig, target, axis=0)[:target]
+    actual = resample_audio_chunks(
+        chunks(), orig, target, len(audio), max_output_frames=target
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+    assert consumed <= 20  # of 100 chunks
+
+
 def test_integrated_loudness_validation_matches_previous_behavior():
     """Verify the public helper keeps the old validation semantics."""
     from mlx_audio.dsp import integrated_loudness
@@ -389,3 +414,37 @@ def test_integrated_loudness_validation_matches_previous_behavior():
         ValueError, match="Audio must have length greater than the block size."
     ):
         integrated_loudness(np.zeros(100, dtype=np.float64), 24000)
+
+
+def test_log_mel_spectrogram_uses_periodic_hann_window():
+    """log_mel_spectrogram must build its Hann window with periodic=True (the
+    DFT-even window), matching openai-whisper's torch.hann_window(N_FFT) and
+    Hugging Face transformers' WhisperFeatureExtractor."""
+    import mlx.core as mx
+
+    from mlx_audio.dsp import hanning, mel_filters, stft
+    from mlx_audio.stt.models.whisper.audio import (
+        HOP_LENGTH,
+        N_FFT,
+        SAMPLE_RATE,
+        log_mel_spectrogram,
+    )
+
+    rng = np.random.default_rng(0)
+    audio = rng.standard_normal(SAMPLE_RATE).astype(np.float32) * 0.1
+
+    actual = np.asarray(log_mel_spectrogram(audio))
+
+    def _reference(periodic):
+        audio_mx = mx.array(audio)
+        window = hanning(N_FFT, periodic=periodic)
+        freqs = stft(audio_mx, window=window, n_fft=N_FFT, hop_length=HOP_LENGTH)
+        magnitudes = freqs[:-1, :].abs().square()
+        filters = mel_filters(SAMPLE_RATE, N_FFT, 80, norm="slaney", mel_scale=None)
+        mel_spec = magnitudes @ filters.T
+        log_spec = mx.maximum(mel_spec, 1e-10).log10()
+        log_spec = mx.maximum(log_spec, log_spec.max() - 8.0)
+        return np.asarray((log_spec + 4.0) / 4.0)
+
+    np.testing.assert_allclose(actual, _reference(periodic=True), atol=1e-6)
+    assert not np.allclose(actual, _reference(periodic=False), atol=1e-3)

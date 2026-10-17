@@ -2,6 +2,13 @@
 
 This file acknowledges the original authors and contributors of models ported to mlx-audio.
 
+## Fish Audio Drama 3 (Text-to-Speech)
+
+- **Original**: [fishaudio/drama-3](https://huggingface.co/fishaudio/drama-3)
+- **Copyright**: Fish Audio
+- **License**: [Fish Audio Community License](https://huggingface.co/fishaudio/drama-3/blob/main/LICENSE)
+- **MLX Port**: Daniel Sticker ([@stickerdaniel](https://github.com/stickerdaniel))
+
 ## MiniMax Music 3 (Song Generation)
 
 - **Original**: [MiniMaxAI/MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3)
@@ -29,3 +36,17 @@ This file acknowledges the original authors and contributors of models ported to
 - **Copyright**: NVIDIA Corporation
 - **License**: [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/)
 - **MLX Port**: [@ARahim3](https://github.com/ARahim3)
+
+## rumik-oss 1 (Text-to-Speech)
+
+- **Original**: [rumik-ai/rumik-oss-1](https://huggingface.co/rumik-ai/rumik-oss-1)
+- **Copyright**: rumik.ai
+- **License**: [CC-BY-NC 4.0 with Cohere Labs acceptable-use addendum](https://cohere.com/cohere-labs-cc-by-nc-license) (weights); Mimi codec CC-BY-4.0
+- **MLX Port**: Suryansh Shakya ([@nullHawk](https://github.com/nullHawk))
+
+## Phonon-2 (Speech-to-Text)
+
+- **Original**: [FermionResearch/Phonon-2](https://huggingface.co/FermionResearch/Phonon-2)
+- **Copyright**: Fermion Research; NVIDIA
+- **License**: Apache-2.0 (adapted code); CC-BY-4.0 (weights)
+- **MLX Port**: [@atesahmet0](https://github.com/atesahmet0)

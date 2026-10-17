@@ -6,10 +6,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from mlx_audio.stt.models.qwen3_asr.qwen3_asr import (
-    Qwen3ASRModel,
-    _rope_safe,
-)
+from mlx_audio.stt.models.base import STTOutput
+from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel, _rope_safe
 
 
 class _FakeTokenizer:
@@ -181,193 +179,360 @@ class TestBatchedGeneration(unittest.TestCase):
             model._generate_chunks_batched.call_args.kwargs["logits_processors"]
         )
 
-    def test_short_audio_segment_uses_unpadded_duration(self):
-        model = self.make_minimal_model()
-        model._generate_single_chunk = Mock(return_value=("text", 5, 1))
 
-        out = model.generate(
-            np.zeros(4000, dtype=np.float32),
-            min_chunk_duration=1.0,
-            language="English",
-        )
-
-        self.assertEqual(len(out.segments), 1)
-        self.assertEqual(out.segments[0]["start"], 0.0)
-        self.assertEqual(out.segments[0]["end"], 0.25)
-
-
-class TestAudioInputValidation(unittest.TestCase):
-    def test_empty_audio_is_rejected_before_padding(self):
+class TestChunkDurations(unittest.TestCase):
+    def _run(self, audio, mode, min_duration=1.0, chunks=None, processed=None):
         model = _make_minimal_model()
-        model._generate_single_chunk = Mock()
+        inference_lengths = []
 
-        with self.assertRaisesRegex(ValueError, "at least one sample"):
-            model.generate(np.array([], dtype=np.float32))
+        def single(chunk_audio, **kwargs):
+            inference_lengths.append(len(chunk_audio))
+            return "text", 1, 1
 
-        model._generate_single_chunk.assert_not_called()
+        def batched(chunk_audio, **kwargs):
+            inference_lengths.extend(len(chunk) for chunk, _ in chunk_audio)
+            count = len(chunk_audio)
+            flags = [True] * count if processed is None else processed
+            return ["text"] * count, [1] * count, [1] * count, flags
 
-    def test_non_finite_audio_is_rejected(self):
-        model = _make_minimal_model()
-        model._generate_single_chunk = Mock()
+        def streaming(chunk_audio, **kwargs):
+            inference_lengths.append(len(chunk_audio))
+            yield mx.array(10), None
 
-        for value in (np.nan, np.inf, -np.inf):
-            with self.subTest(value=value):
-                with self.assertRaisesRegex(ValueError, "finite"):
-                    model.generate(np.array([0.0, value], dtype=np.float32))
+        model._generate_single_chunk = single
+        model._generate_chunks_batched = batched
+        model.stream_generate = streaming
 
-        model._generate_single_chunk.assert_not_called()
+        def generate():
+            result = model.generate(
+                audio,
+                language="English",
+                max_tokens=64,
+                batch_size=2 if mode == "batched" else 1,
+                stream=mode == "streaming",
+                chunk_duration=1.0,
+                min_chunk_duration=min_duration,
+            )
+            if mode == "streaming":
+                return [
+                    (event.start_time, event.end_time)
+                    for event in result
+                    if not event.text
+                ]
+            return [(segment["start"], segment["end"]) for segment in result.segments]
 
-    def test_direct_preprocessing_rejects_empty_audio(self):
-        model = Qwen3ASRModel.__new__(Qwen3ASRModel)
-        model._feature_extractor = Mock()
+        if chunks is None:
+            bounds = generate()
+        else:
+            with patch(
+                "mlx_audio.stt.models.qwen3_asr.qwen3_asr.split_audio_into_chunks",
+                return_value=chunks,
+            ):
+                bounds = generate()
+        return bounds, inference_lengths
 
-        with self.assertRaisesRegex(ValueError, "at least one sample"):
-            model._preprocess_audio(np.array([], dtype=np.float32))
-
-        model._feature_extractor.assert_not_called()
-
-
-class TestLanguageParsing(unittest.TestCase):
-    def setUp(self):
-        self.model = Qwen3ASRModel.__new__(Qwen3ASRModel)
-
-    def test_language_none_with_empty_text_is_no_speech(self):
-        self.assertEqual(
-            self.model.extract_language("language None<asr_text>"),
-            ("", ""),
+    def test_short_clip_duration_preserves_inference_padding(self):
+        cases = (
+            (np.zeros(1), 1 / 16000),
+            (np.zeros(160), 0.01),
+            (np.zeros((160, 2)), 0.01),
+            (np.zeros((2, 160)), 0.01),
         )
+        for mode in ("sequential", "batched", "streaming"):
+            for audio, duration in cases:
+                with self.subTest(mode=mode, shape=audio.shape):
+                    bounds, lengths = self._run(audio, mode)
+                    self.assertEqual(bounds, [(0.0, duration)])
+                    self.assertEqual(lengths, [16000])
 
-    def test_language_none_preserves_returned_text(self):
-        self.assertEqual(
-            self.model.extract_language("language None<asr_text>quiet speech"),
-            ("", "quiet speech"),
-        )
+    def test_final_chunk_duration_excludes_padding(self):
+        for mode in ("sequential", "batched", "streaming"):
+            with self.subTest(mode=mode):
+                bounds, lengths = self._run(np.zeros(32160), mode)
+                self.assertEqual(bounds, [(0.0, 1.0), (1.0, 2.0), (2.0, 2.01)])
+                self.assertEqual(lengths, [16000, 16000, 16000])
 
-    def test_named_language_is_unchanged(self):
-        self.assertEqual(
-            self.model.extract_language("language English<asr_text>Hello"),
-            ("English", "Hello"),
-        )
+    def test_nonfinal_chunk_durations_exclude_padding(self):
+        for mode in ("sequential", "batched", "streaming"):
+            with self.subTest(mode=mode):
+                bounds, lengths = self._run(np.zeros(64000), mode, min_duration=2.0)
+                self.assertEqual(
+                    bounds, [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0), (3.0, 4.0)]
+                )
+                self.assertEqual(lengths, [32000, 32000, 32000, 32000])
 
-    def test_language_marker_tolerates_case_and_whitespace(self):
-        variants = (
-            " language None<asr_text> ",
-            "\nlanguage None<asr_text>",
-            "Language None<asr_text>",
-            "language None\n<asr_text>",
-        )
+    def test_chunk_extents_follow_nonuniform_original_offsets(self):
+        chunks = [(np.zeros(32000), offset) for offset in (0.0, 0.7, 1.9)]
+        for mode in ("sequential", "batched", "streaming"):
+            with self.subTest(mode=mode):
+                bounds, lengths = self._run(np.zeros(43200), mode, chunks=chunks)
+                self.assertEqual(bounds, [(0.0, 0.7), (0.7, 1.9), (1.9, 2.7)])
+                self.assertEqual(lengths, [32000, 32000, 32000])
 
-        for text in variants:
-            with self.subTest(text=text):
-                self.assertEqual(self.model.extract_language(text), ("", ""))
+    def test_unprocessed_batch_chunks_keep_their_own_bounds(self):
+        bounds, _ = self._run(np.zeros(32160), "batched", processed=[True, False, True])
+        self.assertEqual(bounds, [(0.0, 1.0), (2.0, 2.01)])
 
 
-class TestPerChunkLanguageParsing(unittest.TestCase):
-    def setUp(self):
-        self.chunks = [
-            (np.zeros(16000, dtype=np.float32), 0.0),
-            (np.zeros(16000, dtype=np.float32), 1.0),
-        ]
+class TestPerChunkLanguage(unittest.TestCase):
+    """Auto-detected language must not be reused as the request for later chunks.
 
-    def test_sequential_chunks_keep_auto_detection_enabled(self):
+    A chunk without speech is answered ``language None<asr_text>``. If that
+    detection replaced the request's ``language``, every later chunk would be
+    prompted with a forced ``language None`` prefix.
+    """
+
+    def test_sequential_chunks_are_each_auto_detected(self):
         model = _make_minimal_model()
         model._generate_single_chunk = Mock(
             side_effect=[
-                ("language None<asr_text>", 1, 1),
-                ("language English<asr_text>Hello", 1, 1),
+                ("language None<asr_text>", 5, 1),
+                ("language English<asr_text>hello", 5, 1),
             ]
         )
 
-        with patch(
-            "mlx_audio.stt.models.qwen3_asr.qwen3_asr.split_audio_into_chunks",
-            return_value=self.chunks,
-        ):
-            out = model.generate(np.zeros(32000, dtype=np.float32))
-
-        self.assertEqual(out.text, "Hello")
-        self.assertEqual([segment["text"] for segment in out.segments], ["", "Hello"])
-        self.assertEqual(
-            [segment["language"] for segment in out.segments], ["", "English"]
-        )
-        self.assertEqual(
-            [
-                call.kwargs["language"]
-                for call in model._generate_single_chunk.call_args_list
-            ],
-            [None, None],
+        out = model.generate(
+            np.zeros(32000),
+            chunk_duration=1,
+            min_chunk_duration=1,
+            language=None,
         )
 
-    def test_batched_chunks_parse_each_detected_language(self):
+        calls = model._generate_single_chunk.call_args_list
+        self.assertEqual([call.kwargs["language"] for call in calls], [None, None])
+        self.assertEqual(
+            [segment["language"] for segment in out.segments], ["None", "English"]
+        )
+        self.assertEqual(out.text, " hello")
+
+    def test_explicit_language_is_kept_for_every_chunk(self):
+        model = _make_minimal_model()
+        model._generate_single_chunk = Mock(
+            side_effect=[("first", 5, 1), ("second", 5, 1)]
+        )
+
+        out = model.generate(
+            np.zeros(32000),
+            chunk_duration=1,
+            min_chunk_duration=1,
+            language="French",
+        )
+
+        calls = model._generate_single_chunk.call_args_list
+        self.assertEqual(
+            [call.kwargs["language"] for call in calls], ["French", "French"]
+        )
+        self.assertEqual(
+            [segment["language"] for segment in out.segments], ["French", "French"]
+        )
+
+    def test_batched_chunks_are_each_auto_detected(self):
         model = _make_minimal_model()
         model._generate_chunks_batched = Mock(
             return_value=(
-                ["language None<asr_text>", "language English<asr_text>Hello"],
+                ["language None<asr_text>", "language English<asr_text>hello"],
                 [1, 1],
-                [1, 1],
+                [5, 5],
                 [True, True],
             )
         )
 
-        with patch(
-            "mlx_audio.stt.models.qwen3_asr.qwen3_asr.split_audio_into_chunks",
-            return_value=self.chunks,
-        ):
-            out = model.generate(
-                np.zeros(32000, dtype=np.float32),
-                batch_size=2,
-            )
-
-        self.assertEqual(out.text, "Hello")
-        self.assertEqual([segment["text"] for segment in out.segments], ["", "Hello"])
-        self.assertEqual(
-            [segment["language"] for segment in out.segments], ["", "English"]
+        out = model.generate(
+            np.zeros(32000),
+            batch_size=2,
+            chunk_duration=1,
+            min_chunk_duration=1,
+            language=None,
         )
-        self.assertIsNone(model._generate_chunks_batched.call_args.kwargs["language"])
 
-    def test_streaming_chunks_reset_language_detection(self):
+        self.assertIsNone(model._generate_chunks_batched.call_args.kwargs["language"])
+        self.assertEqual(
+            [segment["language"] for segment in out.segments], ["None", "English"]
+        )
+        self.assertEqual(out.text, " hello")
+
+    def test_streaming_chunks_are_each_auto_detected(self):
         model = _make_minimal_model()
-        token_text = {
+        pieces = {
             1: "language ",
             2: "None",
             3: "<asr_text>",
             4: "English",
-            5: "Hello",
+            5: "hello",
         }
-        model._tokenizer.decode = lambda token_ids: token_text[token_ids[0]]
-        token_state = mx.zeros((1,))
-        model.stream_generate = Mock(
-            side_effect=[
-                iter(
-                    [
-                        (mx.array(1), token_state),
-                        (mx.array(2), token_state),
-                        (mx.array(3), token_state),
-                    ]
-                ),
-                iter(
-                    [
-                        (mx.array(1), token_state),
-                        (mx.array(4), token_state),
-                        (mx.array(3), token_state),
-                        (mx.array(5), token_state),
-                    ]
-                ),
-            ]
+        model._tokenizer.decode = lambda ids, skip_special_tokens=True: "".join(
+            pieces[int(i)] for i in ids
+        )
+        chunk_tokens = iter([[1, 2, 3], [1, 4, 3, 5]])
+        languages = []
+
+        def fake_stream_generate(chunk_audio, **kwargs):
+            languages.append(kwargs["language"])
+            for token in next(chunk_tokens):
+                yield mx.array(token), None
+
+        model.stream_generate = fake_stream_generate
+
+        results = list(
+            model.stream_transcribe(
+                np.zeros(32000),
+                chunk_duration=1,
+                min_chunk_duration=1,
+                language=None,
+            )
         )
 
-        with patch(
-            "mlx_audio.stt.models.qwen3_asr.qwen3_asr.split_audio_into_chunks",
-            return_value=self.chunks,
-        ):
-            results = list(model.stream_transcribe(np.zeros(32000, dtype=np.float32)))
-
-        self.assertEqual([result.text for result in results if result.text], ["Hello"])
-        boundaries = [result for result in results if not result.text]
-        self.assertEqual([result.language for result in boundaries], ["", "English"])
+        self.assertEqual(languages, [None, None])
         self.assertEqual(
-            [call.kwargs["language"] for call in model.stream_generate.call_args_list],
-            [None, None],
+            [(result.text, result.language) for result in results],
+            [("", "None"), ("hello", "English"), ("", "English")],
         )
+
+    def test_streaming_finalized_text_keeps_chunk_language(self):
+        for language, tokens, expected_language in (
+            (None, [1, 2, 3, 4], "English"),
+            ("French", [4], "French"),
+        ):
+            with self.subTest(language=language):
+                model = _make_minimal_model()
+                model._tokenizer.clean_up_tokenization_spaces = True
+                pieces = {
+                    1: "language ",
+                    2: "English",
+                    3: "<asr_text>",
+                    4: "hello ",
+                }
+                model._tokenizer.decode = lambda ids, skip_special_tokens=True: "".join(
+                    pieces[int(i)] for i in ids
+                )
+                model.stream_generate = Mock(
+                    return_value=iter((mx.array(token), None) for token in tokens)
+                )
+
+                results = list(
+                    model.stream_transcribe(np.zeros(16000), language=language)
+                )
+
+                self.assertEqual(
+                    [(result.text, result.language) for result in results],
+                    [
+                        ("hello", expected_language),
+                        (" ", expected_language),
+                        ("", expected_language),
+                    ],
+                )
+
+
+class TestListInputGeneration(unittest.TestCase):
+    def make_model(self):
+        model = Qwen3ASRModel.__new__(Qwen3ASRModel)
+        model._generate_one = Mock(
+            side_effect=lambda audio, **kwargs: STTOutput(text=audio)
+        )
+        return model
+
+    def test_list_input_processes_every_item_in_order(self):
+        model = self.make_model()
+
+        outputs = model.generate(
+            ["first.wav", "second.wav"],
+            language=["English", "French"],
+            max_tokens=17,
+            custom_option=True,
+        )
+
+        self.assertEqual(
+            [output.text for output in outputs], ["first.wav", "second.wav"]
+        )
+        self.assertEqual(model._generate_one.call_count, 2)
+        first, second = model._generate_one.call_args_list
+        self.assertEqual(first.args, ("first.wav",))
+        self.assertEqual(first.kwargs["language"], "English")
+        self.assertEqual(second.args, ("second.wav",))
+        self.assertEqual(second.kwargs["language"], "French")
+        self.assertEqual(first.kwargs["max_tokens"], 17)
+        self.assertTrue(first.kwargs["custom_option"])
+        self.assertEqual(second.kwargs["max_tokens"], 17)
+
+    def test_scalar_language_is_broadcast(self):
+        model = self.make_model()
+
+        model.generate(["first.wav", "second.wav"], language="English")
+
+        self.assertEqual(
+            [call.kwargs["language"] for call in model._generate_one.call_args_list],
+            ["English", "English"],
+        )
+
+    def test_single_input_still_returns_one_output(self):
+        model = self.make_model()
+
+        output = model.generate("single.wav", language=["English"])
+
+        self.assertIsInstance(output, STTOutput)
+        self.assertEqual(output.text, "single.wav")
+        model._generate_one.assert_called_once()
+
+    def test_singleton_language_list_is_broadcast(self):
+        model = self.make_model()
+
+        model.generate(["first.wav", "second.wav"], language=["English"])
+
+        self.assertEqual(
+            [call.kwargs["language"] for call in model._generate_one.call_args_list],
+            ["English", "English"],
+        )
+
+    def test_language_count_must_match_audio_count(self):
+        model = self.make_model()
+
+        with self.assertRaisesRegex(ValueError, "same number"):
+            model.generate(
+                ["first.wav", "second.wav"],
+                language=["English", "French", "German"],
+            )
+
+    def test_numpy_list_uses_scalar_generation_path(self):
+        model = _make_minimal_model()
+        model._generate_single_chunk = Mock(
+            side_effect=[("first", 5, 1), ("second", 5, 1)]
+        )
+        first_audio = np.ones(16000, dtype=np.float32)
+        second_audio = np.full(16000, 2, dtype=np.float32)
+
+        outputs = model.generate(
+            [first_audio, second_audio],
+            language=["English"],
+        )
+
+        self.assertEqual([output.text for output in outputs], ["first", "second"])
+        calls = model._generate_single_chunk.call_args_list
+        np.testing.assert_array_equal(calls[0].args[0], first_audio)
+        np.testing.assert_array_equal(calls[1].args[0], second_audio)
+        self.assertEqual(
+            [call.kwargs["language"] for call in calls],
+            ["English", "English"],
+        )
+
+    def test_list_input_rejects_streaming(self):
+        model = self.make_model()
+
+        with self.assertRaisesRegex(ValueError, "Streaming"):
+            model.generate(["first.wav", "second.wav"], stream=True)
+
+        model._generate_one.assert_not_called()
+
+    def test_preprocessing_rejects_list_input(self):
+        model = self.make_model()
+
+        with self.assertRaisesRegex(ValueError, "one input"):
+            model._preprocess_audio(["first.wav", "second.wav"])
+
+    def test_empty_list_returns_empty_list(self):
+        model = self.make_model()
+
+        self.assertEqual(model.generate([]), [])
+        model._generate_one.assert_not_called()
 
 
 if __name__ == "__main__":
