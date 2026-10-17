@@ -23,12 +23,15 @@ class Model(nn.Module):
     def __init__(self, config: MiMoAudioConfig):
         super().__init__()
         self.config = config
-        self.audio_encoder = AudioEncoder(AudioEncoderConfig())
+        self.audio_encoder = None
         self.model = MiMoAudioMLX(config)
 
         self._tokenizer = None
         self._eos_token_id = None
         self._pad_token_id = None
+
+    def load_weights(self, weights, strict: bool = True):
+        return super().load_weights(weights, strict=True)
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
@@ -60,7 +63,7 @@ class Model(nn.Module):
         )
         model.audio_encoder.load_weights(
             list(audio_encoder_weights.items()),
-            strict=False,
+            strict=True,
         )
         mx.eval(model.audio_encoder.parameters())
         return model
@@ -129,12 +132,6 @@ class Model(nn.Module):
                 continue
 
             out[new_key] = new_tensor
-
-        for key in list(out.keys()):
-            if ".self_attn.k_proj.weight" in key:
-                bias_key = key.replace(".weight", ".bias")
-                if bias_key not in out:
-                    out[bias_key] = mx.zeros((out[key].shape[0],))
 
         return out
 

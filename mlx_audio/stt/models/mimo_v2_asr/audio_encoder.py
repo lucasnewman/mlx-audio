@@ -17,7 +17,6 @@ Key design decisions:
   - Custom ``Attention`` class with HF-compatible key names (q_proj, k_proj, v_proj)
     so weight loading requires no key remapping for attention weights.
   - RoPE is applied to Q and K inside the Attention module, matching the reference.
-  - k_proj has bias=False (matching HF); a zero bias is injected during weight loading.
 """
 
 import math
