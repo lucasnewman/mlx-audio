@@ -12,6 +12,7 @@ from mlx_audio.tts.models.qwen3_tts.speaker_encoder import (
     TimeDelayNetBlock,
     reflect_pad_1d,
 )
+from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import DecoderBlockUpsample
 
 
 def _top_p_keep_mask(scores, top_p):
@@ -415,6 +416,81 @@ def _make_dtype_test_model():
     return model
 
 
+class TestQwen3TTSTextConditioning(unittest.TestCase):
+    @staticmethod
+    def make_model(model_type="custom_voice"):
+        model = _make_dtype_test_model()
+        model.config.tts_model_type = model_type
+
+        def encode(text):
+            if text.startswith("<|im_start|>user\n"):
+                return list(range(12))
+            content = text.split("\n", 1)[1].split("<|im_end|>", 1)[0]
+            return list(range(3 + len(content) + 5))
+
+        model.tokenizer.encode = encode
+        model.talker.embedding = lambda ids: mx.broadcast_to(
+            ids.astype(mx.bfloat16)[..., None], (*ids.shape, 4)
+        )
+        return model
+
+    def test_prefill_complete_text_for_all_model_types(self):
+        expected = [0, 1, 2, 7, 8, 9, 9, 11, 12, 13, 14, 10, 12]
+        for model_type in ("base", "custom_voice", "voice_design"):
+            with self.subTest(model_type=model_type):
+                model = self.make_model(model_type)
+                inputs, trailing, pad = model._prepare_generation_inputs("text")
+                self.assertEqual(inputs[0, :, 0].tolist(), expected)
+                self.assertEqual(trailing.tolist(), pad.tolist())
+                self.assertEqual(trailing.shape, (1, 1, 4))
+                self.assertEqual(inputs.dtype, mx.bfloat16)
+
+    def test_xvector_only_prefills_complete_text(self):
+        model = self.make_model("base")
+        ref_audio = mx.zeros((2400,), dtype=mx.float32)
+        with patch.object(
+            model, "extract_speaker_embedding", wraps=model.extract_speaker_embedding
+        ) as extract:
+            inputs, trailing, pad = model._prepare_generation_inputs(
+                "text", ref_audio=ref_audio
+            )
+        extract.assert_called_once_with(ref_audio)
+        self.assertEqual(inputs.shape[1], 14)
+        self.assertEqual(inputs[0, -6:, 0].tolist(), [11, 12, 13, 14, 10, 12])
+        self.assertEqual(inputs.dtype, mx.bfloat16)
+        self.assertEqual(trailing.tolist(), pad.tolist())
+
+    def test_instructions_remain_before_role_and_complete_text(self):
+        model = self.make_model()
+        inputs, trailing, _ = model._prepare_generation_inputs(
+            "text", instruct="Speak calmly."
+        )
+        self.assertEqual(inputs[0, :12, 0].tolist(), list(range(12)))
+        self.assertEqual(inputs.shape[1], 25)
+        self.assertEqual(trailing.shape[1], 1)
+
+    def test_batch_prefill_preserves_unequal_text_lengths(self):
+        model = self.make_model()
+        texts = ["a", "longer text"]
+        batch = model._prepare_batch_inputs(texts, return_metadata=True)
+        self.assertEqual(batch.prefill_lens, [10, 20])
+        self.assertEqual(batch.left_padding, [10, 0])
+        self.assertEqual(batch.trailing_lens, [1, 1])
+        self.assertEqual(batch.attention_mask[0].tolist(), [0] * 10 + [1] * 10)
+        self.assertEqual(batch.attention_mask[1].tolist(), [1] * 20)
+        for index, text in enumerate(texts):
+            with self.subTest(text=text):
+                inputs, _, pad = model._prepare_generation_inputs(text)
+                left = batch.left_padding[index]
+                self.assertEqual(
+                    batch.input_embeds[index : index + 1, left:].tolist(),
+                    inputs.tolist(),
+                )
+                self.assertEqual(
+                    batch.trailing_text_hidden[index : index + 1].tolist(), pad.tolist()
+                )
+
+
 class TestQwen3TTSSpeakerEmbeddingDtype(unittest.TestCase):
     def test_xvector_prefill_uses_talker_dtype(self):
         model = _make_dtype_test_model()
@@ -799,6 +875,42 @@ class TestQwen3TTSBaseVoiceValidation(unittest.TestCase):
         results = list(model.generate(text="Hello", voice="vivian", max_tokens=1))
 
         self.assertTrue(results)
+
+
+class TestDecoderBlockUpsampleStreaming(unittest.TestCase):
+    """Tests for DecoderBlockUpsample streaming (step) against the full call."""
+
+    def _block(self, upsample_rate):
+        mx.random.seed(0)
+        block = DecoderBlockUpsample(in_dim=6, out_dim=5, upsample_rate=upsample_rate)
+        # Non-zero bias, so a doubled bias at chunk boundaries shows
+        block.conv.bias = mx.random.normal(block.conv.bias.shape)
+        return block
+
+    def _stream(self, block, x, chunk_sizes):
+        block.reset_state()
+        out, start = [], 0
+        for size in chunk_sizes:
+            out.append(block.step(x[:, start : start + size, :]))
+            start += size
+        self.assertEqual(start, x.shape[1])
+        return mx.concatenate(out, axis=1)
+
+    def test_step_matches_full_call_for_any_chunking(self):
+        """Test that streaming in any chunk sizes matches one call."""
+        for upsample_rate in (2, 4, 8):
+            block = self._block(upsample_rate)
+            x = mx.random.normal((1, 12, 6))
+            full = block(x)
+            for chunks in ([1] * 12, [2] * 6, [3, 1, 4, 4], [12]):
+                streamed = self._stream(block, x, chunks)
+                self.assertEqual(streamed.shape, full.shape)
+                np.testing.assert_allclose(
+                    np.array(streamed),
+                    np.array(full),
+                    atol=1e-5,
+                    err_msg=f"upsample_rate={upsample_rate}, chunks={chunks}",
+                )
 
 
 if __name__ == "__main__":

@@ -471,17 +471,18 @@ class Model(nn.Module):
         else:
             input_embeds = mx.concatenate([role_embed, combined_embed], axis=1)
 
-        # Add first text token (token index 3)
-        first_text_embed = text_embed[:, 3:4, :] + codec_embed[:, -1:, :]
-        input_embeds = mx.concatenate([input_embeds, first_text_embed], axis=1)
-
-        # Trailing text (tokens 4 to -5, plus EOS)
-        trailing_text_hidden = mx.concatenate(
-            [text_embed[:, 4:-5, :], tts_eos_embed],
+        full_text_embed = mx.concatenate(
+            [text_embed[:, 3:-5, :], tts_eos_embed], axis=1
+        )
+        input_embeds = mx.concatenate(
+            [
+                input_embeds,
+                full_text_embed + codec_embed_suffix[:, :1, :],
+                tts_pad_embed + codec_embed_suffix[:, 1:, :],
+            ],
             axis=1,
         )
-
-        return input_embeds, trailing_text_hidden, tts_pad_embed
+        return input_embeds, tts_pad_embed, tts_pad_embed
 
     def _prepare_batch_inputs(
         self,
@@ -615,7 +616,7 @@ class Model(nn.Module):
         Matches the official Qwen3-TTS generate_icl_prompt structure:
         1. text_embed = text_projection(text_embeddings(ref_text_tokens + target_text_tokens)) + eos
         2. codec_embed = codec_bos + sum_of_all_codebook_embeddings(ref_codes)
-        3. Streaming overlay: text[:codec_len] + codec if text longer, else padded text + codec
+        3. Prefill text over codec PAD, then reference codes over text PAD.
 
         Args:
             text: Target text to synthesize
@@ -716,10 +717,7 @@ class Model(nn.Module):
         )  # [1, ref_time+1, hidden]
         codec_lens = codec_embed_icl.shape[1]
 
-        # 6. Non-streaming mode overlay (matching official Qwen3-TTS non_streaming_mode=True)
-        # All text first (overlaid with codec_pad), then all codec (overlaid with tts_pad).
-        # This preserves full text context in the prefill, which is critical when
-        # codec_lens > text_lens (long references).
+        # Prefill text over codec PAD, then reference codes over text PAD.
         codec_pad_embed = self.talker.get_input_embeddings()(
             mx.array([[config.codec_pad_id]])
         )
@@ -2119,10 +2117,7 @@ class Model(nn.Module):
             )
 
         # For 0.6B models, instruct is not supported
-        if (
-            self.config.tts_model_size == "0b6"
-            and self.config.tts_model_type != "custom_voice"
-        ):
+        if self.config.tts_model_size == "0b6":
             instruct = None
 
         yield from self._generate_with_instruct(
