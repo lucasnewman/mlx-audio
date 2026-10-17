@@ -19,13 +19,13 @@ from .config import AudioEncoderConfig, ModelConfig, TextConfig
 
 @dataclass
 class StreamingResult:
-    """Result object for streaming transcription.
+    """Text-delta or chunk-boundary event from streaming transcription.
 
     Attributes:
         text: Decoded text for this emission.
         is_final: True if this is a final (committed) result, False if partial.
-        start_time: Start timestamp in seconds.
-        end_time: End timestamp in seconds.
+        start_time: Chunk start in seconds, or None for a text delta.
+        end_time: Chunk end in seconds, or None for a text delta.
         language: Language of the transcription.
         prompt_tokens: Total prompt tokens (only set on final result).
         generation_tokens: Total generation tokens (only set on final result).
@@ -33,8 +33,8 @@ class StreamingResult:
 
     text: str
     is_final: bool
-    start_time: float
-    end_time: float
+    start_time: Optional[float]
+    end_time: Optional[float]
     language: str = "en"
     prompt_tokens: int = 0
     generation_tokens: int = 0
@@ -1633,10 +1633,8 @@ class Qwen3ASRModel(nn.Module):
             disable=not verbose or len(chunks) == 1,
         )
         for chunk_idx, (chunk_audio, offset_sec) in chunk_iter:
-            actual_chunk_duration = chunk_end_times[chunk_idx] - offset_sec
             is_last_chunk = chunk_idx == len(chunks) - 1
             token_count = 0
-            emitted_token_count = 0
             chunk_language = language
             language_tokens = []
             detokenizer = StreamingDetokenizer(self._tokenizer)
@@ -1668,38 +1666,27 @@ class Qwen3ASRModel(nn.Module):
                         chunk_language, _ = self.extract_language(language_accumulator)
                     continue
 
-                # Estimate timing based on token position within chunk
-                # This is approximate since we don't have word-level alignment
                 token_count += 1
                 detokenizer.add_token(token)
                 text = detokenizer.last_segment
                 if not text:
                     continue
 
-                prev_progress = emitted_token_count / max(remaining_tokens, 1)
-                curr_progress = min(token_count / max(remaining_tokens, 1), 1.0)
-
-                estimated_start = offset_sec + (actual_chunk_duration * prev_progress)
-                estimated_end = offset_sec + (actual_chunk_duration * curr_progress)
-
                 yield StreamingResult(
                     text=text,
                     is_final=False,
-                    start_time=estimated_start,
-                    end_time=estimated_end,
+                    start_time=None,
+                    end_time=None,
                     language=chunk_language,
                 )
-                emitted_token_count = token_count
 
             detokenizer.finalize()
             if text := detokenizer.last_segment:
-                prev_progress = emitted_token_count / max(remaining_tokens, 1)
-                curr_progress = min(token_count / max(remaining_tokens, 1), 1.0)
                 yield StreamingResult(
                     text=text,
                     is_final=False,
-                    start_time=offset_sec + actual_chunk_duration * prev_progress,
-                    end_time=offset_sec + actual_chunk_duration * curr_progress,
+                    start_time=None,
+                    end_time=None,
                     language=chunk_language,
                 )
 
