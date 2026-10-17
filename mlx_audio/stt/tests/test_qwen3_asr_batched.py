@@ -6,6 +6,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.lm.generate import generate_step
+from mlx_audio.lm.sample_utils import make_logits_processors
 from mlx_audio.stt.models.base import STTOutput
 from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel, _rope_safe
 
@@ -149,6 +151,45 @@ class TestBatchedGeneration(unittest.TestCase):
             [[0], [0], [0, 10], [0, 20], [0, 10, 11], [0, 20, 21]],
         )
         self.assertEqual(processed_logits, [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+
+    def test_batched_repetition_penalty_matches_single_generation(self):
+        model = self.make_minimal_model()
+        prompts = [mx.array([10, 7]), mx.array([20, 7])]
+        model._build_prompt = Mock(side_effect=[prompt[None] for prompt in prompts])
+        model._build_inputs_embeds = Mock(return_value=mx.zeros((1, 2, 1)))
+        logits = mx.full((128,), -4.0)
+        logits[10], logits[20] = 2.0, 1.5
+        model.lm_head = lambda hidden: mx.broadcast_to(logits, (*hidden.shape[:2], 128))
+        model._forward_with_embeds = lambda embeds, cache: model.lm_head(embeds)
+        processors = make_logits_processors(repetition_penalty=2.0)
+
+        expected = [
+            list(
+                generate_step(
+                    prompt,
+                    model,
+                    input_embeddings=mx.zeros((2, 1)),
+                    prompt_cache=[],
+                    max_tokens=1,
+                    logits_processors=processors,
+                )
+            )[0][0]
+            for prompt in prompts
+        ]
+        texts, gen_tokens, _, _ = model._generate_chunks_batched(
+            [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
+            max_tokens=2,
+            sampler=lambda values: mx.argmax(values, axis=-1),
+            logits_processors=processors,
+            language="en",
+            system_prompt=None,
+            batch_size=2,
+            verbose=False,
+        )
+
+        self.assertEqual(expected, [20, 10])
+        self.assertEqual(texts, [str(token) for token in expected])
+        self.assertEqual(gen_tokens, [1, 1])
 
     def test_generate_rejects_invalid_batch_size(self):
         model = self.make_minimal_model()
