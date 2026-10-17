@@ -1,8 +1,8 @@
 """Audio I/O utilities using miniaudio.
 
 This module provides functions for reading and writing audio files.
-- Reading: Uses miniaudio to support WAV, AIFF, MP3, and FLAC formats.
-           Uses ffmpeg for M4A/AAC, OGG (Vorbis, Opus), WebM, CAF, and AIFC format support.
+- Reading: Uses miniaudio to support WAV, MP3, and FLAC formats.
+           Uses ffmpeg for M4A/AAC, OGG (Vorbis, Opus), WebM, CAF, AIFF, and AIFC format support.
 - Writing: Uses miniaudio for WAV and ffmpeg for MP3, FLAC, OGG, Opus, Vorbis, and WebM encoding.
 """
 
@@ -41,7 +41,18 @@ _RESAMPLE_CHUNK_DURATION_SECONDS = 1.0
 
 # Formats ffmpeg decodes, named by _detect_format or by file extension.
 # miniaudio decodes the rest.
-_FFMPEG_FORMATS = ("m4a", "m4b", "mp4", "aac", "ogg", "opus", "webm", "caf", "aifc")
+_FFMPEG_FORMATS = (
+    "m4a",
+    "m4b",
+    "mp4",
+    "aac",
+    "ogg",
+    "opus",
+    "webm",
+    "caf",
+    "aiff",
+    "aifc",
+)
 
 # Extensions that pick a miniaudio decoder.
 _MINIAUDIO_FORMATS = ("wav", "mp3", "flac", "vorbis")
@@ -111,8 +122,7 @@ def _backend(fmt: str) -> str:
     """Name the decoder for a format: ffmpeg, or one of miniaudio's."""
     if fmt in _FFMPEG_FORMATS:
         return "ffmpeg"
-    # miniaudio reads AIFF with its WAV decoder.
-    return "wav" if fmt == "aiff" else fmt
+    return fmt
 
 
 def _decode_ffmpeg(
@@ -145,7 +155,7 @@ def _decode_ffmpeg(
             "  ffmpeg not found!\n"
             "========================================\n"
             "\n"
-            "ffmpeg is required for M4A/AAC/WebM audio decoding.\n"
+            "ffmpeg is required to decode this audio format.\n"
             "\n"
             "Install ffmpeg:\n"
             "  macOS:  brew install ffmpeg\n"
@@ -339,7 +349,7 @@ def read(
     nchannels: Optional[int] = None,
     duration: Optional[float] = None,
 ) -> Tuple[np.ndarray, int]:
-    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM/CAF/AIFC).
+    """Read audio using miniaudio or ffmpeg.
 
     Args:
         file: Path to the audio file or a BytesIO object. The format comes from the

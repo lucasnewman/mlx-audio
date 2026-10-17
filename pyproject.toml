@@ -21,7 +21,7 @@ requires-python = ">=3.10"
 dependencies = [
     "huggingface_hub>=1.0",
     "miniaudio>=1.71",
-    "mlx>=0.31.1",
+    "mlx==0.32.4",
     "numpy>=1.26.4",
     "scipy>=1.10.0",
     "sentencepiece>=0.2.0",
@@ -81,9 +81,9 @@ llm = [
     "mlx-lm>=0.31.1",
 ]
 
-# Differential tests against the mlx-lm version mlx_audio/lm was vendored from.
+# Differential tests against the pinned mlx-lm reference.
 parity = [
-    "mlx-lm==0.31.3",
+    "mlx-lm==0.32.2; python_version >= '3.11'",
 ]
 
 # Development dependencies

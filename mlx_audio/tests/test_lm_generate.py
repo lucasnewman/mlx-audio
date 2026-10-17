@@ -90,6 +90,57 @@ def test_generate_step_respects_max_tokens(max_tokens):
     assert len(toks) == max_tokens
 
 
+@pytest.mark.parametrize("prefill", [1, 2, 4, 4096])
+def test_logits_processors_receive_full_prompt(prefill):
+    seen = []
+
+    def processor(tokens, logits):
+        seen.append(tokens.tolist())
+        return logits
+
+    generated = list(
+        generate_step(
+            mx.array([1, 2, 3, 4]),
+            CycleModel(),
+            max_tokens=2,
+            prefill_step_size=prefill,
+            logits_processors=[processor],
+        )
+    )
+
+    assert [token for token, _ in generated] == [5, 6]
+    assert seen[:2] == [[1, 2, 3, 4], [1, 2, 3, 4, 5]]
+
+
+def test_logits_processors_receive_integer_ids_with_embedding_only_prompt():
+    class EmbeddingModel(CycleModel):
+        def __call__(self, tokens, cache=None, input_embeddings=None):
+            if input_embeddings is not None:
+                return input_embeddings
+            return super().__call__(tokens, cache=cache)
+
+    seen = []
+
+    def processor(tokens, logits):
+        assert tokens.dtype in (mx.int32, mx.uint32)
+        seen.append(tokens.tolist())
+        return logits
+
+    generated = list(
+        generate_step(
+            mx.array([]),
+            EmbeddingModel(),
+            input_embeddings=mx.eye(VOCAB)[mx.array([1, 2, 3])],
+            max_tokens=2,
+            prefill_step_size=1,
+            logits_processors=[processor],
+        )
+    )
+
+    assert [token for token, _ in generated] == [3, 4]
+    assert seen[0] == [3]
+
+
 def test_generate_step_negative_max_tokens_is_unbounded():
     stream = generate_step(mx.array([1, 2]), CycleModel(), max_tokens=-1)
     produced = [int(pair[0]) for pair, _ in zip(stream, range(40))]
