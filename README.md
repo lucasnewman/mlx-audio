@@ -356,7 +356,7 @@ result = model.generate("audio.wav", language="en")
 print(result.text)
 ```
 
-See the [MiMo-V2.5-ASR README](mlx_audio/stt/models/mimo_v2_asr/README.md) for local-path loading and tokenizer override examples.
+See the [MiMo-V2.5-ASR README](mlx_audio/stt/models/mimo_v2_asr/README.md) for local-path loading.
 
 ### Phonon-1
 
