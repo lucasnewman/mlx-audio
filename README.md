@@ -148,10 +148,12 @@ for result in model.generate(
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Distil-Whisper** | Distilled fast Whisper variants | EN | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | **Qwen3-ASR** | Alibaba's multilingual ASR | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
+| **MiMo-V2.5-ASR** | Xiaomi's speech recognition model | ZH, EN | [MiMo-V2.5-ASR](https://huggingface.co/mlx-community/MiMo-V2.5-ASR-MLX) |
 | **Mega-ASR** | Routed Qwen3-ASR with automatic clean/base vs degraded/LoRA switching | EN (fixtures), multilingual Qwen3-ASR backbone | [README](mlx_audio/stt/models/mega_asr/README.md) |
 | **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **MOSS-Transcribe-Diarize** | Timestamped transcription with speaker labels | Multiple major languages | https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize |
 | **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
+| **Phonon-2** | Five-value Parakeet TDT | EN | [mlx-community/Phonon-2](https://huggingface.co/mlx-community/Phonon-2) · [README](mlx_audio/stt/models/phonon2/README.md) |
 | **Nemotron 3.5 ASR (streaming)** | NVIDIA's cache-aware streaming FastConformer-RNNT with language-ID prompting | 40 language-locales | [mlx-community/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Nemotron Speech Streaming 0.6B** | NVIDIA's English FastConformer-RNNT with 80/160/560/1120 ms streaming modes | EN | [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
@@ -347,6 +349,18 @@ for item in result:
 
 See the [Qwen3-ASR README](mlx_audio/stt/models/qwen3_asr/README.md) for CLI usage, all models, and more examples.
 
+### MiMo-V2.5-ASR
+
+```python
+from mlx_audio.stt import load
+
+model = load("mlx-community/MiMo-V2.5-ASR-MLX")
+result = model.generate("audio.wav", language="en")
+print(result.text)
+```
+
+See the [MiMo-V2.5-ASR README](mlx_audio/stt/models/mimo_v2_asr/README.md) for local-path loading.
+
 ### Phonon-1
 
 Fermion Research's compact English Qwen3-ASR derivatives load directly from
@@ -424,6 +438,22 @@ python -m mlx_audio.stt.generate \
     --context "MLX, Apple Silicon, PyTorch, Transformer" \
     --verbose
 ```
+
+### Phonon-2
+
+English speech recognition with Fermion Research's five-value Parakeet TDT model.
+Load the preconverted MLX weights directly; no converter or Fermion runtime is needed.
+
+```python
+from mlx_audio.stt import load
+
+model = load("mlx-community/Phonon-2")
+result = model.generate("audio.wav", chunk_duration=30, overlap_duration=2)
+print(result.text)
+```
+
+See the [Phonon-2 README](mlx_audio/stt/models/phonon2/README.md) for timestamps
+and chunk streaming.
 
 ### Parakeet (Multilingual STT)
 

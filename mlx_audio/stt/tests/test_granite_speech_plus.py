@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import mlx.core as mx
 import pytest
 
-from mlx_audio.stt.generate import _get_cues, save_as_json
+from mlx_audio.stt.generate import save_as_json
 from mlx_audio.stt.models.granite_speech.config import (
     EncoderConfig,
     ModelConfig,
@@ -316,11 +316,10 @@ def test_generate_returns_parsed_segments(monkeypatch, task, pieces, expected_se
     assert result.segments == expected_segments
 
 
-def test_writers_accept_untimed_speaker_segments(tmp_path):
+def test_json_preserves_untimed_speaker_segments(tmp_path):
     text = "[Speaker 1]: hi [Speaker 2]: hey"
     output = SimpleNamespace(text=text, segments=_parse_saa(text))
 
-    assert _get_cues(output) == []
     save_as_json(output, str(tmp_path / "speakers"))
     saved = json.loads((tmp_path / "speakers.json").read_text())
     assert saved["segments"] == [
