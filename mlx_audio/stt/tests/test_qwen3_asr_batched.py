@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -249,6 +249,100 @@ class TestStreamingTimestamps(unittest.TestCase):
 
         self.assertEqual(results[-1].start_time, 0.0)
         self.assertEqual(results[-1].end_time, 0.2)
+
+
+class TestChunkDurations(unittest.TestCase):
+    def _run(self, audio, mode, min_duration=1.0, chunks=None, processed=None):
+        model = _make_minimal_model()
+        inference_lengths = []
+
+        def single(chunk_audio, **kwargs):
+            inference_lengths.append(len(chunk_audio))
+            return "text", 1, 1
+
+        def batched(chunk_audio, **kwargs):
+            inference_lengths.extend(len(chunk) for chunk, _ in chunk_audio)
+            count = len(chunk_audio)
+            flags = [True] * count if processed is None else processed
+            return ["text"] * count, [1] * count, [1] * count, flags
+
+        def streaming(chunk_audio, **kwargs):
+            inference_lengths.append(len(chunk_audio))
+            yield mx.array(10), None
+
+        model._generate_single_chunk = single
+        model._generate_chunks_batched = batched
+        model.stream_generate = streaming
+
+        def generate():
+            result = model.generate(
+                audio,
+                language="English",
+                max_tokens=64,
+                batch_size=2 if mode == "batched" else 1,
+                stream=mode == "streaming",
+                chunk_duration=1.0,
+                min_chunk_duration=min_duration,
+            )
+            if mode == "streaming":
+                return [
+                    (event.start_time, event.end_time)
+                    for event in result
+                    if not event.text
+                ]
+            return [(segment["start"], segment["end"]) for segment in result.segments]
+
+        if chunks is None:
+            bounds = generate()
+        else:
+            with patch(
+                "mlx_audio.stt.models.qwen3_asr.qwen3_asr.split_audio_into_chunks",
+                return_value=chunks,
+            ):
+                bounds = generate()
+        return bounds, inference_lengths
+
+    def test_short_clip_duration_preserves_inference_padding(self):
+        cases = (
+            (np.zeros(1), 1 / 16000),
+            (np.zeros(160), 0.01),
+            (np.zeros((160, 2)), 0.01),
+            (np.zeros((2, 160)), 0.01),
+        )
+        for mode in ("sequential", "batched", "streaming"):
+            for audio, duration in cases:
+                with self.subTest(mode=mode, shape=audio.shape):
+                    bounds, lengths = self._run(audio, mode)
+                    self.assertEqual(bounds, [(0.0, duration)])
+                    self.assertEqual(lengths, [16000])
+
+    def test_final_chunk_duration_excludes_padding(self):
+        for mode in ("sequential", "batched", "streaming"):
+            with self.subTest(mode=mode):
+                bounds, lengths = self._run(np.zeros(32160), mode)
+                self.assertEqual(bounds, [(0.0, 1.0), (1.0, 2.0), (2.0, 2.01)])
+                self.assertEqual(lengths, [16000, 16000, 16000])
+
+    def test_nonfinal_chunk_durations_exclude_padding(self):
+        for mode in ("sequential", "batched", "streaming"):
+            with self.subTest(mode=mode):
+                bounds, lengths = self._run(np.zeros(64000), mode, min_duration=2.0)
+                self.assertEqual(
+                    bounds, [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0), (3.0, 4.0)]
+                )
+                self.assertEqual(lengths, [32000, 32000, 32000, 32000])
+
+    def test_chunk_extents_follow_nonuniform_original_offsets(self):
+        chunks = [(np.zeros(32000), offset) for offset in (0.0, 0.7, 1.9)]
+        for mode in ("sequential", "batched", "streaming"):
+            with self.subTest(mode=mode):
+                bounds, lengths = self._run(np.zeros(43200), mode, chunks=chunks)
+                self.assertEqual(bounds, [(0.0, 0.7), (0.7, 1.9), (1.9, 2.7)])
+                self.assertEqual(lengths, [32000, 32000, 32000])
+
+    def test_unprocessed_batch_chunks_keep_their_own_bounds(self):
+        bounds, _ = self._run(np.zeros(32160), "batched", processed=[True, False, True])
+        self.assertEqual(bounds, [(0.0, 1.0), (2.0, 2.01)])
 
 
 class TestPerChunkLanguage(unittest.TestCase):
