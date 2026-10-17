@@ -6838,16 +6838,18 @@ class TestMossTTSRegistration(unittest.TestCase):
             ("moss_tts_local", ["OpenMOSS-Team", "MOSS-TTS"]),
         ]
 
-        for expected_model_type, model_name in cases:
-            arch, model_type = get_model_class(
-                model_type=expected_model_type,
-                model_name=model_name,
-                category="tts",
-                model_remapping=MODEL_REMAPPING,
-            )
+        for config_model_type, model_name in cases:
+            for name_parts in (model_name, None, [], ["checkpoint"], ["kokoro"]):
+                with self.subTest(model_type=config_model_type, model_name=name_parts):
+                    arch, model_type = get_model_class(
+                        model_type=config_model_type,
+                        model_name=name_parts,
+                        category="tts",
+                        model_remapping=MODEL_REMAPPING,
+                    )
 
-            self.assertEqual(model_type, expected_model_type)
-            self.assertIs(arch.Model, SharedModel)
+                    self.assertEqual(model_type, "moss_tts")
+                    self.assertIs(arch.Model, SharedModel)
 
 
 class TestMisoTTSRegistration(unittest.TestCase):
