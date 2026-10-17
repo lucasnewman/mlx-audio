@@ -78,6 +78,11 @@ for result in model.generate(
 
 The `streaming_interval` controls how frequently chunks are emitted (in seconds). Smaller values give lower latency but more overhead per chunk.
 
+Generation prefills the complete input text before producing audio tokens.
+This also applies to Base voice cloning with or without a reference transcript.
+With `stream=True`, audio chunks are emitted incrementally after text prefill.
+Sampling and voice/style instructions can still affect speaking rate.
+
 ## Batch Generation
 
 Generate multiple texts with different voices in a single batched forward pass. Near-linear throughput scaling with minimal memory overhead:
