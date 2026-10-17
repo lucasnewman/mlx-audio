@@ -4,7 +4,9 @@ Alibaba's state-of-the-art multilingual TTS with three model variants.
 
 ## Voice Cloning
 
-Clone any voice using a reference audio sample. Provide the wav file and its transcript:
+Clone any voice using a reference audio sample. Provide the wav file and its exact transcript as a literal string (not a file path):
+
+> **Note:** Voice cloning is only supported on the **Base** models. Do not provide a `voice` (speaker name) when using `ref_audio` and `ref_text`, as it will cause a configuration conflict.
 
 ```python
 from mlx_audio.tts.utils import load_model
@@ -127,13 +129,13 @@ for result in model.batch_generate(
 
 | Model | Method | Description |
 |-------|--------|-------------|
-| `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` | `generate()` | Fast, predefined voices |
-| `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` | `generate()` | Higher quality |
+| `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` | `generate()` | Fast — voice cloning via `ref_audio`/`ref_text`; no preset speakers |
+| `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` | `generate()` | Higher quality — voice cloning via `ref_audio`/`ref_text`; no preset speakers |
 | `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` | `generate_custom_voice()` | Voices + emotion |
 | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16` | `generate_custom_voice()` | Better emotion control |
 | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16` | `generate_voice_design()` | Create any voice |
 
-## Speakers (Base/CustomVoice)
+## Speakers (CustomVoice)
 
 **Chinese:** `Vivian`, `Serena`, `Uncle_Fu`, `Dylan` (Beijing Dialect), `Eric` (Sichuan Dialect)
 

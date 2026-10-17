@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 
 try:
@@ -5,7 +7,11 @@ try:
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - no Metal host
     pytest.skip(f"MLX device unavailable: {exc}", allow_module_level=True)
 
-from mlx_audio.tts.models.breeze_tts.breeze_tts import Model, _t5gemma2_attention_mask
+from mlx_audio.tts.models.breeze_tts.breeze_tts import (
+    Model,
+    _split_long_segment,
+    _t5gemma2_attention_mask,
+)
 from mlx_audio.tts.models.breeze_tts.config import ModelConfig
 from mlx_audio.tts.utils import get_model_and_args
 from mlx_audio.utils import get_model_name_parts
@@ -147,16 +153,21 @@ def test_default_generic_voice_maps_to_breeze_s0():
 def test_depth_cfg_applies_to_every_remaining_codebook(monkeypatch):
     model = Model(tiny_config())
     sampled_logits = []
+    frame_values = {}
 
-    def next_logits(_token_ids, hidden):
-        return mx.full((1, 8), hidden[0, 0])
+    def start_frame(hidden, cache):
+        frame_values[id(cache)] = hidden[0, 0]
+
+    def step_logits(cache, *, head_idx, token_id):
+        return mx.full((1, 8), frame_values[id(cache)])
 
     def sample(logits, **_kwargs):
         sampled_logits.append(logits)
-        return 1
+        return mx.array([1])
 
-    monkeypatch.setattr(model.depth_decoder, "next_logits", next_logits)
-    monkeypatch.setattr(model, "_sample", sample)
+    monkeypatch.setattr(model.depth_decoder, "start_frame", start_frame)
+    monkeypatch.setattr(model.depth_decoder, "step_logits", step_logits)
+    monkeypatch.setattr(model, "_sample_array", sample)
     tokens = model._depth_tokens(
         1,
         mx.ones((1, 16)),
@@ -176,15 +187,19 @@ def test_depth_cfg_masks_reserved_tokens_at_every_step(monkeypatch):
     model = Model(tiny_config())
     sampled_logits = []
 
-    def next_logits(_token_ids, _hidden):
+    def start_frame(_hidden, _cache):
+        return None
+
+    def step_logits(_cache, *, head_idx, token_id):
         return mx.arange(8, dtype=mx.float32)[None, :]
 
     def sample(logits, **_kwargs):
         sampled_logits.append(logits)
-        return 1
+        return mx.array([1])
 
-    monkeypatch.setattr(model.depth_decoder, "next_logits", next_logits)
-    monkeypatch.setattr(model, "_sample", sample)
+    monkeypatch.setattr(model.depth_decoder, "start_frame", start_frame)
+    monkeypatch.setattr(model.depth_decoder, "step_logits", step_logits)
+    monkeypatch.setattr(model, "_sample_array", sample)
     model._depth_tokens(
         1,
         mx.ones((1, 16)),
@@ -259,6 +274,22 @@ def test_exact_prompt_template_for_cloning_and_direction(monkeypatch):
         ref_text="reference text",
     )
     assert prompts == ["[S2]reference text", "[S2]<ins_bos>warm<ins_eos>target"]
+
+
+def test_bf16_prompt_embeddings_keep_the_weight_dtype(monkeypatch):
+    # A float32 scale in the text embedding used to promote every prompt
+    # activation, and with it the backbone KV cache, to float32, which made
+    # bf16 checkpoints ~3.4x slower than necessary.
+    model = Model(tiny_config())
+    model.set_dtype(mx.bfloat16)
+    monkeypatch.setattr(
+        model, "_text_ids", lambda _text: mx.array([1, 2, 3], dtype=mx.int32)
+    )
+    embeds = model._prompt_embeddings(
+        "target", voice=None, instruct=None, ref_audio=None, ref_text=None
+    )
+    assert model.text_encoder.embed_tokens.weight.dtype == mx.bfloat16
+    assert embeds.dtype == mx.bfloat16
 
 
 def test_stream_flushes_at_exact_interval_and_resets_state(monkeypatch):
@@ -380,3 +411,99 @@ def test_breeze_registry_loads_model_module():
     )
     assert model_type == "breeze_tts"
     assert module.Model is Model
+
+
+def test_breeze_generate_splits_segments(monkeypatch):
+    model = Model(tiny_config())
+
+    class Decoder:
+        decode_upsample_rate = 24000
+
+        def reset_streaming_state(self):
+            pass
+
+    class AudioTokenizer:
+        decode_upsample_rate = 24000
+        decoder = Decoder()
+
+        def decode(self, codes):
+            return mx.zeros((1, 4)), mx.array([4], dtype=mx.int32)
+
+    class Backbone:
+        def make_cache(self):
+            return []
+
+        def __call__(self, input_embeddings=None, input_ids=None, cache=None):
+            del cache
+            length = (
+                input_embeddings.shape[1]
+                if input_embeddings is not None
+                else input_ids.shape[1]
+            )
+            return mx.zeros((1, length, 16))
+
+    class Head:
+        def __call__(self, _hidden):
+            logits = mx.full((1, 9), -100.0)
+            logits[..., 8] = 100.0
+            return logits
+
+    model.audio_tokenizer = AudioTokenizer()
+    model.backbone_model = Backbone()
+    model.lm_head = Head()
+    prompt_calls = []
+    monkeypatch.setattr(
+        model,
+        "_prompt_embeddings",
+        lambda text, *args, **kwargs: prompt_calls.append(text) or mx.zeros((1, 1, 16)),
+    )
+
+    results = list(model.generate("Segment 1\n\nSegment 2", temperature=0, top_k=0))
+    assert len(results) == 2
+    assert prompt_calls == ["Segment 1", "Segment 2"]
+    assert results[0].segment_idx == 0
+    assert not results[0].is_final_chunk
+    assert results[1].segment_idx == 1
+    assert results[1].is_final_chunk
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a" * 1201,
+        "word " * 300,
+        "这是第一句。这是第二句！这是第三句？" * 50,
+    ],
+)
+def test_breeze_long_segments_are_bounded(text):
+    chunks = _split_long_segment(text)
+
+    assert len(chunks) > 1
+    assert all(chunk for chunk in chunks)
+    assert all(len(chunk) <= 600 for chunk in chunks)
+
+
+def test_breeze_generate_preserves_existing_positional_arguments():
+    signature = inspect.signature(Model.generate)
+    bound = signature.bind(
+        None,
+        "text",
+        "voice",
+        "instruction",
+        "reference.wav",
+        "reference text",
+        2.0,
+        321,
+        0.4,
+        0.8,
+        7,
+        1.2,
+        123,
+        True,
+        0.5,
+    )
+
+    assert bound.arguments["max_tokens"] == 321
+    assert bound.arguments["temperature"] == 0.4
+    assert bound.arguments["streaming_interval"] == 0.5
+    assert "split_pattern" not in bound.arguments

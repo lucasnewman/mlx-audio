@@ -208,7 +208,7 @@ class TestStreamingTimestamps(unittest.TestCase):
                 )
             )
 
-            self.assertEqual([result.text for result in results], ["10", "11", ""])
+            self.assertEqual([result.text for result in results], ["10", " 11", ""])
             self.assertIsNone(results[0].start_time)
             self.assertIsNone(results[0].end_time)
             self.assertIsNone(results[1].start_time)
@@ -216,6 +216,24 @@ class TestStreamingTimestamps(unittest.TestCase):
             self.assertEqual(results[2].start_time, 0.0)
             self.assertEqual(results[2].end_time, 1.0)
             self.assertEqual(results[2].generation_tokens, 2)
+
+    def test_finalized_text_is_untimed(self):
+        model = self.make_minimal_model()
+        model._tokenizer.clean_up_tokenization_spaces = True
+        pieces = {10: "Hello ", 11: "world "}
+        model._tokenizer.decode = lambda ids, skip_special_tokens=True: "".join(
+            pieces[int(token)] for token in ids
+        )
+
+        results = list(model.stream_transcribe(np.zeros(16000), language="English"))
+
+        self.assertEqual("".join(result.text for result in results), "Hello world ")
+        self.assertEqual(results[-2].text, " ")
+        for result in results[:-1]:
+            self.assertIsNone(result.start_time)
+            self.assertIsNone(result.end_time)
+        self.assertEqual((results[-1].start_time, results[-1].end_time), (0.0, 1.0))
+        self.assertTrue(results[-1].is_final)
 
     def test_short_audio_boundary_uses_unpadded_duration(self):
         model = self.make_minimal_model()
@@ -231,6 +249,156 @@ class TestStreamingTimestamps(unittest.TestCase):
 
         self.assertEqual(results[-1].start_time, 0.0)
         self.assertEqual(results[-1].end_time, 0.2)
+
+
+class TestPerChunkLanguage(unittest.TestCase):
+    """Auto-detected language must not be reused as the request for later chunks.
+
+    A chunk without speech is answered ``language None<asr_text>``. If that
+    detection replaced the request's ``language``, every later chunk would be
+    prompted with a forced ``language None`` prefix.
+    """
+
+    def test_sequential_chunks_are_each_auto_detected(self):
+        model = _make_minimal_model()
+        model._generate_single_chunk = Mock(
+            side_effect=[
+                ("language None<asr_text>", 5, 1),
+                ("language English<asr_text>hello", 5, 1),
+            ]
+        )
+
+        out = model.generate(
+            np.zeros(32000),
+            chunk_duration=1,
+            min_chunk_duration=1,
+            language=None,
+        )
+
+        calls = model._generate_single_chunk.call_args_list
+        self.assertEqual([call.kwargs["language"] for call in calls], [None, None])
+        self.assertEqual(
+            [segment["language"] for segment in out.segments], ["None", "English"]
+        )
+        self.assertEqual(out.text, " hello")
+
+    def test_explicit_language_is_kept_for_every_chunk(self):
+        model = _make_minimal_model()
+        model._generate_single_chunk = Mock(
+            side_effect=[("first", 5, 1), ("second", 5, 1)]
+        )
+
+        out = model.generate(
+            np.zeros(32000),
+            chunk_duration=1,
+            min_chunk_duration=1,
+            language="French",
+        )
+
+        calls = model._generate_single_chunk.call_args_list
+        self.assertEqual(
+            [call.kwargs["language"] for call in calls], ["French", "French"]
+        )
+        self.assertEqual(
+            [segment["language"] for segment in out.segments], ["French", "French"]
+        )
+
+    def test_batched_chunks_are_each_auto_detected(self):
+        model = _make_minimal_model()
+        model._generate_chunks_batched = Mock(
+            return_value=(
+                ["language None<asr_text>", "language English<asr_text>hello"],
+                [1, 1],
+                [5, 5],
+                [True, True],
+            )
+        )
+
+        out = model.generate(
+            np.zeros(32000),
+            batch_size=2,
+            chunk_duration=1,
+            min_chunk_duration=1,
+            language=None,
+        )
+
+        self.assertIsNone(model._generate_chunks_batched.call_args.kwargs["language"])
+        self.assertEqual(
+            [segment["language"] for segment in out.segments], ["None", "English"]
+        )
+        self.assertEqual(out.text, " hello")
+
+    def test_streaming_chunks_are_each_auto_detected(self):
+        model = _make_minimal_model()
+        pieces = {
+            1: "language ",
+            2: "None",
+            3: "<asr_text>",
+            4: "English",
+            5: "hello",
+        }
+        model._tokenizer.decode = lambda ids, skip_special_tokens=True: "".join(
+            pieces[int(i)] for i in ids
+        )
+        chunk_tokens = iter([[1, 2, 3], [1, 4, 3, 5]])
+        languages = []
+
+        def fake_stream_generate(chunk_audio, **kwargs):
+            languages.append(kwargs["language"])
+            for token in next(chunk_tokens):
+                yield mx.array(token), None
+
+        model.stream_generate = fake_stream_generate
+
+        results = list(
+            model.stream_transcribe(
+                np.zeros(32000),
+                chunk_duration=1,
+                min_chunk_duration=1,
+                language=None,
+            )
+        )
+
+        self.assertEqual(languages, [None, None])
+        self.assertEqual(
+            [(result.text, result.language) for result in results],
+            [("", "None"), ("hello", "English"), ("", "English")],
+        )
+
+    def test_streaming_finalized_text_keeps_chunk_language(self):
+        for language, tokens, expected_language in (
+            (None, [1, 2, 3, 4], "English"),
+            ("French", [4], "French"),
+        ):
+            with self.subTest(language=language):
+                model = _make_minimal_model()
+                model._tokenizer.clean_up_tokenization_spaces = True
+                pieces = {
+                    1: "language ",
+                    2: "English",
+                    3: "<asr_text>",
+                    4: "hello ",
+                }
+                model._tokenizer.decode = lambda ids, skip_special_tokens=True: "".join(
+                    pieces[int(i)] for i in ids
+                )
+                model.stream_generate = Mock(
+                    return_value=iter((mx.array(token), None) for token in tokens)
+                )
+
+                results = list(
+                    model.stream_transcribe(np.zeros(16000), language=language)
+                )
+
+                self.assertEqual(
+                    [(result.text, result.language) for result in results],
+                    [
+                        ("hello", expected_language),
+                        (" ", expected_language),
+                        ("", expected_language),
+                    ],
+                )
+
 
 class TestListInputGeneration(unittest.TestCase):
     def make_model(self):

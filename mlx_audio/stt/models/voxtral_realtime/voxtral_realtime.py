@@ -22,6 +22,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.stt.streaming import StreamingSession
+
 from ..base import STTOutput
 from .audio import compute_mel_filters, compute_mel_spectrogram
 from .config import (
@@ -335,7 +337,7 @@ class Model(nn.Module):
         max_tokens: int = 4096,
         temperature: float = 0.0,
         transcription_delay_ms: Optional[int] = None,
-    ):
+    ) -> StreamingSession:
         """Create a stateful streaming session for this model.
 
         Returns a ``VoxtralStreamingSession`` whose ``feed()`` is a cheap
@@ -400,13 +402,15 @@ class Model(nn.Module):
         self, audio_np, max_tokens, temperature, verbose, transcription_delay_ms=None
     ):
         """Generator that yields text deltas as tokens are decoded."""
+        from mlx_audio.lm.generate import StreamingDetokenizer
+
         adapter_out, n_audio, prompt_len, logits, cache, enc_chunk_gen, start_time = (
             self._encode_and_prefill(audio_np, verbose, transcription_delay_ms)
         )
 
         adapter_len = adapter_out.shape[0]
         generated = []
-        prev_text = ""
+        detokenizer = StreamingDetokenizer(self._tokenizer)
 
         next_tok = self._next_token_mx(logits, temperature)
         mx.async_eval(next_tok)
@@ -415,13 +419,10 @@ class Model(nn.Module):
             token = int(next_tok.item())
             generated.append(token)
 
-            # Yield text delta (filter EOS from partial decode)
-            text_so_far = self._tokenizer.decode(
-                [t for t in generated if t != self.config.eos_token_id]
-            )
-            if text_so_far != prev_text:
-                yield text_so_far[len(prev_text) :]
-                prev_text = text_so_far
+            if token != self.config.eos_token_id:
+                detokenizer.add_token(token)
+                if text := detokenizer.last_segment:
+                    yield text
 
             if token == self.config.eos_token_id or len(generated) > max_tokens:
                 break
@@ -453,11 +454,14 @@ class Model(nn.Module):
             # Loop completed without break — read final pending token
             token = int(next_tok.item())
             generated.append(token)
-            text_so_far = self._tokenizer.decode(
-                [t for t in generated if t != self.config.eos_token_id]
-            )
-            if text_so_far != prev_text:
-                yield text_so_far[len(prev_text) :]
+            if token != self.config.eos_token_id:
+                detokenizer.add_token(token)
+                if text := detokenizer.last_segment:
+                    yield text
+
+        detokenizer.finalize()
+        if text := detokenizer.last_segment:
+            yield text
 
         mx.clear_cache()
 
