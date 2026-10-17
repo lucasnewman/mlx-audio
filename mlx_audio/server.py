@@ -198,6 +198,7 @@ class TranscriptionRequest(BaseModel):
     context: str | None = None
     prefill_step_size: int = 2048
     text: str | None = None
+    prompt: str | None = None
     word_timestamps: bool = False
     timestamp_granularities: Optional[str] = None
 
@@ -1060,6 +1061,7 @@ async def stt_transcriptions(
     context: Optional[str] = Form(None),
     prefill_step_size: int = Form(2048),
     text: Optional[str] = Form(None),
+    prompt: Optional[str] = Form(None),
     response_format: str = Form("ndjson"),
     word_timestamps: bool = Form(False),
     timestamp_granularities: Optional[str] = Form(None),
@@ -1092,6 +1094,7 @@ async def stt_transcriptions(
         context=context,
         prefill_step_size=prefill_step_size,
         text=text,
+        prompt=prompt,
         word_timestamps=word_timestamps,
         timestamp_granularities=timestamp_granularities,
     )
