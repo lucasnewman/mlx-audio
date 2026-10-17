@@ -40,6 +40,13 @@ class StreamingResult:
     generation_tokens: int = 0
 
 
+def _audio_duration(wav: np.ndarray, sr: int) -> float:
+    """Return the duration before model-only padding."""
+    if wav.ndim > 1 and wav.shape[-1] > 2:
+        return wav.shape[-1] / sr
+    return len(wav) / sr
+
+
 def split_audio_into_chunks(
     wav: np.ndarray,
     sr: int,
@@ -1398,6 +1405,7 @@ class Qwen3ASRModel(nn.Module):
         if isinstance(audio, str):
             audio = load_audio(audio)
         audio_np = np.array(audio) if isinstance(audio, mx.array) else audio
+        total_duration = _audio_duration(audio_np, self.sample_rate)
 
         # Split into chunks if needed
         chunks = split_audio_into_chunks(
@@ -1406,6 +1414,7 @@ class Qwen3ASRModel(nn.Module):
             chunk_duration=chunk_duration,
             min_chunk_duration=min_chunk_duration,
         )
+        chunk_end_times = [offset for _, offset in chunks[1:]] + [total_duration]
 
         sampler = make_sampler(
             temperature,
@@ -1442,9 +1451,14 @@ class Qwen3ASRModel(nn.Module):
                 batch_size=batch_size,
                 verbose=verbose,
             )
-            for (chunk_audio, offset_sec), text, gt, pt, was_processed in zip(
-                chunks, texts, gen_toks, prompt_toks, processed
-            ):
+            for (
+                (chunk_audio, offset_sec),
+                chunk_end,
+                text,
+                gt,
+                pt,
+                was_processed,
+            ) in zip(chunks, chunk_end_times, texts, gen_toks, prompt_toks, processed):
                 if not was_processed:
                     continue
                 chunk_language = language
@@ -1458,20 +1472,21 @@ class Qwen3ASRModel(nn.Module):
                         "text": text,
                         "language": chunk_language,
                         "start": offset_sec,
-                        "end": offset_sec + len(chunk_audio) / self.sample_rate,
+                        "end": chunk_end,
                     }
                 )
             chunks = []  # skip the sequential loop below
 
         chunk_iter = tqdm(
-            chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1
+            zip(chunks, chunk_end_times),
+            total=len(chunks),
+            desc="Processing chunks",
+            disable=not verbose or len(chunks) == 1,
         )
-        for chunk_audio, offset_sec in chunk_iter:
+        for (chunk_audio, offset_sec), chunk_end in chunk_iter:
             # Stop if we've exhausted the token budget
             if remaining_tokens <= 0:
                 break
-
-            actual_chunk_duration = len(chunk_audio) / self.sample_rate
 
             text, prompt_toks, gen_toks = self._generate_single_chunk(
                 chunk_audio,
@@ -1502,7 +1517,7 @@ class Qwen3ASRModel(nn.Module):
                     "text": text,
                     "language": chunk_language,
                     "start": offset_sec,
-                    "end": offset_sec + actual_chunk_duration,
+                    "end": chunk_end,
                 }
             )
 
@@ -1577,8 +1592,7 @@ class Qwen3ASRModel(nn.Module):
             audio = load_audio(audio)
         audio_np = np.array(audio) if isinstance(audio, mx.array) else audio
 
-        # Calculate total audio duration
-        total_duration = len(audio_np) / self.sample_rate
+        total_duration = _audio_duration(audio_np, self.sample_rate)
 
         # Split into chunks if needed
         chunks = split_audio_into_chunks(
@@ -1587,6 +1601,7 @@ class Qwen3ASRModel(nn.Module):
             chunk_duration=chunk_duration,
             min_chunk_duration=min_chunk_duration,
         )
+        chunk_end_times = [offset for _, offset in chunks[1:]] + [total_duration]
 
         sampler = make_sampler(
             temperature,
@@ -1618,7 +1633,7 @@ class Qwen3ASRModel(nn.Module):
             disable=not verbose or len(chunks) == 1,
         )
         for chunk_idx, (chunk_audio, offset_sec) in chunk_iter:
-            actual_chunk_duration = len(chunk_audio) / self.sample_rate
+            actual_chunk_duration = chunk_end_times[chunk_idx] - offset_sec
             is_last_chunk = chunk_idx == len(chunks) - 1
             token_count = 0
             emitted_token_count = 0
@@ -1697,7 +1712,7 @@ class Qwen3ASRModel(nn.Module):
                 text="",
                 is_final=is_last_chunk or remaining_tokens <= 0,
                 start_time=offset_sec,
-                end_time=offset_sec + actual_chunk_duration,
+                end_time=chunk_end_times[chunk_idx],
                 language=chunk_language,
                 prompt_tokens=total_prompt_tokens,
                 generation_tokens=total_generation_tokens,
