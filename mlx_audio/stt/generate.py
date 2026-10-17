@@ -126,20 +126,28 @@ def format_vtt_timestamp(seconds: float) -> str:
 
 
 def _get_cues(segments):
-    """Extract unified cues from any model's output (Parakeet or Whisper).
-
-    Uses word-level cues when available, otherwise falls back to segment-level.
-    """
+    """Extract subtitle cues, rejecting text without timestamps."""
     if hasattr(segments, "sentences"):
         return [
             {"start": s.start, "end": s.end, "text": s.text} for s in segments.sentences
         ]
     cues = []
     for s in segments.segments:
+        if s.get("start") is None or s.get("end") is None:
+            if s["text"].strip():
+                raise ValueError(
+                    "Subtitle export requires timestamps for every nonempty segment. "
+                    "Use TXT or JSON for untimed transcripts."
+                )
+            continue
         cues.append({"start": s["start"], "end": s["end"], "text": s["text"]})
         if "words" in s and s["words"]:
             for w in s["words"]:
                 cues.append({"start": w["start"], "end": w["end"], "text": w["word"]})
+    if not cues and segments.text.strip():
+        raise ValueError(
+            "Subtitle export requires timestamps. Use TXT or JSON for untimed transcripts."
+        )
     return cues
 
 
@@ -153,12 +161,13 @@ def save_as_txt(segments, output_path: str):
 
 
 def save_as_srt(segments, output_path: str):
+    cues = _get_cues(segments)
     with (
         open(f"{output_path}.srt", "w", encoding="utf-8")
         if output_path != "-"
         else contextlib.nullcontext(sys.stdout)
     ) as f:
-        for i, cue in enumerate(_get_cues(segments), 1):
+        for i, cue in enumerate(cues, 1):
             f.write(f"{i}\n")
             f.write(
                 f"{format_timestamp(cue['start'])} --> {format_timestamp(cue['end'])}\n"
@@ -167,13 +176,14 @@ def save_as_srt(segments, output_path: str):
 
 
 def save_as_vtt(segments, output_path: str):
+    cues = _get_cues(segments)
     with (
         open(f"{output_path}.vtt", "w", encoding="utf-8")
         if output_path != "-"
         else contextlib.nullcontext(sys.stdout)
     ) as f:
         f.write("WEBVTT\n\n")
-        for i, cue in enumerate(_get_cues(segments), 1):
+        for i, cue in enumerate(cues, 1):
             f.write(f"{i}\n")
             f.write(
                 f"{format_vtt_timestamp(cue['start'])} --> {format_vtt_timestamp(cue['end'])}\n"
@@ -214,17 +224,15 @@ def save_as_json(segments, output_path: str):
             "segments": [],
         }
         for s in segments.segments:
-            duration = (
-                s["end"] - s["start"]
-                if s["start"] is not None and s["end"] is not None
-                else None
-            )
-            seg = {
-                "text": s["text"],
-                "start": s["start"],
-                "end": s["end"],
-                "duration": duration,
-            }
+            seg = {"text": s["text"]}
+            if "start" in s or "end" in s:
+                seg["start"] = s.get("start")
+                seg["end"] = s.get("end")
+                seg["duration"] = (
+                    seg["end"] - seg["start"]
+                    if seg["start"] is not None and seg["end"] is not None
+                    else None
+                )
             # Add word-level timestamps if available
             if "words" in s and s["words"]:
                 seg["words"] = s["words"]
