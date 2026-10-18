@@ -264,6 +264,33 @@ class Model(nn.Module):
         """Load generation configuration."""
         self.generate_config = generate_config
 
+    def _resolve_generation_options(
+        self,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        top_k: Optional[int],
+        top_p: Optional[float],
+        repetition_penalty: Optional[float],
+    ) -> dict:
+        """Prefer explicit options, then checkpoint metadata, then reference defaults."""
+        # QwenLM/Qwen3-TTS: Qwen3TTSModel._merge_generate_kwargs.
+        # https://github.com/QwenLM/Qwen3-TTS/blob/main/qwen_tts/inference/qwen3_tts_model.py
+        config = self.generate_config or {}
+
+        def pick(name, value, default):
+            if value is not None:
+                return value
+            configured = config.get(name)
+            return default if configured is None else configured
+
+        return dict(
+            temperature=pick("temperature", temperature, 0.9),
+            max_tokens=pick("max_new_tokens", max_tokens, 2048),
+            top_k=pick("top_k", top_k, 50),
+            top_p=pick("top_p", top_p, 1.0),
+            repetition_penalty=pick("repetition_penalty", repetition_penalty, 1.05),
+        )
+
     def get_supported_speakers(self) -> List[str]:
         """Get list of supported speaker names."""
         return self.supported_speakers
@@ -1126,23 +1153,26 @@ class Model(nn.Module):
         text: str,
         voice: Optional[str] = None,
         instruct: Optional[str] = None,
-        temperature: float = 0.9,
+        temperature: Optional[float] = None,
         speed: float = 1.0,
         lang_code: str = "auto",
         ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: Optional[str] = None,
         split_pattern: str = "\n",
-        max_tokens: int = 4096,
+        max_tokens: Optional[int] = None,
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
         streaming_context_size: int = 25,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        repetition_penalty: float = 1.05,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         """Generate audio from text.
+
+        Unset sampling options use generation_config.json when available,
+        otherwise the Qwen3-TTS reference defaults.
 
         Automatically routes to the appropriate generation method based on model type:
         - voice_design: Uses generate_voice_design() with instruct as voice description
@@ -1172,6 +1202,15 @@ class Model(nn.Module):
         Yields:
             GenerationResult objects with generated audio
         """
+        options = self._resolve_generation_options(
+            temperature, max_tokens, top_k, top_p, repetition_penalty
+        )
+        temperature = options["temperature"]
+        max_tokens = options["max_tokens"]
+        top_k = options["top_k"]
+        top_p = options["top_p"]
+        repetition_penalty = options["repetition_penalty"]
+
         # Load reference audio if provided (handles file paths and mx.array)
         if ref_audio is not None:
             ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
@@ -1659,12 +1698,12 @@ class Model(nn.Module):
         ref_text: Optional[str] = None,
         ref_audios: Optional[List[Optional[Union[str, mx.array]]]] = None,
         ref_texts: Optional[List[Optional[str]]] = None,
-        temperature: float = 0.9,
+        temperature: Optional[float] = None,
         lang_code: str = "auto",
-        max_tokens: int = 4096,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        repetition_penalty: float = 1.05,
+        max_tokens: Optional[int] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
         stream: bool = False,
         streaming_interval: float = 2.0,
         streaming_context_size: int = 25,
@@ -1695,6 +1734,15 @@ class Model(nn.Module):
         Yields:
             BatchGenerationResult objects with generated audio per sequence
         """
+        options = self._resolve_generation_options(
+            temperature, max_tokens, top_k, top_p, repetition_penalty
+        )
+        temperature = options["temperature"]
+        max_tokens = options["max_tokens"]
+        top_k = options["top_k"]
+        top_p = options["top_p"]
+        repetition_penalty = options["repetition_penalty"]
+
         if self.speech_tokenizer is None:
             raise ValueError("Speech tokenizer not loaded")
 
@@ -2067,11 +2115,11 @@ class Model(nn.Module):
         speaker: str,
         language: str = "auto",
         instruct: Optional[str] = None,
-        temperature: float = 0.9,
-        max_tokens: int = 4096,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        repetition_penalty: float = 1.05,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
@@ -2125,11 +2173,9 @@ class Model(nn.Module):
             speaker=speaker,
             language=language,
             instruct=instruct,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_k=top_k,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
+            **self._resolve_generation_options(
+                temperature, max_tokens, top_k, top_p, repetition_penalty
+            ),
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
@@ -2140,11 +2186,11 @@ class Model(nn.Module):
         text: str,
         instruct: str,
         language: str = "auto",
-        temperature: float = 0.9,
-        max_tokens: int = 4096,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        repetition_penalty: float = 1.05,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
@@ -2186,11 +2232,9 @@ class Model(nn.Module):
             speaker=None,  # No speaker for VoiceDesign
             language=language,
             instruct=instruct,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            top_k=top_k,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
+            **self._resolve_generation_options(
+                temperature, max_tokens, top_k, top_p, repetition_penalty
+            ),
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,

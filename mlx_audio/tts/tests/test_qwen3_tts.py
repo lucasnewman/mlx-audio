@@ -2,7 +2,7 @@
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
 import numpy as np
@@ -562,6 +562,7 @@ def _make_generation_test_model(text_token_count: int = 10):
 
     model = Model.__new__(Model)
     model._sample_rate = 24000
+    model.generate_config = None
     model.config = SimpleNamespace(
         talker_config=SimpleNamespace(
             vocab_size=vocab_size,
@@ -801,6 +802,126 @@ class TestQwen3TTSNoEosFilterBypass(unittest.TestCase):
 
         with self.assertRaises(TypeError):
             Model._sample_token_batch(model, logits, eos_token_id=1)
+
+
+class TestQwen3TTSGenerationDefaults(unittest.TestCase):
+    def _instruct_options(self, model_type, config=None, **overrides):
+        model = _make_generation_test_model()
+        model.config.tts_model_type = model_type
+        model.config.tts_model_size = "1b7"
+        model.supported_speakers = ["Vivian"]
+        model.load_generate_config(config)
+        with patch.object(
+            model, "_generate_with_instruct", return_value=iter(())
+        ) as gen:
+            if model_type == "custom_voice":
+                list(
+                    model.generate_custom_voice("hello", speaker="Vivian", **overrides)
+                )
+            else:
+                list(
+                    model.generate_voice_design(
+                        "hello", instruct="warm voice", **overrides
+                    )
+                )
+        return gen.call_args.kwargs
+
+    def test_reference_defaults_without_metadata(self):
+        for model_type in ("custom_voice", "voice_design"):
+            with self.subTest(model_type=model_type):
+                options = self._instruct_options(model_type)
+                self.assertEqual(options["temperature"], 0.9)
+                self.assertEqual(options["max_tokens"], 2048)
+                self.assertEqual(options["top_k"], 50)
+                self.assertEqual(options["top_p"], 1.0)
+                self.assertEqual(options["repetition_penalty"], 1.05)
+
+    def test_metadata_defaults_and_explicit_overrides(self):
+        config = dict(
+            temperature=0.5,
+            max_new_tokens=8192,
+            top_k=30,
+            top_p=0.8,
+            repetition_penalty=1.1,
+        )
+        for model_type in ("custom_voice", "voice_design"):
+            with self.subTest(model_type=model_type):
+                options = self._instruct_options(model_type, config)
+                for name, value in config.items():
+                    self.assertEqual(
+                        options["max_tokens" if name == "max_new_tokens" else name],
+                        value,
+                    )
+
+                overrides = dict(
+                    temperature=0.0,
+                    max_tokens=17,
+                    top_k=0,
+                    top_p=1.0,
+                    repetition_penalty=1.0,
+                )
+                options = self._instruct_options(model_type, config, **overrides)
+                for name, value in overrides.items():
+                    self.assertEqual(options[name], value)
+                self.assertEqual(config["temperature"], 0.5)
+
+    def test_partial_and_null_metadata_fall_back_to_reference(self):
+        options = self._instruct_options(
+            "voice_design",
+            dict(temperature=None, max_new_tokens=None, top_k=0),
+            temperature=None,
+            max_tokens=None,
+        )
+        self.assertEqual(options["temperature"], 0.9)
+        self.assertEqual(options["max_tokens"], 2048)
+        self.assertEqual(options["top_k"], 0)
+        self.assertEqual(options["top_p"], 1.0)
+        self.assertEqual(options["repetition_penalty"], 1.05)
+
+    def test_generate_uses_metadata_for_base_sampling_and_token_limit(self):
+        model = _make_generation_test_model()
+        model.load_generate_config(
+            dict(
+                temperature=0.4,
+                max_new_tokens=3,
+                top_k=20,
+                top_p=0.85,
+                repetition_penalty=1.1,
+            )
+        )
+        with patch.object(model, "_sample_token", wraps=model._sample_token) as sample:
+            results = list(model.generate("hello"))
+
+        self.assertEqual(results[-1].token_count, 3)
+        options = sample.call_args.kwargs
+        self.assertEqual(options["temperature"], 0.4)
+        self.assertEqual(options["top_k"], 20)
+        self.assertEqual(options["top_p"], 0.85)
+        self.assertEqual(options["repetition_penalty"], 1.1)
+
+    def test_batch_generate_resolves_metadata_before_creating_session(self):
+        model = _make_generation_test_model()
+        model.load_generate_config(
+            dict(
+                temperature=0.4,
+                max_new_tokens=8192,
+                top_k=20,
+                top_p=0.85,
+                repetition_penalty=1.1,
+            )
+        )
+        session = MagicMock(idle=True)
+        with patch.object(
+            model, "create_tts_batch_session", return_value=session
+        ) as create:
+            list(model.batch_generate(["hello"], temperature=0.0, top_k=0))
+
+        options = create.call_args.args[0]
+        self.assertEqual(options.temperature, 0.0)
+        self.assertEqual(options.max_tokens, 8192)
+        self.assertEqual(options.top_k, 0)
+        self.assertEqual(options.top_p, 0.85)
+        self.assertEqual(options.repetition_penalty, 1.1)
 
 
 class TestQwen3TTSMaxTokens(unittest.TestCase):
