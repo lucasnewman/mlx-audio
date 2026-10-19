@@ -1,12 +1,14 @@
 import re
 import unittest
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import mlx.core as mx
 import mlx.nn as nn
 
 from mlx_audio.tts.models.bailingmm.bailingmm import (
     _MING3_VOICE_RE,
+    MING3_MAX_CACHE_LEN,
     Model,
     _add_period,
     _is_style_instruction,
@@ -193,6 +195,33 @@ class TestMingText(unittest.TestCase):
         self.assertTrue(all(_semantic_length(f) <= 20 for f in fragments))
         self.assertEqual(" ".join(fragments), text)
 
+    def test_long_clause_splits_at_words_without_dropping_text(self):
+        text = " ".join(["hello"] * 600) + ". Goodbye."
+        fragments = _split_fragments(text, 50)
+        self.assertTrue(all(_semantic_length(f) <= 50 for f in fragments))
+        self.assertEqual(" ".join(fragments), text)
+
+    def test_long_chinese_clause_splits_at_characters(self):
+        text = "我们今天去公园散步" * 20 + "。"
+        fragments = _split_fragments(text, 20)
+        self.assertTrue(all(_semantic_length(f) <= 20 for f in fragments))
+        self.assertEqual("".join(fragments), text)
+
+    def test_word_splitting_preserves_numbers_abbreviations_and_tags(self):
+        text = " ".join(
+            ["It costs 1,000 dollars or 3.14 pounds in the U.S. [Surprise-ah] Wait..."]
+            * 10
+        )
+        fragments = _split_fragments(text, 7)
+        self.assertTrue(all(_semantic_length(f) <= 7 for f in fragments))
+        self.assertEqual(" ".join(fragments), text)
+
+    def test_fragment_length_must_be_positive(self):
+        for max_length in (0, -1):
+            with self.subTest(max_length=max_length):
+                with self.assertRaisesRegex(ValueError, "max_length"):
+                    _split_fragments("Hello.", max_length)
+
     def test_chinese_fragments_join_without_spaces(self):
         text = "今天天气很好。" * 12
         fragments = _split_fragments(text, 20)
@@ -236,6 +265,48 @@ class TestMingText(unittest.TestCase):
         speech = mx.concatenate([mx.ones((500,)), mx.zeros((2000,))])
         trimmed = _trim_trailing_silence(speech, sr)
         self.assertEqual(trimmed.shape[0], 500 + 300)
+
+
+class TestMing3GenerationBudget(unittest.TestCase):
+    def test_full_or_oversized_prompt_is_rejected_before_inference(self):
+        model = make_model(chat_layout=True, ming3=True)
+        model.llm_args.num_hidden_layers = 0
+        model._forward_llm_hidden = MagicMock()
+        ids, _ = model._prepare_input_embed(PROMPT, "")
+        for prompt_length in (MING3_MAX_CACHE_LEN, MING3_MAX_CACHE_LEN + 1):
+            with self.subTest(prompt_length=prompt_length):
+                text = "x" * (prompt_length - ids.shape[1])
+                with self.assertRaisesRegex(ValueError, "512.*Shorten"):
+                    list(model.sample(PROMPT, text))
+        model._forward_llm_hidden.assert_not_called()
+
+    def test_sampling_respects_remaining_cache_and_requested_steps(self):
+        model = make_model(chat_layout=True, ming3=True)
+        model.llm_args.num_hidden_layers = 0
+        model.history_patch_size = 1
+        model._forward_llm_hidden = MagicMock(return_value=mx.zeros((1, 1, 8)))
+        model.flowloss = SimpleNamespace(
+            sample=MagicMock(return_value=(mx.zeros((1, 1, 4)), None))
+        )
+        model.stop_head = lambda _: mx.zeros((1, 1, 2))
+        ids, _ = model._prepare_input_embed(PROMPT, "")
+        for remaining, requested in ((1, 20), (2, 20), (2, 1)):
+            with self.subTest(remaining=remaining, requested=requested):
+                text = "x" * (MING3_MAX_CACHE_LEN - remaining - ids.shape[1])
+                latents = list(model.sample(PROMPT, text, max_decode_steps=requested))
+                self.assertEqual(len(latents), min(remaining, requested))
+
+    def test_generate_does_not_skip_an_empty_fragment(self):
+        model = make_model(chat_layout=True, ming3=True)
+        model.audio = SimpleNamespace(sample_rate=1000, decode=MagicMock())
+        model.audio.decode.return_value = (mx.ones((1, 100)), None, None)
+        latent = mx.zeros((1, 1, 4))
+        model.sample = MagicMock(side_effect=[iter(()), iter([(latent, True)])])
+        text = " ".join(["hello"] * 50) + ". Goodbye."
+        with self.assertRaisesRegex(RuntimeError, "fragment"):
+            next(model.generate(text))
+        model.sample.assert_called_once()
+        model.audio.decode.assert_not_called()
 
 
 if __name__ == "__main__":

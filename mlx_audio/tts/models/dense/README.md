@@ -3,7 +3,7 @@
 This implementation powers `model_type: "dense"`, the Qwen2.5-0.5B Ming checkpoints:
 
 - [Ming-3.0-tts-0.5B](https://huggingface.co/inclusionAI/Ming-3.0-tts-0.5B): `mlx-community/Ming-3.0-tts-0.5B-bf16`
-- [Ming-omni-tts-0.5B](https://huggingface.co/inclusionAI/Ming-omni-tts-0.5B): `mlx-community/Ming-omni-tts-0.5B-4bit`
+- [Ming-omni-tts-0.5B](https://huggingface.co/inclusionAI/Ming-omni-tts-0.5B): `mlx-community/Ming-omni-tts-0.5B-bf16`
 
 Both checkpoints share one config. Ming-3.0 is detected by its one-latent patches (`ditar_config.patch_size == 1`). It gets the Ming-3.0 prompt contract:
 - the caption ends with `<|im_end|>`;
@@ -122,7 +122,7 @@ design = next(
 
 ```bash
 mlx_audio.tts.generate \
-  --model mlx-community/Ming-omni-tts-0.5B-4bit \
+  --model mlx-community/Ming-omni-tts-0.5B-bf16 \
   --text "Simply put, this was equivalent to handing over the consumer market to competitors." \
   --ref_audio conversational_a.wav \
   --instruct "Speak quickly, with medium pitch and higher volume." \
@@ -135,7 +135,7 @@ import numpy as np
 from mlx_audio.audio_io import write as audio_write
 from mlx_audio.tts.utils import load_model
 
-model = load_model("mlx-community/Ming-omni-tts-0.5B-4bit")
+model = load_model("mlx-community/Ming-omni-tts-0.5B-bf16")
 
 result = next(
     model.generate(

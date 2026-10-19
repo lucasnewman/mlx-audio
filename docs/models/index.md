@@ -41,7 +41,7 @@ Generate natural-sounding speech from text. Multiple models with multilingual su
 | **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
 | **Ming Omni TTS (BailingMM)** | Multimodal generation with voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-16.8B-A3B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-bf16) |
 | **Ming-3.0 TTS (Dense)** | 0.5B multilingual TTS with voice cloning, built-in voices and style control | ZH, EN, DE, ES, FR, KO, JA | [mlx-community/Ming-3.0-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16) |
-| **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-4bit](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-4bit) |
+| **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
 
 [:octicons-arrow-right-24: Browse TTS Models](tts/index.md)
 

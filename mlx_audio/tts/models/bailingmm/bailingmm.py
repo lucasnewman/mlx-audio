@@ -75,8 +75,10 @@ def _split_fragments(text: str, max_length: int) -> List[str]:
 
     A simplified version of Ming-3.0's ``cut_text_by_semantic_length``: whole
     sentences are packed together, and a sentence that is too long on its own
-    is split at commas.
+    is split at commas, then at words or Chinese characters for long clauses.
     """
+    if max_length <= 0:
+        raise ValueError("max_length must be positive")
     text = " ".join(text.split())
     if _semantic_length(text) <= max_length:
         return [text]
@@ -86,6 +88,8 @@ def _split_fragments(text: str, max_length: int) -> List[str]:
     # which keeps "3.14", "1,000", "U.S." and "..." intact.
     sentence_re = re.compile(r".*?(?:[。！？]|[.!?](?=\s)|$)\s*")
     clause_re = re.compile(r".*?(?:[，；、]|[,;](?=\s)|$)\s*")
+    # Keep tags and non-Chinese words intact, including numbers and abbreviations.
+    word_re = re.compile(r"\[[^\]]*\]|[一-龥]|[^\s一-龥]+|\s+")
 
     def units(pattern: re.Pattern, value: str) -> List[str]:
         return [m.group(0) for m in pattern.finditer(value) if m.group(0)]
@@ -107,7 +111,11 @@ def _split_fragments(text: str, max_length: int) -> List[str]:
         if _semantic_length(sentence) <= max_length:
             pieces.append(sentence)
         else:
-            pieces.extend(pack(units(clause_re, sentence)))
+            for clause in units(clause_re, sentence):
+                if _semantic_length(clause) > max_length:
+                    pieces.extend(pack(word_re.findall(clause)))
+                else:
+                    pieces.append(clause)
     return [f.strip() for f in pack(pieces) if f.strip()]
 
 
@@ -1894,7 +1902,13 @@ class Model(nn.Module):
 
         if self.ming3:
             budget = (MING3_MAX_CACHE_LEN - inputs_embeds.shape[1]) // self.patch_size
-            max_decode_steps = min(max_decode_steps, max(budget, 0))
+            if budget <= 0:
+                raise ValueError(
+                    f"Ming-3.0 prompt has {inputs_embeds.shape[1]} positions and "
+                    f"exhausts the {MING3_MAX_CACHE_LEN}-position cache. Shorten "
+                    "the text, instruction, or reference audio."
+                )
+            max_decode_steps = min(max_decode_steps, budget)
 
         for step in range(max_decode_steps):
             hidden = self._forward_llm_hidden(inputs_embeds=inputs_embeds, cache=cache)
@@ -2030,7 +2044,9 @@ class Model(nn.Module):
                 # One pass per fragment, as the reference decodes it.
                 latents = [tokens for tokens, _ in sampler]
                 if not latents:
-                    continue
+                    raise RuntimeError(
+                        "No audio latents were generated for a text fragment"
+                    )
                 part, _, _ = self.audio.decode(
                     mx.concatenate(latents, axis=1), use_cache=False, last_chunk=True
                 )
