@@ -295,10 +295,6 @@ def _default_stt_max_tokens(signature: inspect.Signature) -> int:
 class STTExecutionAdapter(BaseModelExecutionAdapter):
     def run_serial(self, request: InferenceRequest) -> None:
         payload: TranscriptionTaskPayload = request.payload
-        # The decoded audio is re-encoded for the model, so use a fixed
-        # internal container instead of the upload's extension. audio_io can
-        # read M4A/AAC/CAF but cannot write them; reusing the upload suffix
-        # here turned otherwise valid uploads into 500s.
         tmp_path = f"/tmp/{time.time()}_{request.request_id}.wav"
         audio_write(tmp_path, payload.audio, payload.sample_rate, format="wav")
 

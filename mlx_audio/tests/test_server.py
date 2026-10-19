@@ -262,18 +262,11 @@ def test_stt_transcriptions(client, mock_model_provider):
 def test_stt_transcriptions_accepts_non_writable_upload_extensions(
     client, mock_model_provider, filename
 ):
-    """The internal temp file must not inherit an upload suffix audio_io can't write.
-
-    M4A/AAC/CAF/MP4 are valid inputs (decoded via ffmpeg), but audio_io has no
-    encoder for them. Previously the decoded audio was written to /tmp with the
-    upload's extension, so a valid upload failed with 500.
-    """
     mock_stt_model = MagicMock()
     mock_stt_model.generate = MagicMock(return_value={"text": "ok"})
     mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
 
-    # WAV bytes are enough: the endpoint sniffs the content, and the regression
-    # is about the temp-file suffix, not the uploaded container itself.
+    # Content sniffing lets WAV bytes isolate the upload filename.
     buffer = io.BytesIO()
     audio_write(buffer, np.zeros(1600, dtype=np.float32), 16000, format="wav")
     buffer.seek(0)
