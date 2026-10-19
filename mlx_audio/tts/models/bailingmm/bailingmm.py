@@ -81,32 +81,34 @@ def _split_fragments(text: str, max_length: int) -> List[str]:
     if _semantic_length(text) <= max_length:
         return [text]
 
-    def pack(pieces: List[str], joiner: str) -> List[str]:
+    # Pieces keep their trailing whitespace, so joining them restores the
+    # text exactly. ASCII punctuation only ends a piece before whitespace,
+    # which keeps "3.14", "1,000", "U.S." and "..." intact.
+    sentence_re = re.compile(r".*?(?:[。！？]|[.!?](?=\s)|$)\s*")
+    clause_re = re.compile(r".*?(?:[，；、]|[,;](?=\s)|$)\s*")
+
+    def units(pattern: re.Pattern, value: str) -> List[str]:
+        return [m.group(0) for m in pattern.finditer(value) if m.group(0)]
+
+    def pack(pieces: List[str]) -> List[str]:
         out, cur = [], ""
         for piece in pieces:
-            cand = f"{cur}{joiner}{piece}" if cur else piece
-            if cur and _semantic_length(cand) > max_length:
+            if cur and _semantic_length(cur + piece) > max_length:
                 out.append(cur)
                 cur = piece
             else:
-                cur = cand
+                cur += piece
         if cur:
             out.append(cur)
         return out
 
-    sentences = [
-        s.strip()
-        for s in re.split(r"(?<!\d\.\d)(?<=[.!?。！？])\s*", text)
-        if s.strip()
-    ]
     pieces = []
-    for sentence in sentences:
+    for sentence in units(sentence_re, text):
         if _semantic_length(sentence) <= max_length:
             pieces.append(sentence)
-            continue
-        clauses = [c.strip() for c in re.split(r"(?<=[,，;；])\s*", sentence)]
-        pieces.extend(pack([c for c in clauses if c], " "))
-    return pack(pieces, "" if _CJK_RE.search(text) else " ")
+        else:
+            pieces.extend(pack(units(clause_re, sentence)))
+    return [f.strip() for f in pack(pieces) if f.strip()]
 
 
 _MING3_CAPTION_FIELDS = {
@@ -153,6 +155,25 @@ def ming3_instruction(
     }
     item[fields[-1]] = ip
     return json.dumps({"audio_sequence": [item]}, ensure_ascii=False)
+
+
+# Built-in voice names: "US_James"-style English voices and Chinese names
+# such as "灵小柔" or "灵信远_高兴".
+_MING3_VOICE_RE = re.compile(
+    r"^(?:(?:US|UK)_[A-Z][a-z]+|[\u4e00-\u9fff][\u4e00-\u9fff_]*)$"
+)
+
+
+def _is_style_instruction(instruct: Optional[str]) -> bool:
+    """True for freeform text and voice-design (style) captions."""
+    if instruct is None:
+        return False
+    try:
+        caption = json.loads(instruct)
+        item = caption["audio_sequence"][0]
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+        return True
+    return item.get("风格", item.get("style")) is not None
 
 
 def _trim_trailing_silence(
@@ -1939,8 +1960,16 @@ class Model(nn.Module):
                 "Tokenizer is not initialized. Load model with load()/from_pretrained first."
             )
 
-        if self.ming3 and voice:
-            # Built-in voices are an IP caption over an empty speaker slot.
+        # Built-in voices are an IP caption over an empty speaker slot. Only
+        # Ming voice names are mapped, so a default voice that a client sends
+        # for every model (e.g. "alloy") is ignored rather than becoming a
+        # caption.
+        if (
+            self.ming3
+            and voice
+            and ref_audio is None
+            and _MING3_VOICE_RE.match(str(voice))
+        ):
             if instruct is not None:
                 raise ValueError("Pass either voice or instruct, not both")
             instruct = ming3_instruction(ip=voice)
@@ -1972,7 +2001,11 @@ class Model(nn.Module):
         if ref_audio is not None and ref_text is not None:
             prompt_latent = self._encode_prompt_latent(ref_audio)
 
-        if self.ming3:
+        if self.ming3 and _is_style_instruction(instruct):
+            # Freeform and voice-design captions describe the whole utterance,
+            # so the reference does not split their text.
+            fragments = [_add_period(" ".join(text.split()))]
+        elif self.ming3:
             max_length = int(kwargs.get("max_length", MING3_MAX_FRAGMENT_LENGTH))
             fragments = _split_fragments(_add_period(text), max_length)
         else:

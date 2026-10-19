@@ -7,7 +7,9 @@ import mlx.nn as nn
 
 from mlx_audio.tts.models.bailingmm.bailingmm import (
     Model,
+    _MING3_VOICE_RE,
     _add_period,
+    _is_style_instruction,
     _semantic_length,
     _split_fragments,
     _trim_trailing_silence,
@@ -196,6 +198,38 @@ class TestMingText(unittest.TestCase):
         fragments = _split_fragments(text, 20)
         self.assertGreater(len(fragments), 1)
         self.assertEqual("".join(fragments), text)
+
+    def test_fragments_keep_numbers_abbreviations_and_ellipses(self):
+        text = (
+            "The ratio is 3.14 and it costs 1,000 dollars in the U.S. today. "
+            "Wait... then we go. "
+        ) * 6
+        fragments = _split_fragments(text, 20)
+        self.assertGreater(len(fragments), 1)
+        self.assertEqual(" ".join(fragments), " ".join(text.split()))
+        joined = " | ".join(fragments)
+        self.assertNotIn("3. 14", joined)
+        self.assertNotIn("1, 000", joined)
+        self.assertNotIn(". . .", joined)
+
+    def test_mixed_chinese_english_fragments_keep_spaces(self):
+        text = "我们今天去公园散步。 Then we walked home together slowly. " * 5
+        fragments = _split_fragments(text, 15)
+        self.assertGreater(len(fragments), 1)
+        self.assertEqual(" ".join(fragments), " ".join(text.split()))
+
+    def test_style_instructions_are_not_split(self):
+        self.assertFalse(_is_style_instruction(None))
+        self.assertTrue(_is_style_instruction("Speak warmly and slowly."))
+        self.assertTrue(_is_style_instruction(ming3_instruction(style="温柔的女声")))
+        self.assertFalse(_is_style_instruction(ming3_instruction(emotion="高兴")))
+        self.assertFalse(_is_style_instruction(ming3_instruction(ip="US_James")))
+
+    def test_voice_names(self):
+        for name in ("US_James", "UK_Charlotte", "灵小柔", "灵信远_高兴"):
+            self.assertTrue(_MING3_VOICE_RE.match(name), name)
+        for name in ("alloy", "af_heart", "conversational_a", "vivian", ""):
+            self.assertFalse(_MING3_VOICE_RE.match(name), name)
 
     def test_trim_trailing_silence_keeps_tail(self):
         sr = 1000
