@@ -617,9 +617,6 @@ def sample_euler_cfg(
                 kv_speaker_cond, inv, max_layers=speaker_kv_max_layers
             )
             if kv_speaker_cfg is not None:
-                # Scale back in place rather than rebuilding from kv_speaker_cond:
-                # the CFG batch holds one bundle per active guidance term (up to 4
-                # with dual conditioning), as in the reference sampler.
                 kv_speaker_cfg = _scale_kv_cache(
                     kv_speaker_cfg, inv, max_layers=speaker_kv_max_layers
                 )
