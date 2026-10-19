@@ -3913,6 +3913,8 @@ class TestBailingMMModel(unittest.TestCase):
         model.tokenizer.encode.return_value = [1, 2, 3]
         model.audio = MagicMock()
         model.audio.sample_rate = 24000
+        model.chat_layout = False
+        model.ming3 = False
         return model
 
     def test_convert_campplus_onnx_to_safetensors_allclose(self):
