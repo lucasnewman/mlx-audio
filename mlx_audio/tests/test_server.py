@@ -258,6 +258,30 @@ def test_stt_transcriptions(client, mock_model_provider):
     assert mock_stt_model.generate.call_args[0][0].startswith("/tmp/")
 
 
+@pytest.mark.parametrize("filename", ["test.m4a", "test.aac", "test.caf", "test.mp4"])
+def test_stt_transcriptions_accepts_non_writable_upload_extensions(
+    client, mock_model_provider, filename
+):
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = MagicMock(return_value={"text": "ok"})
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    # Content sniffing lets WAV bytes isolate the upload filename.
+    buffer = io.BytesIO()
+    audio_write(buffer, np.zeros(1600, dtype=np.float32), 16000, format="wav")
+    buffer.seek(0)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": (filename, buffer, "application/octet-stream")},
+        data={"model": "test_stt_model", "response_format": "json"},
+    )
+
+    assert response.status_code == 200, response.text
+    tmp_path = mock_stt_model.generate.call_args[0][0]
+    assert tmp_path.endswith(".wav")
+
+
 # ---------------------------------------------------------------------------
 # OpenAI-compatible response_format tests for /v1/audio/transcriptions
 # ---------------------------------------------------------------------------
