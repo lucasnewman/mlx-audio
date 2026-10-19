@@ -6,14 +6,9 @@ import mlx.core as mx
 import numpy as np
 from mlx.utils import tree_flatten
 
-from mlx_audio.lm.models.bailing_moe_v3 import (
-    Gate,
-)
+from mlx_audio.lm.models.bailing_moe_v3 import Gate
 from mlx_audio.lm.models.bailing_moe_v3 import Model as LanguageModel
-from mlx_audio.lm.models.bailing_moe_v3 import (
-    ModelArgs,
-    sanitize_backbone,
-)
+from mlx_audio.lm.models.bailing_moe_v3 import ModelArgs, sanitize_backbone
 from mlx_audio.stt.models.ming_v3_asr import AudioConfig, Model, ModelConfig
 from mlx_audio.stt.models.ming_v3_asr.ming_v3_asr import decode_transcript
 

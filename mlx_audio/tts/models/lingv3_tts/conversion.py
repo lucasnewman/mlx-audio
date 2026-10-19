@@ -6,9 +6,7 @@ from pathlib import Path
 from mlx_audio.stt.models.ming_v3_asr.conversion import (
     copy_supporting_files as copy_tokenizer,
 )
-from mlx_audio.stt.models.ming_v3_asr.conversion import (
-    prepare_config,
-)
+from mlx_audio.stt.models.ming_v3_asr.conversion import prepare_config
 
 from .speaker import SPEAKER_SUBPATH, resolve_speaker_weights
 
