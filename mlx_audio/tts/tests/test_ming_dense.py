@@ -6,8 +6,8 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from mlx_audio.tts.models.bailingmm.bailingmm import (
-    Model,
     _MING3_VOICE_RE,
+    Model,
     _add_period,
     _is_style_instruction,
     _semantic_length,
