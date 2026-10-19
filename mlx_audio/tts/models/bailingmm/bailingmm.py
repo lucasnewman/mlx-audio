@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +29,150 @@ def format_duration(seconds: float) -> str:
     mins = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{mins:02d}:{secs:02d}"
+
+
+# Ming-3.0-tts decodes with a 512-position cache in the reference runtime, so a
+# fragment can run for at most (512 - prompt length) steps.
+MING3_MAX_CACHE_LEN = 512
+# Fragment size in "semantic units": one per Chinese character or English word.
+MING3_MAX_FRAGMENT_LENGTH = 50
+
+# Ming-3.0 adds a "Target language:" line for the languages beyond zh/en.
+MING3_TARGET_LANGUAGES = {
+    "ja": "Japanese",
+    "japanese": "Japanese",
+    "ko": "Korean",
+    "korean": "Korean",
+    "de": "German",
+    "german": "German",
+    "fr": "French",
+    "french": "French",
+    "es": "Spanish",
+    "spanish": "Spanish",
+}
+
+_CJK_RE = re.compile(r"[一-鿿]")
+
+
+def _semantic_length(text: str) -> int:
+    return len(re.findall(r"[一-龥]", text)) + len(re.findall(r"[a-zA-Z]+", text))
+
+
+def _add_period(text: str) -> str:
+    text = text.rstrip()
+    if not text:
+        return text
+    period = "。" if _CJK_RE.search(text) else "."
+    if text[-1] in ",，、;；":
+        return text[:-1] + period
+    if text[-1].isalnum():
+        return text + period
+    return text
+
+
+def _split_fragments(text: str, max_length: int) -> List[str]:
+    """Split text into sentence-aligned fragments of at most ``max_length``.
+
+    A simplified version of Ming-3.0's ``cut_text_by_semantic_length``: whole
+    sentences are packed together, and a sentence that is too long on its own
+    is split at commas.
+    """
+    text = " ".join(text.split())
+    if _semantic_length(text) <= max_length:
+        return [text]
+
+    def pack(pieces: List[str], joiner: str) -> List[str]:
+        out, cur = [], ""
+        for piece in pieces:
+            cand = f"{cur}{joiner}{piece}" if cur else piece
+            if cur and _semantic_length(cand) > max_length:
+                out.append(cur)
+                cur = piece
+            else:
+                cur = cand
+        if cur:
+            out.append(cur)
+        return out
+
+    sentences = [
+        s.strip()
+        for s in re.split(r"(?<!\d\.\d)(?<=[.!?。！？])\s*", text)
+        if s.strip()
+    ]
+    pieces = []
+    for sentence in sentences:
+        if _semantic_length(sentence) <= max_length:
+            pieces.append(sentence)
+            continue
+        clauses = [c.strip() for c in re.split(r"(?<=[,，;；])\s*", sentence)]
+        pieces.extend(pack([c for c in clauses if c], " "))
+    return pack(pieces, "" if _CJK_RE.search(text) else " ")
+
+
+_MING3_CAPTION_FIELDS = {
+    "zh": ("序号", "说话人", "方言", "风格", "语速", "基频", "音量", "情感", "IP"),
+    "en": (
+        "id",
+        "speaker",
+        "dialect",
+        "style",
+        "speed",
+        "pitch",
+        "volume",
+        "emotion",
+        "ip",
+    ),
+}
+
+
+def ming3_instruction(
+    *,
+    dialect: Optional[str] = None,
+    style: Optional[str] = None,
+    speed: Optional[str] = None,
+    pitch: Optional[str] = None,
+    volume: Optional[str] = None,
+    emotion: Optional[str] = None,
+    ip: Optional[str] = None,
+    schema: Optional[str] = None,
+) -> str:
+    """Build a Ming-3.0 control caption to pass as ``instruct``.
+
+    The JSON layout and key order are what the checkpoint was trained on.
+    Values follow the Ming-3.0 cookbook, e.g. ``emotion="高兴"``,
+    ``speed="慢速"``, ``dialect="cantonese"`` or ``ip="US_James"``. Dialect
+    captions use the English schema, everything else the Chinese one.
+    """
+    if schema is None:
+        schema = "en" if dialect is not None else "zh"
+    fields = _MING3_CAPTION_FIELDS[schema]
+    values = (1, "speaker_1", dialect, style, speed, pitch, volume, emotion)
+    item = dict(zip(fields[:-1], values))
+    item["BGM"] = {
+        key: None for key in ("Genre", "Mood", "Instrument", "Theme", "ENV", "SNR")
+    }
+    item[fields[-1]] = ip
+    return json.dumps({"audio_sequence": [item]}, ensure_ascii=False)
+
+
+def _trim_trailing_silence(
+    speech: mx.array,
+    sample_rate: int,
+    threshold: float = 1e-3,
+    tail_seconds: float = 0.3,
+) -> mx.array:
+    """Cut trailing near-silence, keeping a fixed tail (Ming-3.0 reference)."""
+    frame = int(sample_rate * 0.1)
+    tail = int(sample_rate * tail_seconds)
+    if speech.shape[-1] < frame:
+        return speech
+    num_frames = speech.shape[-1] // frame
+    scores = np.abs(np.array(speech[: num_frames * frame], dtype=np.float32))
+    scores = scores.reshape(num_frames, frame).mean(axis=-1)
+    loud = np.nonzero(scores > threshold)[0]
+    if loud.size == 0:
+        return speech[:tail]
+    return speech[: int(loud[-1]) * frame + frame + tail]
 
 
 @dataclass
@@ -1427,6 +1573,9 @@ class Model(nn.Module):
             raise ValueError("Missing aggregator_config in Ming Omni config")
 
         llm_cfg = dict(config.text_config)
+        # The dense (Qwen2) checkpoints were trained on the Qwen chat template;
+        # only the MoE checkpoints use <role>HUMAN</role> turns.
+        self.chat_layout = not self._is_moe_llm_config(llm_cfg)
         if self._is_moe_llm_config(llm_cfg):
             self.llm_args = BailingMoeModelArgs.from_dict(llm_cfg)
             self.model = MingBailingMoeModel(self.llm_args)
@@ -1439,6 +1588,11 @@ class Model(nn.Module):
         self.patch_size = int(config.ditar_config["patch_size"])
         self.history_patch_size = int(
             config.ditar_config.get("history_patch_size", self.patch_size)
+        )
+        # Ming-3.0-tts-0.5B ships the same config as Ming-omni-tts-0.5B apart
+        # from one-latent patches, so the patch sizes are what tell them apart.
+        self.ming3 = (
+            self.chat_layout and self.patch_size == 1 and self.history_patch_size == 1
         )
 
         self.linear_proj_audio = Aggregator(
@@ -1510,7 +1664,26 @@ class Model(nn.Module):
         instruction: Optional[str] = None,
         prompt_latent: Optional[mx.array] = None,
         prompt_text: Optional[str] = None,
+        spk_emb: Optional[List[mx.array]] = None,
     ) -> Tuple[mx.array, mx.array]:
+        if self.chat_layout:
+            spk_start, spk_pad, spk_end = (
+                "<|vision_start|>",
+                "<|vision_pad|>",
+                "<|vision_end|>\n",
+            )
+        else:
+            spk_start, spk_pad, spk_end = "<spk>", "<audioPatch>", "</spk>\n"
+        spk_emb = spk_emb or []
+        spk_prompt = []
+        for i in range(len(spk_emb)):
+            spk_prompt += (
+                self._encode(f"  speaker_{i + 1}:")
+                + self._encode(spk_start)
+                + self._encode(spk_pad)
+                + self._encode(spk_end)
+            )
+
         prompt_text_token = []
         prompt_latent_token = []
         if prompt_latent is not None and prompt_text is not None:
@@ -1534,17 +1707,31 @@ class Model(nn.Module):
 
         instruction_prompt = []
         if instruction is not None:
+            # Ming-3.0 was trained with the caption ending in <|im_end|>.
+            instruction_eos = "<|im_end|>" if self.ming3 else "<|endoftext|>"
             instruction_prompt = self._encode(instruction) + self._encode(
-                "<|endoftext|>"
+                instruction_eos
             )
 
+        if self.chat_layout:
+            user_start = self._encode(
+                "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+            ) + self._encode("<|im_start|>user\n")
+            turn_end = self._encode("<|im_end|>\n") + self._encode(
+                "<|im_start|>assistant\n"
+            )
+        else:
+            user_start = self._encode("<role>HUMAN</role>")
+            turn_end = self._encode("<role>ASSISTANT</role>")
+
         input_part = (
-            self._encode("<role>HUMAN</role>")
+            user_start
             + self._encode(prompt)
+            + spk_prompt
             + prompt2
             + prompt_text_token
             + self._encode(text)
-            + self._encode("<role>ASSISTANT</role>")
+            + turn_end
             + instruction_prompt
             + self._encode("<audio>")
             + prompt_latent_token
@@ -1552,6 +1739,20 @@ class Model(nn.Module):
 
         input_ids = mx.array(input_part, dtype=mx.int32)[None, :]
         inputs_embeds = self.model.model.word_embeddings(input_ids)
+
+        if spk_emb:
+            spk_start_id = self.tokenizer.convert_tokens_to_ids(spk_start)
+            starts = np.where(np.array(input_ids[0]) == spk_start_id)[0]
+            pieces, prev = [], 0
+            for pos, emb in zip(starts, spk_emb):
+                pos = int(pos) + 1
+                pieces += [
+                    inputs_embeds[:, prev:pos, :],
+                    emb.reshape(1, 1, -1).astype(inputs_embeds.dtype),
+                ]
+                prev = pos + 1
+            pieces.append(inputs_embeds[:, prev:, :])
+            inputs_embeds = mx.concatenate(pieces, axis=1)
 
         if prompt_latent is not None:
             audio_token_id = self.tokenizer.convert_tokens_to_ids("<audio>")
@@ -1577,7 +1778,38 @@ class Model(nn.Module):
         if new_len == cur_len:
             return waveform
         pad = mx.zeros((waveform.shape[0], new_len - cur_len), dtype=waveform.dtype)
+        if self.ming3:
+            # Ming-3.0 pads at the front: the prompt's tail seeds the latent
+            # history, so trailing silence is what the model would continue.
+            return mx.concatenate([pad, waveform], axis=1)
         return mx.concatenate([waveform, pad], axis=1)
+
+    def _encode_prompt_latent(self, prompt_waveform: mx.array) -> mx.array:
+        prompt_waveform = self._pad_prompt_waveform(prompt_waveform)
+        prompt_waveform_length = mx.array([prompt_waveform.shape[1]], dtype=mx.int32)
+        prompt_latent, _ = self.audio.encode_latent(
+            prompt_waveform, prompt_waveform_length
+        )
+        return prompt_latent
+
+    def _speaker_embeddings(
+        self, spk_emb: Optional[Any], use_zero_spk_emb: bool
+    ) -> Optional[List[mx.array]]:
+        """Project 192-dim speaker embeddings into the LLM's speaker slots."""
+        if use_zero_spk_emb:
+            # The reference zeroes the projected slot, not the 192-dim input.
+            return [mx.zeros((self.llm_args.hidden_size,))]
+        if spk_emb is None:
+            return None
+        if not isinstance(spk_emb, (list, tuple)):
+            spk_emb = [spk_emb]
+        projected = []
+        for emb in spk_emb:
+            emb = mx.array(emb, dtype=mx.float32).reshape(1, -1)
+            if emb.shape[-1] != 192:
+                raise ValueError(f"spk_emb must be 192-dim, got {emb.shape[-1]} values")
+            projected.append(self.spk_head(emb)[0])
+        return projected
 
     def _forward_llm_hidden(
         self, inputs_embeds: mx.array, cache: List[KVCache]
@@ -1619,16 +1851,13 @@ class Model(nn.Module):
         sigma: float = 0.25,
         temperature: float = 0.0,
         flow_steps: int = 10,
+        prompt_latent: Optional[mx.array] = None,
+        spk_emb: Optional[List[mx.array]] = None,
     ):
-        prompt_latent = None
-        if prompt_waveform is not None and prompt_text is not None:
-            prompt_waveform = self._pad_prompt_waveform(prompt_waveform)
-            prompt_waveform_length = mx.array(
-                [prompt_waveform.shape[1]], dtype=mx.int32
-            )
-            prompt_latent, _ = self.audio.encode_latent(
-                prompt_waveform, prompt_waveform_length
-            )
+        if prompt_text is None:
+            prompt_latent = None
+        elif prompt_latent is None and prompt_waveform is not None:
+            prompt_latent = self._encode_prompt_latent(prompt_waveform)
 
         _, inputs_embeds = self._prepare_input_embed(
             prompt=prompt,
@@ -1636,10 +1865,15 @@ class Model(nn.Module):
             instruction=instruction,
             prompt_latent=prompt_latent,
             prompt_text=prompt_text,
+            spk_emb=spk_emb,
         )
 
         cache = [KVCache() for _ in range(self.llm_args.num_hidden_layers)]
         latent_history = None
+
+        if self.ming3:
+            budget = (MING3_MAX_CACHE_LEN - inputs_embeds.shape[1]) // self.patch_size
+            max_decode_steps = min(max_decode_steps, max(budget, 0))
 
         for step in range(max_decode_steps):
             hidden = self._forward_llm_hidden(inputs_embeds=inputs_embeds, cache=cache)
@@ -1691,63 +1925,109 @@ class Model(nn.Module):
         ref_text: Optional[str] = None,
         cfg_scale: Optional[float] = None,
         ddpm_steps: Optional[int] = None,
-        max_tokens: int = 200,
+        max_tokens: Optional[int] = None,
         temperature: float = 0.0,
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
         **kwargs,
     ) -> Iterable[GenerationResult]:
-        del voice, lang_code, stream, streaming_interval
+        del stream, streaming_interval
 
         if self.tokenizer is None:
             raise ValueError(
                 "Tokenizer is not initialized. Load model with load()/from_pretrained first."
             )
 
+        if self.ming3 and voice:
+            # Built-in voices are an IP caption over an empty speaker slot.
+            if instruct is not None:
+                raise ValueError("Pass either voice or instruct, not both")
+            instruct = ming3_instruction(ip=voice)
+            kwargs["use_zero_spk_emb"] = True
+
         if isinstance(ref_audio, str):
             ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
 
         start_time = time.perf_counter()
-        speech_chunks = []
-        stream_state = (None, None, None)
-        past_key_values = None
         prompt = kwargs.get(
             "prompt", "Please generate speech based on the following description.\n"
         )
+        language = MING3_TARGET_LANGUAGES.get(str(lang_code or "").strip().lower())
+        if self.ming3 and language and "prompt" not in kwargs:
+            prompt += f"Target language: {language}.\n"
         cfg = 2.0 if cfg_scale is None else cfg_scale
         flow_steps = 10 if ddpm_steps is None else ddpm_steps
         sigma = float(kwargs.get("sigma", 0.25))
+        if max_tokens is None:
+            # Ming-3.0 is bounded per fragment by its 512-position cache.
+            max_tokens = 1000 if self.ming3 else 200
         max_decode_steps = int(kwargs.get("max_decode_steps", max_tokens))
+        spk_emb = self._speaker_embeddings(
+            kwargs.get("spk_emb"), bool(kwargs.get("use_zero_spk_emb", False))
+        )
 
-        for step_idx, (sampled_tokens, last_chunk) in enumerate(
-            self.sample(
+        # An acoustic prompt is only usable together with its transcript.
+        prompt_latent = None
+        if ref_audio is not None and ref_text is not None:
+            prompt_latent = self._encode_prompt_latent(ref_audio)
+
+        if self.ming3:
+            max_length = int(kwargs.get("max_length", MING3_MAX_FRAGMENT_LENGTH))
+            fragments = _split_fragments(_add_period(text), max_length)
+        else:
+            fragments = [text]
+
+        speech_parts = []
+        for fragment in fragments:
+            sampler = self.sample(
                 prompt=prompt,
-                text=text,
+                text=fragment,
                 instruction=instruct,
-                prompt_waveform=ref_audio,
                 prompt_text=ref_text,
                 max_decode_steps=max_decode_steps,
                 cfg=cfg,
                 sigma=sigma,
                 temperature=temperature,
                 flow_steps=flow_steps,
+                prompt_latent=prompt_latent,
+                spk_emb=spk_emb,
             )
-        ):
-            speech_tmp, stream_state, past_key_values = self.audio.decode(
-                sampled_tokens,
-                past_key_values=past_key_values,
-                use_cache=True,
-                stream_state=stream_state,
-                last_chunk=last_chunk,
-            )
-            speech_chunks.append(speech_tmp)
-            if last_chunk:
-                break
+            if self.ming3:
+                # One pass per fragment, as the reference decodes it.
+                latents = [tokens for tokens, _ in sampler]
+                if not latents:
+                    continue
+                part, _, _ = self.audio.decode(
+                    mx.concatenate(latents, axis=1), use_cache=False, last_chunk=True
+                )
+                speech_parts.append(_trim_trailing_silence(part[0], self.sample_rate))
+                continue
 
-        if not speech_chunks:
+            speech_chunks = []
+            stream_state = (None, None, None)
+            past_key_values = None
+            for sampled_tokens, last_chunk in sampler:
+                speech_tmp, stream_state, past_key_values = self.audio.decode(
+                    sampled_tokens,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    stream_state=stream_state,
+                    last_chunk=last_chunk,
+                )
+                speech_chunks.append(speech_tmp)
+                if last_chunk:
+                    break
+            if speech_chunks:
+                speech_parts.append(mx.concatenate(speech_chunks, axis=1)[0])
+
+        if not speech_parts:
             raise RuntimeError("No audio chunks were generated")
-        speech = mx.concatenate(speech_chunks, axis=1)[0]
+        speech = (
+            speech_parts[0]
+            if len(speech_parts) == 1
+            else mx.concatenate(speech_parts, axis=0)
+        )
 
         if speed != 1.0:
             # Speed control is not implemented for Ming Omni yet; keep native timing.
