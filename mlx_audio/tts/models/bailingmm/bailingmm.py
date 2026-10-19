@@ -1406,24 +1406,20 @@ class Decoder(nn.Module):
         return y_bc.transpose(0, 2, 1)
 
     def _linear_upsample_1d(self, x_bc: mx.array) -> mx.array:
-        import numpy as np
-
-        x_np = np.array(x_bc, dtype=np.float32)  # (B, C, T)
-        bsz, channels, in_t = x_np.shape
+        # Keep interpolation on-device; NumPy cannot consume MLX bfloat16 buffers.
+        x = x_bc.astype(mx.float32)
+        in_t = x.shape[-1]
         scale = int(self.patch_size)
         out_t = in_t * scale
-        idx = (np.arange(out_t, dtype=np.float32) + 0.5) / scale - 0.5
-        left = np.floor(idx).astype(np.int64)
+        idx = (mx.arange(out_t, dtype=mx.float32) + 0.5) / scale - 0.5
+        left = mx.floor(idx).astype(mx.int32)
         right = left + 1
-        w_right = idx - left.astype(np.float32)
-        left = np.clip(left, 0, in_t - 1)
-        right = np.clip(right, 0, in_t - 1)
-        left_v = x_np[:, :, left]
-        right_v = x_np[:, :, right]
-        y_np = (
+        w_right = idx - left.astype(mx.float32)
+        left_v = mx.take(x, mx.clip(left, 0, in_t - 1), axis=-1)
+        right_v = mx.take(x, mx.clip(right, 0, in_t - 1), axis=-1)
+        return (
             left_v * (1.0 - w_right)[None, None, :] + right_v * w_right[None, None, :]
         )
-        return mx.array(y_np)
 
     def _streaming_linear_upsample(self, x: mx.array, state, is_last: bool = False):
         if state is None:

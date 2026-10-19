@@ -12,6 +12,8 @@ from mlx_audio.utils import (
 )
 
 MODEL_REMAPPING = {
+    "bailing_moe_v3_audio": "ming_v3_audio",
+    "ming_v3_audio": "ming_v3_audio",
     "dialogue_sidon": "dialogue_sidon",
     "dialoguesidon": "dialogue_sidon",
     "deepfilter": "deepfilternet",
@@ -142,6 +144,7 @@ def load_model(
         )
 
     if model_type in {
+        "ming_v3_audio",
         "dialogue_sidon",
         "lfm_audio",
         "mimo_audio",

@@ -39,11 +39,14 @@ def _detect_model_type(model_name: str) -> str:
     from mlx_audio.registry import model_type_from_config
     from mlx_audio.utils import load_config
 
-    if model_type_from_config(load_config(model_name)) == "mimo_audio":
+    configured = model_type_from_config(load_config(model_name))
+    if configured in {"bailing_moe_v3_audio", "ming_v3_audio"}:
+        return "ming_v3_audio"
+    if configured == "mimo_audio":
         return "mimo_audio"
     raise ValueError(
         f"Cannot detect model type from '{model_name}'. "
-        f"Supported models: MiMo-Audio, {', '.join(REPO_HINTS.keys())}"
+        f"Supported models: Ming Audio, MiMo-Audio, {', '.join(REPO_HINTS.keys())}"
     )
 
 
@@ -113,6 +116,12 @@ def parse_args():
     mimo.add_argument("--temperature", type=float)
     mimo.add_argument("--audio-temperature", type=float, default=0.9)
 
+    ming = parser.add_argument_group("Ming Audio offline options")
+    ming.add_argument("--voice", default="US_James")
+    ming.add_argument("--ref-text")
+    ming.add_argument("--max-talker-steps", type=int, default=1000)
+    ming.add_argument("--no-repeat-ngram-size", type=int, default=0)
+
     # DeepFilterNet-specific options
     dfn = parser.add_argument_group("DeepFilterNet options")
     dfn.add_argument(
@@ -149,6 +158,9 @@ def main():
     model_type = _detect_model_type(args.model)
     if model_type == "mimo_audio":
         _generate_mimo(args)
+        return
+    if model_type == "ming_v3_audio":
+        _generate_ming(args)
         return
 
     if args.audio is None:
@@ -243,6 +255,48 @@ def main():
 
     for path in output_paths:
         print(f"Saved:  {path}")
+
+
+def _generate_ming(args):
+    from mlx_audio import audio_io
+    from mlx_audio.sts import load
+
+    if args.stream:
+        raise ValueError("Ming Audio supports offline generation only")
+    model = load(args.model, strict=True)
+    messages = json.loads(Path(args.messages).read_text()) if args.messages else None
+    result = model.generate(
+        args.audio,
+        text=args.text,
+        task=args.task,
+        messages=messages,
+        system_prompt=args.system_prompt,
+        thinking=args.thinking,
+        max_new_tokens=args.max_new_tokens,
+        temperature=0.0 if args.temperature is None else args.temperature,
+        voice=args.voice,
+        ref_audio=args.ref_audio,
+        ref_text=args.ref_text,
+        max_talker_steps=args.max_talker_steps,
+        no_repeat_ngram_size=args.no_repeat_ngram_size,
+        seed=args.seed,
+    )
+    print(result.text)
+    output = Path(args.output_path or "ming_output.wav").expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if result.audio is not None:
+        audio_io.write(str(output), result.audio, result.sample_rate)
+        print(f"Saved: {output}")
+    text_path = output.with_suffix(".txt")
+    text_path.write_text(result.text + "\n", encoding="utf-8")
+    print(f"Saved: {text_path}")
+    if args.verbose:
+        if result.reasoning:
+            print(f"Reasoning: {result.reasoning}")
+        print(
+            f"Generated {result.generation_tokens} tokens in "
+            f"{result.processing_time:.2f}s ({result.finish_reason})"
+        )
 
 
 def _generate_mimo(args):
