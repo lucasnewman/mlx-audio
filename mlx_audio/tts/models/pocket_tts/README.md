@@ -1,11 +1,20 @@
 # Phonon
 
-Phonon is a text-to-speech model that generates 24 kHz speech on Apple Silicon, with four bundled voices and support
-for streaming audio generation.
+Phonon generates 24 kHz speech on Apple Silicon and supports streaming audio generation.
 
 ## Supported Models
 
-- `nativ-community/phonon`
+| Model | Parameters | Languages |
+|---|---|---|
+| [gradium/phonon-31m-en](https://huggingface.co/gradium/phonon-31m-en) | 31M | English |
+| [gradium/phonon-40m-en](https://huggingface.co/gradium/phonon-40m-en) | 40M | English |
+| [gradium/phonon-40m-fr](https://huggingface.co/gradium/phonon-40m-fr) | 40M | French |
+| [gradium/phonon-40m-de](https://huggingface.co/gradium/phonon-40m-de) | 40M | German |
+| [gradium/phonon-40m-es](https://huggingface.co/gradium/phonon-40m-es) | 40M | Spanish |
+| [gradium/phonon-40m-pt](https://huggingface.co/gradium/phonon-40m-pt) | 40M | Portuguese |
+| [gradium/phonon-40m-multilingual](https://huggingface.co/gradium/phonon-40m-multilingual) | 40M | English, French, German, Spanish, Portuguese |
+
+For the 40M models, accept their access terms on Hugging Face and sign in before loading.
 
 ## Usage
 
@@ -17,11 +26,10 @@ import numpy as np
 from mlx_audio.audio_io import write
 from mlx_audio.tts.utils import load
 
-model = load("nativ-community/phonon")
+model = load("gradium/phonon-31m-en")
 
 result = next(model.generate(
     text="Hello, this is Phonon running on Apple Silicon.",
-    voice="Freya",
 ))
 write("phonon.wav", np.array(result.audio), result.sample_rate)
 ```
@@ -30,9 +38,8 @@ CLI:
 
 ```bash
 python -m mlx_audio.tts.generate \
-  --model nativ-community/phonon \
+  --model gradium/phonon-31m-en \
   --text "Hello, this is Phonon running on Apple Silicon." \
-  --voice Freya \
   --play
 ```
 
@@ -41,4 +48,6 @@ to `model.generate()` to receive audio chunks in Python.
 
 ## Voices
 
-Available voices: `Freya`, `Harper`, `Sterling`, and `Toby`. The default is `Freya`.
+The official Gradium repositories include a default voice, selected when `voice`
+is omitted or set to `"default"`. To use another voice embedding, pass its local
+`.safetensors` path or an `hf://` URL as `voice`.

@@ -13,11 +13,12 @@ from mlx_audio.codec.models.mimi.modules.conv import ConvTranspose1d
 from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.utils import load_audio, load_weights
 
-from .conditioners import SpeakerCountConditioner, TokenizedText
+from .conditioners import ContinuousConditioner, SpeakerCountConditioner, TokenizedText
 from .config import ModelConfig
 from .flow_lm import FlowLMModel
 from .mimi import MimiAdapter
 from .utils import PREDEFINED_VOICES, download_if_necessary, load_predefined_voice
+from .weights import map_weights
 
 DEFAULT_AUDIO_PROMPT = "alba"
 
@@ -37,12 +38,21 @@ class Model(nn.Module):
         )
         self.mimi = MimiAdapter.from_config(config.mimi)
         for conditioner in config.conditioners:
-            if conditioner["name"] != "num_speakers" or conditioner["type"] != "lut":
+            if conditioner["name"] == "num_speakers" and conditioner["type"] == "lut":
+                lut = conditioner["lut"]
+                self.flow_lm.num_speakers = SpeakerCountConditioner(
+                    lut["n_bins"], lut["dim"], config.flow_lm.transformer.d_model
+                )
+            elif (
+                conditioner["name"] == "duration_delta"
+                and conditioner["type"] == "continuous"
+            ):
+                self.flow_lm.duration_delta = ContinuousConditioner(
+                    output_dim=config.flow_lm.transformer.d_model,
+                    **conditioner["continuous"],
+                )
+            else:
                 raise ValueError(f"Unsupported conditioner: {conditioner['name']}")
-            lut = conditioner["lut"]
-            self.flow_lm.num_speakers = SpeakerCountConditioner(
-                lut["n_bins"], lut["dim"], config.flow_lm.transformer.d_model
-            )
 
         self.temp = config.temp
         self.lsd_decode_steps = config.lsd_decode_steps
@@ -54,7 +64,7 @@ class Model(nn.Module):
         if (
             config.fuser.get("cross")
             or config.fuser.get("streaming_sum")
-            or set(config.fuser.get("sum", [])) - {"num_speakers"}
+            or set(config.fuser.get("sum", [])) - {"num_speakers", "duration_delta"}
         ):
             raise ValueError("Unsupported Pocket TTS conditioning fuser.")
 
@@ -81,6 +91,10 @@ class Model(nn.Module):
         for key in list(weights):
             if key.endswith(".learnt_padding"):
                 weights.pop(key)
+        # Voice sidecars are loaded separately from the model parameters.
+        for key in ("speaker_wavs", "emb", "audio_prompt"):
+            weights.pop(key, None)
+        weights = map_weights(self, weights)
         # Native inference packages can omit the audio encoder. Quantization is
         # handled by the standard loader using the exported config.
         if not any(key.startswith("mimi.encoder.") for key in weights):
@@ -110,7 +124,7 @@ class Model(nn.Module):
             return True
 
         m.filter_and_map(_filter_fn)
-        self.flow_lm.cache_speaker_conditioning()
+        self.flow_lm.cache_conditioning()
         return m
 
     def load_from_config(self, strict: bool = True):
@@ -484,8 +498,14 @@ class Model(nn.Module):
                 for directory in (root / "voices", root / "embeddings")
                 for p in sorted(directory.glob("*.safetensors"))
             }
+            default_voice = root / "default-voice.safetensors"
+            if default_voice.is_file():
+                voices.setdefault("default", default_voice)
             if voice is None and voices:
-                return voices.get(DEFAULT_AUDIO_PROMPT, next(iter(voices.values())))
+                return voices.get(
+                    "default",
+                    voices.get(DEFAULT_AUDIO_PROMPT, next(iter(voices.values()))),
+                )
             if voice and voice.lower() in voices:
                 return voices[voice.lower()]
             if (

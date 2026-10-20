@@ -29,6 +29,7 @@ class FlowLMTransformerConfig(BaseModelArgs):
     d_model: int
     num_heads: int
     num_layers: int
+    gelu: str = "erf"
 
     @classmethod
     def from_dict(cls, config: dict[str, Any]) -> "FlowLMTransformerConfig":
@@ -55,6 +56,7 @@ class FlowLMConfig(BaseModelArgs):
     lookup_table: LookupTable
     weights_path: Optional[str] = None
     ldim: Optional[int] = None
+    time_rms_norm: str = "rms_var"
 
     @classmethod
     def from_dict(cls, config: dict[str, Any]) -> "FlowLMConfig":
@@ -82,6 +84,7 @@ class FlowLMConfig(BaseModelArgs):
             lookup_table=LookupTable.from_dict(config.get("lookup_table", {})),
             weights_path=config.get("weights_path"),
             ldim=config.get("ldim"),
+            time_rms_norm=config.get("time_rms_norm", "rms_var"),
         )
 
 
@@ -147,6 +150,7 @@ class MimiConfig(BaseModelArgs):
     quantizer: QuantizerConfig
     weights_path: Optional[str] = None
     encoder_enabled: bool = True
+    gelu: str = "tanh"
 
     @classmethod
     def from_dict(cls, config: dict[str, Any]) -> "MimiConfig":
@@ -178,6 +182,7 @@ class MimiConfig(BaseModelArgs):
             quantizer=QuantizerConfig.from_dict(config.get("quantizer", {})),
             weights_path=config.get("weights_path"),
             encoder_enabled=config.get("encoder_enabled", True),
+            gelu=config.get("gelu", "tanh"),
         )
 
 

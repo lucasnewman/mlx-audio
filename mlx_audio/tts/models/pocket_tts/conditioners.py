@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import NamedTuple
 
 import mlx.core as mx
@@ -22,6 +23,36 @@ class SpeakerCountConditioner(nn.Module):
 
     def __call__(self, tokens: mx.array) -> mx.array:
         return self.output_proj(self.embed(tokens))
+
+
+class ContinuousConditioner(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        output_dim: int,
+        scale_factor: float,
+        max_period: float = 10000.0,
+    ):
+        super().__init__()
+        if dim < 4 or dim % 2:
+            raise ValueError("Continuous conditioning requires an even dim >= 4.")
+        self.scale_factor = scale_factor
+        self._freqs = mx.exp(
+            -math.log(max_period)
+            * mx.arange(dim // 2, dtype=mx.float32)
+            / (dim // 2 - 1)
+        )
+        self.output_proj = (
+            nn.Linear(dim, output_dim, bias=False) if dim != output_dim else None
+        )
+
+    def __call__(self, values: mx.array) -> mx.array:
+        phase = values[..., None] * self.scale_factor * self._freqs
+        embedding = mx.concatenate([mx.cos(phase), mx.sin(phase)], axis=-1)
+        if self.output_proj is not None:
+            embedding = embedding.astype(self.output_proj.weight.dtype)
+            embedding = self.output_proj(embedding)
+        return embedding
 
 
 class SentencePieceTokenizer:

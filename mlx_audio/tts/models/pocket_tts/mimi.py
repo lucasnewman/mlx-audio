@@ -220,6 +220,7 @@ class MimiAdapter(nn.Module):
             kv_repeat=1,
             dim_feedforward=config.transformer.dim_feedforward,
             conv_layout=True,
+            gelu=config.gelu,
         )
         output_dims = list(config.transformer.output_dimensions)
         encoder_transformer = (

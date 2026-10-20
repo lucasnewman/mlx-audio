@@ -1,28 +1,31 @@
 """Compatibility and sampling regressions; no downloaded checkpoints required."""
 
 import json
-from dataclasses import asdict
+import math
+from dataclasses import asdict, replace
 from unittest.mock import patch
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 from tokenizers import Tokenizer, models, pre_tokenizers
 
 from mlx_audio.tts.models.pocket_tts import Model, ModelConfig
 from mlx_audio.tts.models.pocket_tts.conditioners import (
+    ContinuousConditioner,
     SpeakerCountConditioner,
     TokenizedText,
 )
 from mlx_audio.tts.models.pocket_tts.convert import (
     _prepare_quantized_modules,
-    _seanet_names,
     convert,
     convert_weights,
     load_source_weights,
 )
 from mlx_audio.tts.models.pocket_tts.flow_lm import FlowLMModel, lsd_decode
+from mlx_audio.tts.models.pocket_tts.weights import _seanet_names
 
 
 def flat_config():
@@ -221,7 +224,7 @@ def test_speaker_condition_is_cached_after_load_and_refreshed_on_reload(config):
         model.load_weights(list(weights.items()), strict=True)
         assert calls.call_count == 1
         assert mx.array_equal(
-            model.flow_lm._speaker_count_embedding, mx.full((1, 8), 8.0)
+            model.flow_lm._conditioning_embedding, mx.full((1, 8), 8.0)
         ).item()
 
         # Prefill and successive audio steps only add the materialized vector.
@@ -241,7 +244,7 @@ def test_speaker_condition_is_cached_after_load_and_refreshed_on_reload(config):
         )
         assert calls.call_count == 2
         assert mx.array_equal(
-            model.flow_lm._speaker_count_embedding, mx.full((1, 8), 24.0)
+            model.flow_lm._conditioning_embedding, mx.full((1, 8), 24.0)
         ).item()
 
 
@@ -288,10 +291,7 @@ def test_native_weights_are_unchanged(config):
     model.load_weights(list(weights.items()), strict=True)
 
 
-@pytest.mark.parametrize("dtype", [mx.float16, mx.float32])
-def test_upstream_decoder_mapping_and_optional_encoders(config, dtype):
-    model = Model(config)
-    weights = {k: v.astype(dtype) for k, v in tree_flatten(model.parameters())}
+def upstream_weights(model, weights):
     names = _seanet_names("mimi.decoder", model.config.mimi.seanet, False)
     inverse = sorted(((v, k) for k, v in names.items()), key=lambda pair: -len(pair[0]))
     raw = {}
@@ -321,7 +321,20 @@ def test_upstream_decoder_mapping_and_optional_encoders(config, dtype):
             "flow_lm.conditioner.",
             "flow_lm.condition_provider.conditioners.transcript_in_segment.",
         )
+        for name in ("num_speakers", "duration_delta"):
+            target = target.replace(
+                f"flow_lm.{name}.",
+                f"flow_lm.condition_provider.conditioners.{name}.",
+            )
         raw[target] = value
+    return raw
+
+
+@pytest.mark.parametrize("dtype", [mx.float16, mx.float32])
+def test_upstream_decoder_mapping_and_optional_encoders(config, dtype):
+    model = Model(config)
+    weights = {k: v.astype(dtype) for k, v in tree_flatten(model.parameters())}
+    raw = upstream_weights(model, weights)
     sanitized = convert_weights(model, raw)
     assert model.mimi.encoder is None
     for key, value in sanitized.items():
@@ -331,6 +344,120 @@ def test_upstream_decoder_mapping_and_optional_encoders(config, dtype):
     with pytest.raises(ValueError, match="omits the speaker encoder"):
         model._encode_audio(mx.zeros((1, 1, 16)))
     assert model.sanitize(sanitized) is sanitized
+
+
+@pytest.mark.parametrize("num_layers", [6, 9])
+def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers):
+    from mlx_audio.tts.utils import load
+
+    config["flow_lm"].update(num_layers=num_layers, time_rms_norm="rms", gelu="erf")
+    config["mimi"].update(encoder_enabled=False, gelu="erf")
+    config["conditioners"] = [
+        {"name": "num_speakers", "type": "lut", "lut": {"n_bins": 31, "dim": 4}},
+        {
+            "name": "duration_delta",
+            "type": "continuous",
+            "continuous": {"dim": 4, "scale_factor": 1000.0, "max_period": 10000.0},
+        },
+    ]
+    config["fuser"] = {"sum": ["num_speakers", "duration_delta"]}
+    model = Model(config)
+    weights = {
+        key: value.astype(mx.bfloat16) if key.startswith("flow_lm.") else value
+        for key, value in tree_flatten(model.parameters())
+    }
+    raw = upstream_weights(model, weights)
+    raw["flow_lm.condition_provider.conditioners.duration_delta.learnt_padding"] = (
+        mx.zeros((1, 1, 8))
+    )
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), raw)
+    mx.save_safetensors(
+        str(tmp_path / "default-voice.safetensors"),
+        {"speaker_wavs": mx.ones((1, 8, 2))},
+    )
+    config.pop("model_path")
+    (tmp_path / "config.json").write_text(json.dumps(config))
+
+    # Resolve the architecture from the config, independently of the folder name.
+    loaded = load(tmp_path, strict=True)
+    loaded_weights = dict(tree_flatten(loaded.parameters()))
+    assert loaded_weights.keys() == weights.keys()
+    for key, value in weights.items():
+        assert loaded_weights[key].dtype == value.dtype, key
+        assert mx.array_equal(loaded_weights[key], value).item(), key
+    assert loaded.mimi.encoder is None
+    assert loaded._resolve_audio_prompt(None, None, False) == (
+        tmp_path / "default-voice.safetensors"
+    )
+    assert loaded._resolve_audio_prompt("default", None, False) == (
+        tmp_path / "default-voice.safetensors"
+    )
+    expected_condition = loaded.flow_lm.num_speakers(mx.array([1]))
+    expected_condition += loaded.flow_lm.duration_delta(mx.array([0.0]))
+    assert mx.array_equal(
+        loaded.flow_lm._conditioning_embedding, expected_condition
+    ).item()
+    mx.random.seed(0)
+    audio = next(loaded.generate("Hello world.")).audio
+    assert audio.size > 0 and mx.all(mx.isfinite(audio)).item()
+
+    destination = tmp_path.with_name(tmp_path.name + "-converted")
+    convert(str(tmp_path), mlx_path=str(destination))
+    converted = load(destination, strict=True)
+    mx.random.seed(0)
+    converted_audio = next(converted.generate("Hello world.")).audio
+    assert mx.array_equal(audio, converted_audio).item()
+
+
+@pytest.mark.parametrize("mode", ["rms", "rms_var"])
+def test_timestep_normalization_matches_formula(config, mode):
+    config["flow_lm"].update(flow_dim=4, time_rms_norm=mode)
+    norm = Model(config).flow_lm.flow_net.time_embed[0].mlp[3]
+    norm.alpha = mx.full((4,), 2.0)
+    values = np.array([[1.0, 2.0, 4.0, 8.0]], dtype=np.float32)
+    denominator = (
+        np.mean(values**2, axis=-1, keepdims=True)
+        if mode == "rms"
+        else np.var(values, axis=-1, keepdims=True, ddof=1)
+    )
+    expected = values * 2 / np.sqrt(denominator + 1e-5)
+    np.testing.assert_allclose(np.array(norm(mx.array(values))), expected, rtol=1e-6)
+
+
+def test_continuous_conditioning_matches_sinusoidal_formula():
+    conditioner = ContinuousConditioner(dim=4, output_dim=4, scale_factor=2.0)
+    values = mx.array([0.0, 1.0])
+    expected = np.array(
+        [
+            [1.0, 1.0, 0.0, 0.0],
+            [math.cos(2.0), math.cos(0.0002), math.sin(2.0), math.sin(0.0002)],
+        ]
+    )
+    np.testing.assert_allclose(np.array(conditioner(values)), expected, atol=1e-6)
+
+
+@pytest.mark.parametrize("gelu", ["erf", "tanh"])
+def test_codec_gelu_matches_config(config, gelu):
+    from mlx_audio.codec.models.mimi.modules.transformer import MlpNoGating
+
+    config["mimi"]["gelu"] = gelu
+    codec_config = Model(config).mimi.decoder_transformer.transformer.cfg
+    layer = MlpNoGating(replace(codec_config, d_model=4, dim_feedforward=4))
+    layer.linear1.weight = layer.linear2.weight = mx.eye(4)
+    values = np.array([[-2.0, -1.0, 1.0, 2.0]], dtype=np.float32)
+    if gelu == "erf":
+        expected = (
+            0.5
+            * values
+            * (1 + np.array([[math.erf(x / math.sqrt(2)) for x in values[0]]]))
+        )
+    else:
+        expected = (
+            0.5
+            * values
+            * (1 + np.tanh(math.sqrt(2 / math.pi) * (values + 0.044715 * values**3)))
+        )
+    np.testing.assert_allclose(np.array(layer(mx.array(values))), expected, atol=1e-6)
 
 
 def test_loader_does_not_merge_voice_files(config, tmp_path):
@@ -453,8 +580,12 @@ def test_missing_decoder_weights_still_fail_strict_loading(config):
 )
 def test_unused_padding_weights_are_discarded(config, key):
     model = Model(config)
-    weights = convert_weights(model, {key: mx.full((1, 1, 8), 0.25)})
-    assert weights == {}
+    weights = dict(tree_flatten(model.parameters()))
+    expected_keys = set(weights)
+    weights[key] = mx.full((1, 1, 8), 0.25)
+    weights = convert_weights(model, weights)
+    assert set(weights) == expected_keys
+    model.load_weights(list(weights.items()), strict=True)
 
 
 def test_prefill_skips_sampling_and_preserves_random_sequence(config):

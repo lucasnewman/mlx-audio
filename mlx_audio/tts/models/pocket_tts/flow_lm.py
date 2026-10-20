@@ -50,17 +50,22 @@ class FlowLMModel(nn.Module):
         self.out_norm = nn.LayerNorm(dim, eps=1e-5)
         self.out_eos = nn.Linear(dim, 1)
         self.num_speakers = None
-        self._speaker_count_embedding = None
+        self.duration_delta = None
+        self._conditioning_embedding = None
 
-    def cache_speaker_conditioning(self):
-        """Materialize the fixed single-speaker condition after loading weights."""
-        self._speaker_count_embedding = (
+    def cache_conditioning(self):
+        """Materialize the default single-speaker and zero-duration conditions."""
+        embedding = (
             self.num_speakers(mx.array([1], dtype=mx.int32))
             if self.num_speakers is not None
             else None
         )
-        if self._speaker_count_embedding is not None:
-            mx.eval(self._speaker_count_embedding)
+        if self.duration_delta is not None:
+            duration = self.duration_delta(mx.array([0.0]))
+            embedding = duration if embedding is None else embedding + duration
+        self._conditioning_embedding = embedding
+        if embedding is not None:
+            mx.eval(embedding)
 
     def make_cache(self):
         return self.transformer.make_cache()
@@ -68,11 +73,11 @@ class FlowLMModel(nn.Module):
     def backbone(
         self, input_: mx.array, text_embeddings: mx.array, sequence: mx.array, cache
     ) -> mx.array:
-        if self.num_speakers is not None:
+        if self.num_speakers is not None or self.duration_delta is not None:
             # Also support freshly constructed models used without load_weights.
-            if self._speaker_count_embedding is None:
-                self.cache_speaker_conditioning()
-            input_ = input_ + self._speaker_count_embedding
+            if self._conditioning_embedding is None:
+                self.cache_conditioning()
+            input_ = input_ + self._conditioning_embedding
         if text_embeddings.shape[1]:
             input_ = mx.concatenate([text_embeddings, input_], axis=1)
         transformer_out = self.transformer(input_, cache)
@@ -126,6 +131,7 @@ class FlowLMModel(nn.Module):
             num_layers=config.transformer.num_layers,
             dim_feedforward=int(config.transformer.hidden_scale * d_model),
             max_period=float(config.transformer.max_period),
+            gelu=config.transformer.gelu,
         )
         dtype = getattr(mx, config.dtype) if config.dtype else None
         return cls(
