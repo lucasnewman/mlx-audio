@@ -19,6 +19,61 @@ MLX Audio provides speech-to-speech models for audio source separation, speech e
 
 ---
 
+## Standard generation entrypoint
+
+The shared entrypoint loads the model, calls `model.generate(...)`, and saves
+audio and text outputs. Use a repository ID, local model directory, or a model
+you have already loaded:
+
+```python
+from mlx_audio.sts.generate import generate_audio
+
+result = generate_audio(
+    model="mlx-community/Ming-3.0-audio-tiny-bf16",
+    audio="question.wav",
+    task="spoken_dialogue",
+    output_path="response.wav",
+)
+print(result.text)
+```
+
+```bash
+python -m mlx_audio.sts.generate \
+  --model mlx-community/Ming-3.0-audio-tiny-bf16 \
+  --audio question.wav --task spoken_dialogue --output-path response.wav
+
+python -m mlx_audio.sts.generate \
+  --model mlx-community/DeepFilterNet-mlx \
+  --audio noisy.wav --version 2 --stream --output-path clean.wav
+```
+
+This interface supports Ming Audio, MiMo-Audio, Nemotron VoiceChat,
+DeepFilterNet, MossFormer2 SE, and DialogueSidon. Options you omit use each
+model's defaults. Pass additional generation options through `--gen-kwargs`
+(a JSON object) or Python keyword arguments, and loader options through
+`--model-kwargs` or `model_kwargs`.
+
+Audio is written to `--output-path`, with any generated text in a sibling
+`.txt` file. Separation models write named stems, such as
+`response_speaker_1.wav` and `response_speaker_2.wav`. Without an output path,
+enhancement uses `<input>_enhanced.wav`, separation uses
+`<input>_separated_speaker_N.wav`, and conversational models use
+`<input>_output.wav` for audio input or `sts_output.wav` for text input.
+DeepFilterNet's `--stream` runs stateful enhancement and saves the completed
+waveform. Models with other streaming or token-level interfaces retain the
+Python APIs described below.
+
+### Model interface
+
+File-based STS models implement `generate(audio, **kwargs)` and return an
+object with `audio` and `sample_rate` attributes. Optional `text` contains
+generated text, while `audios` maps stem names to waveforms for separation.
+`mlx_audio.sts.models.base.STSOutput` provides this contract; models can also
+return richer result objects with these attributes. Task preparation and
+generation defaults belong in the model implementation.
+
+---
+
 ## SAM-Audio
 
 [SAM-Audio](https://github.com/facebookresearch/sam-audio) (Segment Anything Model for Audio) is Meta's foundation model for audio source separation using text prompts. Describe what you want to extract, and SAM-Audio separates it from the mix.

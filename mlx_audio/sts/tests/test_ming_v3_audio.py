@@ -8,11 +8,10 @@ from unittest.mock import MagicMock
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.sts.generate import _detect_model_type
 from mlx_audio.sts.models.ming_v3_audio import Model, ModelConfig
 from mlx_audio.sts.models.ming_v3_audio.conversion import copy_supporting_files
 from mlx_audio.sts.models.ming_v3_audio.talker import TalkerFlowLoss
-from mlx_audio.sts.utils import infer_model_type_from_config
+from mlx_audio.sts.utils import _resolve_model_type, infer_model_type_from_config
 from mlx_audio.stt.tests.test_ming_v3_asr import tiny_text_config
 from mlx_audio.tts.tests.test_lingv3_tts import ConstantDiT
 
@@ -184,7 +183,7 @@ class TestMingAudioIntegration(unittest.TestCase):
             self.assertEqual(detect_model_domain(config, path), domain)
             self.assertEqual(get_model_type(config, path, domain), canonical)
 
-    def test_loader_and_cli_detect_native_and_converted_metadata(self):
+    def test_loader_detects_native_and_converted_metadata(self):
         for family in ("bailing_moe_v3_audio", "ming_v3_audio"):
             self.assertEqual(
                 infer_model_type_from_config({"model_type": family}), "ming_v3_audio"
@@ -193,7 +192,7 @@ class TestMingAudioIntegration(unittest.TestCase):
                 (Path(directory) / "config.json").write_text(
                     json.dumps({"model_type": family})
                 )
-                self.assertEqual(_detect_model_type(directory), "ming_v3_audio")
+                self.assertEqual(_resolve_model_type(directory), "ming_v3_audio")
 
     def test_conversion_includes_talker_and_excludes_remote_code(self):
         with tempfile.TemporaryDirectory() as directory:

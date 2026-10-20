@@ -112,9 +112,10 @@ class Model(AudioModel):
         max_talker_steps=1000,
         no_repeat_ngram_size=0,
         seed=None,
+        stream=False,
         **kwargs,
     ):
-        if kwargs.get("stream"):
+        if stream:
             raise ValueError("Ming Audio currently supports offline generation only")
         if task not in {
             "asr",
