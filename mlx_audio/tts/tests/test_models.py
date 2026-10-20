@@ -5515,6 +5515,74 @@ class TestIrodoriV3VoiceDesignGenerate(unittest.TestCase):
         self.assertGreater(results[0].samples, 0)
 
 
+class TestIrodoriSpeakerKVScaleRollback(unittest.TestCase):
+    """speaker_kv_scale is rolled back once t crosses speaker_kv_min_t.
+
+    With dual conditioning and independent CFG, the CFG batch holds one bundle
+    per active guidance term (up to 4), and the rolled-back speaker KV cache must
+    keep that batch size.
+    """
+
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_v3_voicedesign(
+            num_steps=4,
+            cfg_scale_text=3.0,
+            cfg_scale_speaker=5.0,
+            cfg_scale_caption=3.0,
+            cfg_guidance_mode="independent",
+            cfg_min_t=0.0,
+            t_schedule_mode="linear",
+        )
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        model._caption_tokenizer = _MockTokenizer()
+        return model
+
+    def _latents(self, model, caption, **kwargs):
+        cfg = model.config
+        ref_latent = mx.random.normal((1, 4, cfg.dit.latent_dim), key=mx.random.key(1))
+        ref_mask = mx.ones((1, 4), dtype=mx.bool_)
+        latent, _ = model.generate_latents(
+            "こんにちは",
+            ref_latent=ref_latent,
+            ref_mask=ref_mask,
+            caption=caption,
+            rng_seed=0,
+            seconds=1.0,
+            **kwargs,
+        )
+        mx.eval(latent)
+        return latent
+
+    def test_rollback_with_speaker_and_caption_cfg(self):
+        # cond + text + speaker + caption: 4 bundles
+        model = self._make_model()
+        latent = self._latents(
+            model, "穏やかな声", speaker_kv_scale=1.5, speaker_kv_min_t=0.9
+        )
+        self.assertTrue(bool(mx.all(mx.isfinite(latent))))
+
+    def test_rollback_without_caption(self):
+        # empty caption is masked, so cond + text + speaker: 3 bundles
+        model = self._make_model()
+        latent = self._latents(model, "", speaker_kv_scale=1.5, speaker_kv_min_t=0.9)
+        self.assertTrue(bool(mx.all(mx.isfinite(latent))))
+
+    def test_unit_scale_rollback_matches_plain_kv_cache(self):
+        model = self._make_model()
+        plain = self._latents(model, "穏やかな声", context_kv_cache=True)
+        rolled = self._latents(
+            model, "穏やかな声", speaker_kv_scale=1.0, speaker_kv_min_t=0.9
+        )
+        self.assertTrue(bool(mx.allclose(plain, rolled)))
+
+
 # ---------------------------------------------------------------------------
 # Irodori-TTS v4: shared pretrained (ModernBERT) text/caption encoder
 # ---------------------------------------------------------------------------
