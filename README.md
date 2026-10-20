@@ -129,6 +129,7 @@ for result in model.generate(
 | **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
 | **Chatterbox** | Expressive multilingual TTS (v2/v3) | 23 languages | [v3](https://huggingface.co/mlx-community/chatterbox-multilingual-v3), [v2](https://huggingface.co/mlx-community/chatterbox-fp16) |
 | **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-1.1-80M-bf16](https://huggingface.co/mlx-community/Soprano-1.1-80M-bf16) |
+| [**Phonon**](mlx_audio/tts/models/pocket_tts/README.md) | Gradium 24 kHz TTS with streaming generation | EN | [31M](https://huggingface.co/gradium/phonon-31m-en), [40M](https://huggingface.co/gradium/phonon-40m-en) |
 | **Ming Omni TTS (BailingMM)** | Multimodal generation with voice cloning, style control, and speech/music/event generation | EN, ZH | [mlx-community/Ming-omni-tts-16.8B-A3B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-bf16) |
 | **Ming-3.0 TTS (Dense)** | 0.5B multilingual TTS with voice cloning, built-in voices, freeform/emotion/dialect control and paralinguistic tags ([README](mlx_audio/tts/models/dense/README.md)) | ZH, EN, DE, ES, FR, KO, JA | [mlx-community/Ming-3.0-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16) |
 | **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant for voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
