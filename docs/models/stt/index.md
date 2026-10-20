@@ -10,6 +10,7 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 
 | Model | Provider | Parameters | Languages | Streaming | Timestamps | Repo |
 |-------|----------|-----------|-----------|-----------|------------|------|
+| [**Ming-3.0 ASR Tiny**](ming3-tiny.md) | inclusionAI | Hybrid MoE | EN, ZH | -- | -- | [BF16](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-4bit) |
 | [**Whisper**](whisper.md) | OpenAI | Various | 99+ | -- | Segment + Word | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Distil-Whisper** | HuggingFace | Various | EN | -- | Segment | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | [**Parakeet**](parakeet.md) | NVIDIA | 0.6B | EN (v2), 25 EU (v3) | Yes | Sentence + Word | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
