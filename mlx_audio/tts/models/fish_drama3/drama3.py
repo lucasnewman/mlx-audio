@@ -388,20 +388,33 @@ class Model(nn.Module):
         for the host; the one wasted step after EOS only touches this call's
         caches. The EOS check reads step n's own `main` array: slicing the frame
         instead would build a new op that waits behind the queued step.
+
+        The model often ends a turn with <|semantic:0|> right before EOS; that
+        frame decodes to a click after the trailing silence, so it is held back
+        one step and dropped when EOS follows.
         """
         caches = self._start_caches(frames, system_rows, voice)
         hidden = self._prefill(frames, caches, system_rows, frames.shape[0])
         args = (caches, temperature, top_k, top_p)
         pending = self._step(hidden, frames[None, -1:], frames[-RAS_WINDOW:, 0], *args)
         mx.async_eval(pending)
+        held = None
         for n in range(max_frames):
             frame, hidden, history, main = pending
             if n + 1 < max_frames:
                 pending = self._step(hidden, frame, history, *args)
                 mx.async_eval(pending)
-            if main.item() == self.eos_id:
+            token = main.item()
+            if token == self.eos_id:
                 return
-            yield frame[0, 0, 1:]
+            if held is not None:
+                yield held
+            held = frame[0, 0, 1:]
+            if token != self.semantic_begin:
+                yield held
+                held = None
+        if held is not None:
+            yield held
 
     def generate(
         self,
