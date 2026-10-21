@@ -308,6 +308,40 @@ class TestMing3GenerationBudget(unittest.TestCase):
         model.sample.assert_called_once()
         model.audio.decode.assert_not_called()
 
+    def test_stream_yields_each_fragment_as_it_is_decoded(self):
+        model = make_model(chat_layout=True, ming3=True)
+        model.audio = SimpleNamespace(sample_rate=1000, decode=MagicMock())
+        model.audio.decode.side_effect = [
+            (mx.full((1, 100), 1.0), None, None),
+            (mx.full((1, 200), 2.0), None, None),
+        ]
+        latent = mx.zeros((1, 1, 4))
+        model.sample = MagicMock(side_effect=lambda **_: iter([(latent, True)]))
+        text = " ".join(["hello"] * 50) + ". Goodbye."
+
+        results = model.generate(text, stream=True)
+        first = next(results)
+        self.assertEqual(model.audio.decode.call_count, 1)
+        self.assertEqual(first.samples, 100)
+        self.assertEqual(first.segment_idx, 0)
+        self.assertTrue(first.is_streaming_chunk)
+        self.assertFalse(first.is_final_chunk)
+
+        rest = list(results)
+        self.assertEqual(len(rest), 1)
+        self.assertEqual(rest[0].samples, 200)
+        self.assertEqual(rest[0].segment_idx, 1)
+        self.assertTrue(rest[0].is_final_chunk)
+
+        model.audio.decode.side_effect = [
+            (mx.full((1, 100), 1.0), None, None),
+            (mx.full((1, 200), 2.0), None, None),
+        ]
+        (joined,) = list(model.generate(text))
+        self.assertEqual(joined.samples, 300)
+        self.assertFalse(joined.is_streaming_chunk)
+        self.assertTrue(joined.is_final_chunk)
+
 
 if __name__ == "__main__":
     unittest.main()

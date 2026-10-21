@@ -1963,7 +1963,7 @@ class Model(nn.Module):
         streaming_interval: float = 2.0,
         **kwargs,
     ) -> Iterable[GenerationResult]:
-        del stream, streaming_interval
+        del streaming_interval
 
         if self.tokenizer is None:
             raise ValueError(
@@ -2021,8 +2021,39 @@ class Model(nn.Module):
         else:
             fragments = [text]
 
+        if speed != 1.0:
+            # Speed control is not implemented for Ming Omni yet; keep native timing.
+            if verbose:
+                print("[WARN] speed parameter is currently ignored for Ming Omni TTS.")
+
+        def result(audio, text, started, segment_idx, is_streaming_chunk, is_final):
+            mx.eval(audio)
+            elapsed = max(1e-6, time.perf_counter() - started)
+            samples = int(audio.shape[0])
+            token_count = len(self._encode(text))
+            duration_seconds = samples / self.sample_rate
+            return GenerationResult(
+                audio=audio,
+                samples=samples,
+                sample_rate=self.sample_rate,
+                segment_idx=segment_idx,
+                token_count=token_count,
+                audio_duration=format_duration(duration_seconds),
+                real_time_factor=elapsed / max(duration_seconds, 1e-6),
+                prompt={"tokens": token_count, "tokens-per-sec": token_count / elapsed},
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": samples / elapsed,
+                },
+                processing_time_seconds=elapsed,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+                is_streaming_chunk=is_streaming_chunk,
+                is_final_chunk=is_final,
+            )
+
         speech_parts = []
-        for fragment in fragments:
+        chunk_start = start_time
+        for idx, fragment in enumerate(fragments):
             sampler = self.sample(
                 prompt=prompt,
                 text=fragment,
@@ -2046,7 +2077,14 @@ class Model(nn.Module):
                 part, _, _ = self.audio.decode(
                     mx.concatenate(latents, axis=1), use_cache=False, last_chunk=True
                 )
-                speech_parts.append(_trim_trailing_silence(part[0], self.sample_rate))
+                part = _trim_trailing_silence(part[0], self.sample_rate)
+                if stream:
+                    # Fragments decode independently, so each can play once ready.
+                    is_final = idx == len(fragments) - 1
+                    yield result(part, fragment, chunk_start, idx, True, is_final)
+                    chunk_start = time.perf_counter()
+                else:
+                    speech_parts.append(part)
                 continue
 
             speech_chunks = []
@@ -2066,6 +2104,8 @@ class Model(nn.Module):
             if speech_chunks:
                 speech_parts.append(mx.concatenate(speech_chunks, axis=1)[0])
 
+        if self.ming3 and stream:
+            return
         if not speech_parts:
             raise RuntimeError("No audio chunks were generated")
         speech = (
@@ -2073,35 +2113,7 @@ class Model(nn.Module):
             if len(speech_parts) == 1
             else mx.concatenate(speech_parts, axis=0)
         )
-
-        if speed != 1.0:
-            # Speed control is not implemented for Ming Omni yet; keep native timing.
-            if verbose:
-                print("[WARN] speed parameter is currently ignored for Ming Omni TTS.")
-
-        mx.eval(speech)
-        elapsed = max(1e-6, time.perf_counter() - start_time)
-        samples = int(speech.shape[0])
-        token_count = len(self._encode(text))
-        duration_seconds = samples / self.sample_rate
-        audio_sps = samples / elapsed
-        token_tps = token_count / elapsed
-
-        yield GenerationResult(
-            audio=speech,
-            samples=samples,
-            sample_rate=self.sample_rate,
-            segment_idx=0,
-            token_count=token_count,
-            audio_duration=format_duration(duration_seconds),
-            real_time_factor=elapsed / max(duration_seconds, 1e-6),
-            prompt={"tokens": token_count, "tokens-per-sec": token_tps},
-            audio_samples={"samples": samples, "samples-per-sec": audio_sps},
-            processing_time_seconds=elapsed,
-            peak_memory_usage=mx.get_peak_memory() / 1e9,
-            is_streaming_chunk=False,
-            is_final_chunk=True,
-        )
+        yield result(speech, text, start_time, 0, False, True)
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
