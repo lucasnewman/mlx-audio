@@ -24,6 +24,8 @@ LANGUAGE_CODES = {
     "es": "Spanish",
     "pt": "Portuguese",
     "ja": "Japanese",
+    "it": "Italian",
+    "zh": "Mandarin",
 }
 
 # Verbatim from the granite-speech-4.1-2b-plus model card. IBM's reference code
@@ -206,23 +208,61 @@ def _parse_timestamps(text: str) -> List[dict]:
     ]
 
 
-def _resolve_prompt(task: str, prompt: Optional[str], language: Optional[str]) -> str:
+def _resolve_prompt(
+    task: str,
+    prompt: str | None,
+    language: str | None,
+    *,
+    source_language: str | None = None,
+    hotwords: list[str] | None = None,
+    punctuate: bool = False,
+) -> str:
     # Rich tasks are prompt-controlled, so their canonical prompts are part of
     # the output-schema contract. Custom prompts remain available for ASR.
     task = _normalize_task(task)
-    if prompt is not None:
-        if task != "asr":
+    if task != "asr":
+        if prompt is not None:
             raise ValueError(
                 f"prompt cannot override task={task!r}. Use task='asr' for an "
                 "unconstrained custom instruction."
             )
-        return prompt
-    if task != "asr":
+        if source_language is not None or hotwords or punctuate:
+            raise ValueError(
+                "source_language, hotwords, and punctuate require task='asr'."
+            )
         return TASK_PROMPTS[task]
-    if language is not None:
+
+    keywords = [str(word).strip() for word in (hotwords or []) if word is not None]
+    keywords = [word for word in keywords if word]
+    if prompt is not None:
+        instruction = prompt
+    elif language is not None:
         lang_name = LANGUAGE_CODES.get(language.lower(), language)
-        return f"Translate the speech to {lang_name}."
-    return TASK_PROMPTS["asr"]
+        suffix = " with proper punctuation and capitalization" if punctuate else ""
+        instruction = f"Translate the speech to {lang_name}{suffix}."
+    elif punctuate:
+        instruction = (
+            "transcribe the speech with proper punctuation and capitalization."
+        )
+    elif keywords:
+        instruction = "transcribe the speech to text."
+    else:
+        instruction = TASK_PROMPTS["asr"]
+
+    if source_language is not None:
+        if language is not None:
+            raise ValueError(
+                "source_language selects transcription; language selects translation. "
+                "Pass only one of them."
+            )
+        lang_name = LANGUAGE_CODES.get(source_language.lower(), source_language)
+        instruction = (
+            f"The speech is in {lang_name}. Transcribe it exactly; do not translate. "
+            f"{instruction}"
+        )
+    if keywords:
+        instruction += f" Keywords: {', '.join(keywords)}"
+    return instruction
 
 
 def _parse_segments(task: str, text: str) -> List[dict]:
@@ -242,6 +282,12 @@ class StreamingResult:
     language: str = "en"
     prompt_tokens: int = 0
     generation_tokens: int = 0
+    speculative_stats: dict | None = None
+
+
+@dataclass
+class SpeculativeSTTOutput(STTOutput):
+    speculative_stats: dict | None = None
 
 
 class BatchNorm1d(nn.Module):
@@ -429,7 +475,7 @@ class CTCEncoder(nn.Module):
         )
         mx.eval(self._attention_dists)
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, *, return_importance: bool = False):
         x = self.input_linear(x)
         cat_layers = set(self.config.cat_hidden_layers or ())
         exported = [x] if 0 in cat_layers else []
@@ -437,6 +483,10 @@ class CTCEncoder(nn.Module):
             x = layer(x, attention_dists=self._attention_dists)
             if idx == self.num_layers // 2:
                 x_mid = self.out(x)
+                if return_importance:
+                    importance = (
+                        1.0 - mx.softmax(x_mid.astype(mx.float32), axis=-1)[:, :, 0]
+                    )
                 x = x + self.out_mid(mx.softmax(x_mid, axis=-1))
             # Export after the mid-layer CTC injection: HF adds it in place to
             # the tensor it has already exported, so an exported mid layer
@@ -445,6 +495,8 @@ class CTCEncoder(nn.Module):
                 exported.append(x)
         if exported:
             x = mx.concatenate([*exported, x], axis=-1)
+        if return_importance:
+            return x, importance
         return x
 
 
@@ -651,6 +703,8 @@ class Model(nn.Module):
 
         self.audio_token_id = config.audio_token_index
         self._tokenizer = None
+        self._bpe_head_path = None
+        self._bpe_head = None
 
     @property
     def layers(self):
@@ -714,27 +768,29 @@ class Model(nn.Module):
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-        already_converted = any("scales" in k for k in weights)
-
         sanitized = {}
         for k, v in weights.items():
             if "num_batches_tracked" in k:
                 continue
+            # Granite Speech 5.0 also ships out_llm.safetensors, an optional
+            # encoder BPE head for speculative decoding. The shared loader
+            # merges all safetensors, leaving its bare weight/bias at the root.
+            if k in {"weight", "bias"}:
+                continue
 
             if (
-                not already_converted
-                and any(name in k for name in ["up_conv", "down_conv", "depth_conv"])
-                and "weight" in k
+                any(name in k for name in ["up_conv", "down_conv", "depth_conv"])
+                and k.endswith(".weight")
                 and len(v.shape) == 3
             ):
                 # MLX Conv1d expects weights in (out_channels, kernel_size, in_channels)
                 # layout, while PyTorch uses (out_channels, in_channels, kernel_size).
-                # Models converted from PyTorch checkpoints need transposing; models
-                # already saved in MLX-native layout (e.g. bf16 safetensors) do not.
-                # depth_conv (kernel > 1) needs the shape heuristic to distinguish
-                # PyTorch (out, 1, kernel) from MLX (out, kernel, 1). up_conv and
-                # down_conv always use kernel_size=1, so they are always transposed.
-                if "depth_conv" not in k or v.shape[-1] > v.shape[-2]:
+                # Infer each convolution's layout independently so sanitizing
+                # both unquantized and quantized MLX checkpoints is idempotent.
+                depthwise = "depth_conv" in k
+                if (depthwise and v.shape[1] == 1) or (
+                    not depthwise and v.shape[2] == 1
+                ):
                     v = v.transpose(0, 2, 1)
 
             sanitized[k] = v
@@ -754,7 +810,52 @@ class Model(nn.Module):
         finally:
             transformers.logging.set_verbosity(prev)
 
+        head_path = model_path / "out_llm.safetensors"
+        if head_path.exists():
+            model._bpe_head_path = head_path
         return model
+
+    @property
+    def supports_speculative(self) -> bool:
+        return self._bpe_head_path is not None
+
+    def _load_bpe_head(self):
+        if self._bpe_head is None:
+            if not self.supports_speculative:
+                raise ValueError(
+                    "Speculative decoding requires out_llm.safetensors. Load the "
+                    "original Granite Speech checkpoint or reconvert it with the "
+                    "BPE head included."
+                )
+            weights = mx.load(str(self._bpe_head_path))
+            head = nn.Linear(
+                self.config.encoder_config.hidden_dim,
+                weights["weight"].shape[0],
+            )
+            head.load_weights(list(weights.items()), strict=True)
+            head.eval()
+            mx.eval(head.parameters())
+            self._bpe_head = head
+        return self._bpe_head
+
+    def _get_speculative_audio_features(self, input_features, stats):
+        from .speculative import collapse_bpe_tokens, posterior_weighted_pool
+
+        start = time.perf_counter()
+        hidden, importance = self.encoder(input_features, return_importance=True)
+        audio_features = self.projector(hidden)
+        mx.eval(hidden, importance, audio_features)
+        stats["encoder_projector_time"] = time.perf_counter() - start
+        start = time.perf_counter()
+        pooled = posterior_weighted_pool(hidden, importance)
+        labels = mx.argmax(self._load_bpe_head()(pooled), axis=-1)[0].tolist()
+        tokens = collapse_bpe_tokens(labels)
+        # Canonical tokenization improves agreement with the LLM's output,
+        # particularly when CTC emits adjacent pieces with different boundaries.
+        text = self._tokenizer.decode(tokens, skip_special_tokens=True).strip()
+        tokens = self._tokenizer.encode(text, add_special_tokens=False) if text else []
+        stats["draft_time"] = time.perf_counter() - start
+        return audio_features, tokens
 
     def _extract_features(
         self, audio: Union[mx.array, np.ndarray]
@@ -876,9 +977,14 @@ class Model(nn.Module):
         task: str = "asr",
         prompt: str = None,
         language: str = None,
+        source_language: str | None = None,
+        hotwords: list[str] | None = None,
+        punctuate: bool = False,
         system_prompt: Optional[str] = None,
         word_timestamps: bool = False,
         prefill_step_size: int = 2048,
+        speculative: bool = False,
+        num_draft_tokens: int = 16,
         verbose: bool = False,
         stream: bool = False,
         **kwargs,
@@ -893,10 +999,26 @@ class Model(nn.Module):
                 f"loaded model has model_type={self.config.model_type!r}. Load "
                 "ibm-granite/granite-speech-4.1-2b-plus or use task='asr'."
             )
-        prompt = _resolve_prompt(task, prompt, language)
+        prompt = _resolve_prompt(
+            task,
+            prompt,
+            language,
+            source_language=source_language,
+            hotwords=hotwords,
+            punctuate=punctuate,
+        )
 
         if system_prompt is None and self.is_plus:
             system_prompt = PLUS_SYSTEM_PROMPT
+
+        if speculative:
+            if temperature != 0 or repetition_penalty is not None:
+                raise ValueError(
+                    "Speculative decoding requires temperature=0 and no repetition_penalty."
+                )
+            if num_draft_tokens < 1 or prefill_step_size < 1 or max_tokens < 0:
+                raise ValueError("Invalid speculative decoding token or prefill limit.")
+            self._load_bpe_head()
 
         if stream:
             return self._stream_generate(
@@ -911,6 +1033,8 @@ class Model(nn.Module):
                 prompt=prompt,
                 system_prompt=system_prompt,
                 prefill_step_size=prefill_step_size,
+                speculative=speculative,
+                num_draft_tokens=num_draft_tokens,
                 verbose=verbose,
             )
 
@@ -924,7 +1048,13 @@ class Model(nn.Module):
 
         if verbose:
             print("Encoding audio...")
-        audio_features = self.get_audio_features(input_features)
+        speculative_stats = {} if speculative else None
+        if speculative:
+            audio_features, draft_tokens = self._get_speculative_audio_features(
+                input_features, speculative_stats
+            )
+        else:
+            audio_features = self.get_audio_features(input_features)
         mx.eval(audio_features)
 
         prompt_ids = self._build_prompt(
@@ -944,15 +1074,30 @@ class Model(nn.Module):
         eos_token_id = self._tokenizer.eos_token_id
         tokens = []
 
-        for token, logprobs in generate_step(
-            prompt=prompt_ids,
-            input_embeddings=inputs_embeds.squeeze(0),
-            model=self,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            logits_processors=logits_processors,
-            prefill_step_size=prefill_step_size,
-        ):
+        if speculative:
+            from .speculative import speculative_generate_step
+
+            token_stream = speculative_generate_step(
+                prompt=prompt_ids,
+                input_embeddings=inputs_embeds.squeeze(0),
+                model=self,
+                draft_tokens=draft_tokens,
+                max_tokens=max_tokens,
+                num_draft_tokens=num_draft_tokens,
+                prefill_step_size=prefill_step_size,
+                stats=speculative_stats,
+            )
+        else:
+            token_stream = generate_step(
+                prompt=prompt_ids,
+                input_embeddings=inputs_embeds.squeeze(0),
+                model=self,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                logits_processors=logits_processors,
+                prefill_step_size=prefill_step_size,
+            )
+        for token, logprobs in token_stream:
             if token == eos_token_id:
                 break
             tokens.append(token)
@@ -969,7 +1114,7 @@ class Model(nn.Module):
             if gen_tokens > 0:
                 print(f"Generation TPS: {gen_tokens / elapsed:.1f}")
 
-        return STTOutput(
+        output = STTOutput(
             text=text,
             segments=segments,
             prompt_tokens=prompt_tokens,
@@ -979,6 +1124,11 @@ class Model(nn.Module):
             prompt_tps=prompt_tokens / elapsed if elapsed > 0 else 0,
             generation_tps=gen_tokens / elapsed if elapsed > 0 else 0,
         )
+        if speculative:
+            return SpeculativeSTTOutput(
+                **vars(output), speculative_stats=speculative_stats
+            )
+        return output
 
     def _stream_generate(
         self,
@@ -994,6 +1144,8 @@ class Model(nn.Module):
         prompt: str = None,
         system_prompt: Optional[str] = None,
         prefill_step_size: int = 2048,
+        speculative: bool = False,
+        num_draft_tokens: int = 16,
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
         from mlx_audio.lm.generate import StreamingDetokenizer, generate_step
@@ -1002,7 +1154,13 @@ class Model(nn.Module):
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)
 
-        audio_features = self.get_audio_features(input_features)
+        speculative_stats = {} if speculative else None
+        if speculative:
+            audio_features, draft_tokens = self._get_speculative_audio_features(
+                input_features, speculative_stats
+            )
+        else:
+            audio_features = self.get_audio_features(input_features)
         mx.eval(audio_features)
 
         prompt_ids = self._build_prompt(
@@ -1023,15 +1181,30 @@ class Model(nn.Module):
         gen_tokens = 0
         detokenizer = StreamingDetokenizer(self._tokenizer, skip_special_tokens=True)
 
-        for token, _ in generate_step(
-            prompt=prompt_ids,
-            input_embeddings=inputs_embeds.squeeze(0),
-            model=self,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            logits_processors=logits_processors,
-            prefill_step_size=prefill_step_size,
-        ):
+        if speculative:
+            from .speculative import speculative_generate_step
+
+            token_stream = speculative_generate_step(
+                prompt=prompt_ids,
+                input_embeddings=inputs_embeds.squeeze(0),
+                model=self,
+                draft_tokens=draft_tokens,
+                max_tokens=max_tokens,
+                num_draft_tokens=num_draft_tokens,
+                prefill_step_size=prefill_step_size,
+                stats=speculative_stats,
+            )
+        else:
+            token_stream = generate_step(
+                prompt=prompt_ids,
+                input_embeddings=inputs_embeds.squeeze(0),
+                model=self,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                logits_processors=logits_processors,
+                prefill_step_size=prefill_step_size,
+            )
+        for token, _ in token_stream:
             if token == eos_token_id:
                 break
             gen_tokens += 1
@@ -1054,6 +1227,7 @@ class Model(nn.Module):
             end_time=0.0,
             prompt_tokens=prompt_token_count,
             generation_tokens=gen_tokens,
+            speculative_stats=speculative_stats,
         )
 
     def _load_audio(self, audio: Union[str, mx.array, np.ndarray]) -> mx.array:
