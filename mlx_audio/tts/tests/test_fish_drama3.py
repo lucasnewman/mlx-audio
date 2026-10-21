@@ -11,7 +11,11 @@ from mlx.utils import tree_flatten
 
 from mlx_audio.codec.tests.test_fish_s1_dac import _tiny_streaming_dac
 from mlx_audio.tts.models.fish_drama3 import Model, ModelConfig
-from mlx_audio.tts.models.fish_drama3.chunking import split_text, validate_text
+from mlx_audio.tts.models.fish_drama3.chunking import (
+    flatten_lines,
+    split_text,
+    validate_text,
+)
 from mlx_audio.tts.models.fish_drama3.convert import TOWER_PREFIXES, convert
 from mlx_audio.tts.models.fish_drama3.drama3 import sample_top_k_top_p
 from mlx_audio.tts.utils import load_model
@@ -132,6 +136,53 @@ def write_source(path: Path) -> dict[str, mx.array]:
 
 
 class TestChunking(unittest.TestCase):
+    def test_line_breaks_become_spaces_in_every_script(self):
+        cases = (
+            ("Erster Absatz.\n\nZweiter.", "Erster Absatz. Zweiter."),
+            ("第一段。\r\n\n 第二段。\n", "第一段。 第二段。"),
+            ("最初の段落。\n次の段落。", "最初の段落。 次の段落。"),
+            ("좋은\n아침입니다.", "좋은 아침입니다."),
+            ("한국어 \n English", "한국어 English"),
+            ("中文\nEnglish", "中文 English"),
+            ("Ｈｅｌｌｏ\nＷｏｒｌｄ", "Ｈｅｌｌｏ Ｗｏｒｌｄ"),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(split_text(text), [expected])
+
+    def test_unicode_line_breaks_and_surrounding_whitespace(self):
+        for line_break in ("\n", "\r", "\r\n", "\v", "\f", "\x85", "\u2028", "\u2029"):
+            with self.subTest(line_break=line_break):
+                text = (
+                    f" \t{line_break}First.\u3000{line_break}\u00a0Second.{line_break} "
+                )
+                self.assertEqual(split_text(text), ["First. Second."])
+
+    def test_whitespace_without_line_breaks_is_preserved(self):
+        for text in ("  First.\t\tSecond.\u3000", "First." + " " * 100_000 + "Second."):
+            with self.subTest(length=len(text)):
+                self.assertEqual(flatten_lines(text), text)
+
+    def test_only_speaker_turns_keep_line_breaks(self):
+        text = "<|speaker:0|> First.\n\n<|speaker:1|> Next\nline."
+        expected = split_text("<|speaker:0|> First. <|speaker:1|> Next line.")
+        chunks = split_text(text)
+        self.assertEqual(chunks, expected)
+        self.assertEqual(chunks[0].count("\n"), 1)
+
+    def test_multiline_cues_stay_whole(self):
+        text = "Before. <whisper>First\nsecond.</whisper> [laughs\nsoftly] After."
+        chunks = split_text(text, limit=30)
+        self.assertTrue(any("<whisper>First second.</whisper>" in c for c in chunks))
+        self.assertTrue(any("[laughs softly]" in c for c in chunks))
+
+    def test_many_paragraphs_preserve_words_and_chunk_limits(self):
+        paragraphs = [f"Paragraph {i} has several words." for i in range(100)]
+        chunks = split_text("\n\n".join(paragraphs))
+        self.assertEqual(" ".join(chunks).split(), " ".join(paragraphs).split())
+        self.assertTrue(all(len(chunk.encode()) <= 300 for chunk in chunks))
+        self.assertTrue(all("\n" not in chunk for chunk in chunks))
+
     def test_long_speaker_turn_keeps_its_speaker(self):
         chunks = split_text("<|speaker:1|> " + "Das ist ein Satz mit Inhalt. " * 20)
         self.assertGreater(len(chunks), 1)
