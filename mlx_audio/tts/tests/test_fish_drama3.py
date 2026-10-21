@@ -326,6 +326,34 @@ class TestGeneration(unittest.TestCase):
         self.assertEqual(sum(r.is_final_chunk for r in results), 1)
         self.assertEqual(sum(r.token_count for r in results), 5)
 
+    def run_frames(self, mains: list[int]) -> list[mx.array]:
+        """The codes _frames yields when the steps sample these main tokens."""
+        model = self.model
+        steps = iter(mains)
+
+        def step(hidden, frame, history, *args):
+            main = mx.array([next(steps, EOS)])
+            c0 = mx.maximum(main - SEMANTIC_START, 0)
+            new = mx.concatenate([main, c0, c0 + 1, c0 + 2])[None, None]
+            return new.astype(mx.int32), hidden, history, main
+
+        frames, system_rows = model.build_frames([], [], "Hallo du.")
+        voice = model._voice(None, None)
+        with patch.object(model, "_step", side_effect=step):
+            return list(model._frames(frames, system_rows, voice, 8, 0.7, 30, 0.7))
+
+    def test_semantic_zero_right_before_eos_is_dropped(self):
+        # <|semantic:0|> right before EOS decodes to a click, so it is dropped.
+        codes = self.run_frames([SEMANTIC_START + 3, SEMANTIC_START])
+        self.assertEqual([c[0].item() for c in codes], [3])
+        # Anywhere else it is an ordinary frame.
+        mains = [SEMANTIC_START, SEMANTIC_START, SEMANTIC_START + 5]
+        codes = self.run_frames(mains)
+        self.assertEqual([c[0].item() for c in codes], [0, 0, 5])
+        # The frame cap is not EOS: a held frame is still yielded.
+        codes = self.run_frames([SEMANTIC_START + 1] * 7 + [SEMANTIC_START])
+        self.assertEqual(len(codes), 8)
+
     def test_accepts_the_cli_and_server_arguments(self):
         cli = dict(speed=1.0, lang_code="en", temperature=0.7, verbose=False)
         cli |= dict(instruct=None, use_zero_spk_emb=False, voice="af_heart")
