@@ -1309,6 +1309,34 @@ def test_tts_batch_key_separates_omitted_from_sent_sampling():
     ) != adapter.continuous_batch_key(_tts_inference_request(model, temperature=0.7))
 
 
+def test_tts_speech_streaming_sends_nothing_for_an_empty_final_chunk(
+    client, mock_model_provider
+):
+    def stream(empty_final: bool):
+        def generate(input_text: str, **kwargs):
+            yield from sync_mock_audio_stream_generator(input_text, **kwargs)
+            if empty_final:
+                yield MockAudioResult(np.zeros((0,), dtype=np.float32), 16000)
+
+        model = MagicMock()
+        model.generate = MagicMock(side_effect=generate)
+        mock_model_provider.load_model = MagicMock(return_value=model)
+        payload = {
+            "model": "test_tts_model",
+            "input": "Hello",
+            "stream": True,
+            "response_format": "wav",
+        }
+        response = client.post("/v1/audio/speech", json=payload)
+        assert response.status_code == 200
+        return response.content
+
+    audio = stream(empty_final=False)
+    # One second of 16 kHz 16-bit audio, so the comparison is not of two headers.
+    assert len(audio) > 16000
+    assert stream(empty_final=True) == audio
+
+
 def test_tts_speech_streaming_uses_generate_config(client, mock_model_provider):
     model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
     mock_model_provider.load_model = MagicMock(return_value=model)

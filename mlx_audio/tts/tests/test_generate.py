@@ -245,6 +245,34 @@ class TestGenerateAudio(unittest.TestCase):
         self.assertEqual(second_kwargs["format"], "wav")
 
     @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
+    @patch("mlx_audio.tts.generate.AudioPlayer")
+    def test_stream_save_skips_an_empty_final_chunk(
+        self, mock_audio_player, mock_audio_write, _mock_print
+    ):
+        mock_audio_player.return_value = MagicMock()
+        model = MagicMock()
+        model.sample_rate = 24000
+        model.generate.return_value = [
+            self._result([0.1, 0.2]),
+            self._result([0.3, 0.4], segment_idx=1),
+            self._result([], segment_idx=2),
+        ]
+
+        generate_audio(
+            text="hello",
+            model=model,
+            stream=True,
+            save=True,
+            verbose=False,
+        )
+
+        self.assertEqual(
+            [args[0] for args, _ in mock_audio_write.call_args_list],
+            ["audio_000.wav", "audio_001.wav"],
+        )
+
+    @patch("builtins.print")
     @patch("mlx_audio.tts.generate.os.makedirs")
     @patch("mlx_audio.tts.generate.audio_write")
     @patch("mlx_audio.tts.generate.AudioPlayer")
