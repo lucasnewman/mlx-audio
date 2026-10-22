@@ -396,6 +396,7 @@ class Model(nn.Module):
                     start_time=start_time,
                     segment_idx=segment_idx,
                     token_count=token_count,
+                    is_streaming_chunk=True,
                 )
                 segment_idx += 1
                 buffer = []
@@ -404,13 +405,18 @@ class Model(nn.Module):
 
             if buffer:
                 audio = mx.concatenate(buffer, axis=0) if len(buffer) > 1 else buffer[0]
-                yield _build_generation_result(
-                    audio=audio,
-                    sample_rate=self.sample_rate,
-                    start_time=start_time,
-                    segment_idx=segment_idx,
-                    token_count=token_count,
-                )
+            else:
+                # The last audio already went out as a partial chunk.
+                audio = mx.zeros((0,), dtype=mx.float32)
+            yield _build_generation_result(
+                audio=audio,
+                sample_rate=self.sample_rate,
+                start_time=start_time,
+                segment_idx=segment_idx,
+                token_count=token_count,
+                is_streaming_chunk=True,
+                is_final_chunk=True,
+            )
         finally:
             self.temp = prev_temp
             self.lsd_decode_steps = prev_lsd
@@ -555,6 +561,8 @@ def _build_generation_result(
     start_time: float,
     segment_idx: int,
     token_count: int,
+    is_streaming_chunk: bool = False,
+    is_final_chunk: bool = False,
 ) -> GenerationResult:
     samples = int(audio.shape[0])
     audio_duration_seconds = samples / sample_rate if sample_rate else 0.0
@@ -585,6 +593,8 @@ def _build_generation_result(
         },
         processing_time_seconds=elapsed_time,
         peak_memory_usage=mx.get_peak_memory() / 1e9,
+        is_streaming_chunk=is_streaming_chunk,
+        is_final_chunk=is_final_chunk,
     )
 
 

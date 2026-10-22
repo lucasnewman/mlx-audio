@@ -374,7 +374,9 @@ def generate_audio(
             if play:
                 player.queue_audio(result.audio)
 
-            if save_streamed_audio:
+            # An empty final chunk only marks the end of the stream; saved per
+            # segment, it would add a file without audio.
+            if save_streamed_audio and result.audio.size > 0:
                 if join_audio:
                     streamed_audio_chunks.append(result.audio)
                 else:

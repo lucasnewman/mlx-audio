@@ -687,12 +687,15 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
                 return
 
             if speech_request.stream:
-                self._emit_audio(
-                    request,
-                    speech_request,
-                    result.audio,
-                    result.sample_rate,
-                )
+                # An empty final chunk only marks the end of the stream; encoded,
+                # it would send a container header without audio.
+                if result.audio.size > 0:
+                    self._emit_audio(
+                        request,
+                        speech_request,
+                        result.audio,
+                        result.sample_rate,
+                    )
             else:
                 audio_chunks.append(result.audio)
                 if sample_rate is None:
