@@ -39,6 +39,10 @@ DEFAULT_TEMPERATURE = 0.7
 DEFAULT_TOP_K = 30
 DEFAULT_TOP_P = 0.7
 PREFILL_CHUNK = 256
+# Frames per codec call when a chunk is decoded at once. The codec's working set
+# grows with the frames of one call: a 1024-frame chunk needs about 20 GB on top
+# of the weights in one call and about 4 GB in 64-frame pieces, no slower.
+DECODE_FRAMES = 64
 VOICE_CACHE_SIZE = 4
 KEPT_PREFIXES = ("backbone.", "semantic_head.", "tower.")
 
@@ -212,6 +216,9 @@ class Model(nn.Module):
         indices, lengths = self.codec.encode(mx.array(samples)[None, None, :])
         codes = indices[0, :, : int(lengths[0].item())].astype(mx.int32)
         mx.eval(codes)
+        # Temporaries sized by this reference rarely fit a later allocation;
+        # cached, those of every reference of a voice would add up.
+        mx.clear_cache()
         return codes
 
     def _check_codes(self, codes: mx.array, location: str) -> None:
@@ -466,30 +473,49 @@ class Model(nn.Module):
         pinned: Optional[tuple[str, mx.array]] = None
         latest: Optional[tuple[str, mx.array]] = None
         started = time.perf_counter()
-        for index, chunk in enumerate(chunks):
-            is_last = index == len(chunks) - 1
-            history = [turn for turn in (pinned, latest) if turn is not None]
-            frames, system_rows = self.build_frames(voice.references, history, chunk)
-            codes: list[mx.array] = []
-            emitted = 0
-            for frame in self._frames(
-                frames, system_rows, voice, max_tokens, *sampling
-            ):
-                codes.append(frame)
-                due = first if index == 0 and emitted == 0 else interval
-                if stream and len(codes) - emitted >= due:
-                    yield self._result(codes[emitted:], index, started, stream, False)
-                    emitted, started = len(codes), time.perf_counter()
-            if codes:
-                turn = (chunk, mx.stack(codes, axis=1))
-                if pinned is None:
-                    pinned = turn
+        try:
+            for index, chunk in enumerate(chunks):
+                is_last = index == len(chunks) - 1
+                history = [turn for turn in (pinned, latest) if turn is not None]
+                frames, system_rows = self.build_frames(
+                    voice.references, history, chunk
+                )
+                codes: list[mx.array] = []
+                emitted = 0
+                for frame in self._frames(
+                    frames, system_rows, voice, max_tokens, *sampling
+                ):
+                    codes.append(frame)
+                    due = first if index == 0 and emitted == 0 else interval
+                    if stream and len(codes) - emitted >= due:
+                        yield self._result(
+                            codes[emitted:], index, started, stream, False
+                        )
+                        emitted, started = len(codes), time.perf_counter()
+                if codes:
+                    turn = (chunk, mx.stack(codes, axis=1))
+                    if pinned is None:
+                        pinned = turn
+                    else:
+                        latest = turn
+                if len(codes) > emitted or is_last:
+                    # An empty last chunk still closes the stream.
+                    result = self._result(
+                        codes[emitted:], index, started, stream, is_last
+                    )
+                    # Buffers sized by this prompt and chunk rarely fit a later one,
+                    # so MLX's cache would keep them up to its GC limit, about 110 GB
+                    # on a 128 GB Mac. Cleared before the yield, as a caller may stop
+                    # at the final chunk.
+                    mx.clear_cache()
+                    yield result
+                    started = time.perf_counter()
                 else:
-                    latest = turn
-            if len(codes) > emitted or is_last:
-                # An empty last chunk still closes the stream.
-                yield self._result(codes[emitted:], index, started, stream, is_last)
-                started = time.perf_counter()
+                    # The chunk ended with its last streamed piece.
+                    mx.clear_cache()
+        finally:
+            # A caller that stops early, or an error, skips the clear above.
+            mx.clear_cache()
 
     def _result(
         self,
@@ -499,11 +525,13 @@ class Model(nn.Module):
         streaming: bool,
         final: bool,
     ) -> GenerationResult:
-        if codes:
-            frames = mx.stack(codes, axis=1)[None]
-            audio = self.codec.streaming_step(frames)[0, 0]
-        else:
-            audio = mx.zeros((0,), dtype=mx.float32)
+        pieces = []
+        for begin in range(0, len(codes), DECODE_FRAMES):
+            frames = mx.stack(codes[begin : begin + DECODE_FRAMES], axis=1)[None]
+            pieces.append(self.codec.streaming_step(frames)[0, 0])
+            # Evaluated piece by piece, so only one piece's working set is alive.
+            mx.eval(pieces[-1])
+        audio = mx.concatenate(pieces) if pieces else mx.zeros((0,), mx.float32)
         mx.eval(audio)
         elapsed = max(time.perf_counter() - started, 1e-6)
         samples = audio.shape[0]
