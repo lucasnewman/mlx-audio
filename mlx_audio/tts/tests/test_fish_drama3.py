@@ -21,6 +21,9 @@ from mlx_audio.tts.models.fish_drama3.drama3 import sample_top_k_top_p
 from mlx_audio.tts.utils import load_model
 
 SEMANTIC_START, TOWER_VOCAB, EOS = 32, 16, 2
+# Bytes the MLX cache may hold after a clear: finished GPU work still returns a
+# few kilobytes, while one skipped clear leaves megabytes even with the tiny model.
+CACHE_LEFTOVER = 256 * 1024
 
 
 def tiny_config() -> dict:
@@ -377,9 +380,117 @@ class TestGeneration(unittest.TestCase):
         self.assertEqual(sum(r.is_final_chunk for r in results), 1)
         self.assertEqual(sum(r.token_count for r in results), 5)
 
-    def run_frames(self, mains: list[int]) -> list[mx.array]:
-        """The codes _frames yields when the steps sample these main tokens."""
-        model = self.model
+    def test_a_chunk_decoded_in_pieces_sounds_like_one_codec_call(self):
+        mx.random.seed(13)
+        codes = mx.random.randint(0, TOWER_VOCAB, (12, 3)).astype(mx.int32)
+        module = "mlx_audio.tts.models.fish_drama3.drama3"
+        with (
+            patch(f"{module}.DECODE_FRAMES", 5),
+            patch.object(self.model, "_frames", return_value=iter(codes)),
+        ):
+            (result,) = self.speak()
+        self.model.codec.reset_streaming_state()
+        expected = self.model.codec.streaming_step(codes.T[None])[0, 0]
+        self.assertEqual(result.audio.shape, expected.shape)
+        self.assertTrue(mx.allclose(result.audio, expected, atol=1e-5).item())
+
+    def test_a_long_chunk_decodes_in_a_fraction_of_one_codec_call(self):
+        def decode_peak(frames_per_call: int) -> int:
+            self.model.codec.reset_streaming_state()
+            mx.clear_cache()
+            before = mx.get_active_memory()
+            mx.reset_peak_memory()
+            with patch(f"{module}.DECODE_FRAMES", frames_per_call):
+                self.model._result(codes, 0, 0.0, False, True)
+            return mx.get_peak_memory() - before
+
+        mx.random.seed(17)
+        codes = list(mx.random.randint(0, TOWER_VOCAB, (56, 3)))
+        mx.eval(codes)
+        module = "mlx_audio.tts.models.fish_drama3.drama3"
+        # Measured: pieces of 8 frames peak at a fifth to a third of one call.
+        self.assertLess(decode_peak(8), 0.5 * decode_peak(56))
+
+    def test_decode_memory_does_not_grow_with_the_chunk(self):
+        def decode_peak(frames: int) -> int:
+            codes = list(mx.random.randint(0, TOWER_VOCAB, (frames, 3)))
+            mx.eval(codes)
+            self.model.codec.reset_streaming_state()
+            mx.clear_cache()
+            before = mx.get_active_memory()
+            mx.reset_peak_memory()
+            self.model._result(codes, 0, 0.0, False, True)
+            return mx.get_peak_memory() - before
+
+        mx.random.seed(19)
+        module = "mlx_audio.tts.models.fish_drama3.drama3"
+        with patch(f"{module}.DECODE_FRAMES", 8):
+            short, long = decode_peak(56), decode_peak(1792)
+        # Measured: 0.9 to 1.7 with each piece evaluated, 3.3 to 6 when all
+        # pieces form one lazy graph.
+        self.assertLess(long, 2 * short)
+
+    def test_encoding_and_every_chunk_leave_the_mlx_cache_empty(self):
+        # Buffers sized by one reference, prompt or chunk rarely fit the next, so
+        # kept in MLX's cache they would pile up from call to call.
+        self.model._encode_audio(np.array(self.reference[:3500]))
+        self.assertLess(mx.get_cache_memory(), CACHE_LEFTOVER)
+        module = "mlx_audio.tts.models.fish_drama3.drama3"
+        with patch(f"{module}.split_text", return_value=["Eins.", "Zwei."]):
+            mx.random.seed(11)
+            for result in self.model.generate(
+                "Eins. Zwei.",
+                ref_audio=self.reference[:3000],
+                ref_text="Guten Tag.",
+                max_tokens=12,
+            ):
+                self.assertLess(mx.get_cache_memory(), CACHE_LEFTOVER)
+
+    def test_a_stream_stopped_early_leaves_the_mlx_cache_empty(self):
+        mx.random.seed(11)
+        stream = self.model.generate(
+            "Hallo du.",
+            ref_audio=self.reference[:2500],
+            ref_text="Guten Abend.",
+            max_tokens=12,
+            stream=True,
+            first_chunk_frames=2,
+        )
+        next(stream)
+        stream.close()
+        self.assertLess(mx.get_cache_memory(), CACHE_LEFTOVER)
+
+    def test_every_chunk_starts_with_an_empty_mlx_cache(self):
+        # Two frames per chunk, streamed two at a time: no chunk has a closing
+        # result, yet its prompt's buffers must not carry over to the next.
+        model, frames, cached = self.model, self.model._frames, []
+
+        def chunk_frames(*args):
+            cached.append(mx.get_cache_memory())
+            step = self.scripted_step([SEMANTIC_START + 1, SEMANTIC_START + 2])
+            with patch.object(model, "_step", side_effect=step):
+                yield from frames(*args)
+
+        module = "mlx_audio.tts.models.fish_drama3.drama3"
+        chunks = [" ".join(["Wort"] * 60) + "."] * 4
+        with (
+            patch(f"{module}.split_text", return_value=chunks),
+            patch.object(model, "_frames", side_effect=chunk_frames),
+        ):
+            results = list(
+                model.generate(
+                    "Wort.",
+                    stream=True,
+                    first_chunk_frames=2,
+                    streaming_interval=2 * model.codec.frame_length / model.sample_rate,
+                )
+            )
+        self.assertEqual([r.token_count for r in results], [2, 2, 2, 2, 0])
+        for size in cached[1:]:
+            self.assertLess(size, CACHE_LEFTOVER)
+
+    def scripted_step(self, mains: list[int]):
+        """A Model._step that samples these main tokens, then EOS."""
         steps = iter(mains)
 
         def step(hidden, frame, history, *args):
@@ -388,9 +499,14 @@ class TestGeneration(unittest.TestCase):
             new = mx.concatenate([main, c0, c0 + 1, c0 + 2])[None, None]
             return new.astype(mx.int32), hidden, history, main
 
+        return step
+
+    def run_frames(self, mains: list[int]) -> list[mx.array]:
+        """The codes _frames yields when the steps sample these main tokens."""
+        model = self.model
         frames, system_rows = model.build_frames([], [], "Hallo du.")
         voice = model._voice(None, None)
-        with patch.object(model, "_step", side_effect=step):
+        with patch.object(model, "_step", side_effect=self.scripted_step(mains)):
             return list(model._frames(frames, system_rows, voice, 8, 0.7, 30, 0.7))
 
     def test_semantic_zero_right_before_eos_is_dropped(self):
