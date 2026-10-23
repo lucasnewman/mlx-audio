@@ -31,11 +31,10 @@ def format_duration(seconds: float) -> str:
     return f"{mins:02d}:{secs:02d}"
 
 
-# Ming-3.0-tts decodes with a 512-position cache in the reference runtime, so a
-# fragment can run for at most (512 - prompt length) steps.
+# Each fragment shares 512 cache positions between its prompt and generated patches.
 MING3_MAX_CACHE_LEN = 512
 # Fragment size in "semantic units": one per Chinese character or English word.
-MING3_MAX_FRAGMENT_LENGTH = 50
+MING3_MAX_FRAGMENT_LENGTH = 24
 
 # Ming-3.0 adds a "Target language:" line for the languages beyond zh/en.
 MING3_TARGET_LANGUAGES = {
@@ -73,9 +72,8 @@ def _add_period(text: str) -> str:
 def _split_fragments(text: str, max_length: int) -> List[str]:
     """Split text into sentence-aligned fragments of at most ``max_length``.
 
-    A simplified version of Ming-3.0's ``cut_text_by_semantic_length``: whole
-    sentences are packed together, and a sentence that is too long on its own
-    is split at commas, then at words or Chinese characters for long clauses.
+    Pack whole sentences, splitting long sentences at commas and long clauses
+    at words or Chinese characters.
     """
     if max_length <= 0:
         raise ValueError("max_length must be positive")
@@ -190,13 +188,15 @@ def _trim_trailing_silence(
     threshold: float = 1e-3,
     tail_seconds: float = 0.3,
 ) -> mx.array:
-    """Cut trailing near-silence, keeping a fixed tail (Ming-3.0 reference)."""
+    """Cut trailing near-silence, keeping a fixed tail."""
     frame = int(sample_rate * 0.1)
     tail = int(sample_rate * tail_seconds)
     if speech.shape[-1] < frame:
         return speech
     num_frames = speech.shape[-1] // frame
-    scores = np.abs(np.array(speech[: num_frames * frame], dtype=np.float32))
+    # Discard any incomplete analysis frame.
+    speech = speech[: num_frames * frame]
+    scores = np.abs(np.array(speech, dtype=np.float32))
     scores = scores.reshape(num_frames, frame).mean(axis=-1)
     loud = np.nonzero(scores > threshold)[0]
     if loud.size == 0:
@@ -279,7 +279,6 @@ def _apply_multimodal_rotary_pos_emb(
     mrope_section: Optional[List[int]] = None,
     unsqueeze_dim: int = 1,
 ) -> Tuple[mx.array, mx.array]:
-    # Match Torch Ming default split layout.
     mrope_section = list(mrope_section) if mrope_section is not None else [16, 24, 24]
     split_sizes = [int(s) * 2 for s in mrope_section]
     if sum(split_sizes) != cos.shape[-1]:
@@ -723,7 +722,6 @@ class MingQwen2Attention(qwen2_impl.Attention):
             queries = self.rope(queries)
             keys = self.rope(keys)
 
-        # TODO: move this to mask creation and pass in the mask to the attention layer
         attn_mask = self._build_sliding_additive_mask(
             mask=mask,
             q_len=seqlen,
@@ -762,7 +760,7 @@ class MingQwen2Model(Qwen2Model):
 
     @property
     def word_embeddings(self):
-        # Keep naming parity with BailingMoeModel for shared caller code.
+        # Shared callers use this alias for both dense and MoE backbones.
         return self.embed_tokens
 
 
@@ -809,14 +807,15 @@ class RotaryEmbedding(nn.Module):
         out_even = x_even * cos - x_odd * sin
         out_odd = x_even * sin + x_odd * cos
         out = mx.stack([out_even, out_odd], axis=-1)
-        return out.reshape(x.shape)
+        return out.reshape(x.shape).astype(x.dtype)
 
     def __call__(
         self, q: mx.array, k: mx.array, offset: int = 0
     ) -> Tuple[mx.array, mx.array]:
         seq_len = q.shape[2]
-        pos = mx.arange(offset, offset + seq_len, dtype=mx.float32)
-        freqs = mx.outer(pos, self.inv_freq.astype(mx.float32))
+        # Preserve attention precision through phase generation and rotation.
+        pos = mx.arange(offset, offset + seq_len, dtype=self.inv_freq.dtype)
+        freqs = mx.outer(pos, self.inv_freq)
         cos = mx.cos(freqs)[None, None, :, :]
         sin = mx.sin(freqs)[None, None, :, :]
         return self._apply(q, cos, sin), self._apply(k, cos, sin)
@@ -829,9 +828,7 @@ class RMSNorm(nn.Module):
         self.weight = mx.ones((dim,))
 
     def __call__(self, x: mx.array) -> mx.array:
-        variance = mx.mean((x.astype(mx.float32)) ** 2, axis=-1, keepdims=True)
-        y = x * mx.rsqrt(variance + self.eps).astype(x.dtype)
-        return y * self.weight.astype(x.dtype)
+        return mx.fast.rms_norm(x, self.weight, self.eps)
 
 
 class FeedForward(nn.Module):
@@ -1030,10 +1027,11 @@ class DiT(nn.Module):
         latent_history: mx.array,
         patch_size: int,
     ) -> mx.array:
-        if cfg_scale != 1.0:
-            x = mx.concatenate([x, x], axis=0)
-            latent_history = mx.concatenate([latent_history, latent_history], axis=0)
-            c = mx.concatenate([c, mx.zeros_like(c)], axis=0)
+        # Ming guidance is pred + (pred - null_pred) * cfg_scale, so even a
+        # scale of 1 needs both branches (and 0 selects the conditional one).
+        x = mx.concatenate([x, x], axis=0)
+        latent_history = mx.concatenate([latent_history, latent_history], axis=0)
+        c = mx.concatenate([c, mx.zeros_like(c)], axis=0)
         if t.ndim == 0:
             t = mx.full((x.shape[0],), t, dtype=x.dtype)
         out = self(x=x, t=t, c=c, latent_history=latent_history)
@@ -1099,20 +1097,26 @@ class Solver:
         self.sigma = sigma
         self.temperature = temperature
 
-    def integrate(self, t: mx.array) -> List[mx.array]:
+    def integrate(
+        self, t: mx.array, sde_noise: Optional[mx.array] = None
+    ) -> List[mx.array]:
         y = self.y0
         solution = [y]
         for i in range(1, t.shape[0]):
             t0 = t[i - 1]
             t1 = t[i]
             dt = t1 - t0
-            # Keep solver state arithmetic in the state dtype (float32 for parity).
+            # Keep each Euler update in the state dtype.
             f0 = self.func(t0, y)
             if f0.dtype != y.dtype:
                 f0 = f0.astype(y.dtype)
             dy = dt.astype(y.dtype) * f0
             y = y + dy
-            noise = mx.random.normal(y.shape, dtype=y.dtype)
+            noise = (
+                mx.random.normal(y.shape, dtype=y.dtype)
+                if sde_noise is None
+                else sde_noise[i - 1]
+            )
             shift = self.sigma * (self.temperature**0.5) * (mx.abs(dt) ** 0.5) * noise
             y = y + shift
             solution.append(y)
@@ -1120,9 +1124,10 @@ class Solver:
 
 
 class CFM(nn.Module):
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, ming3_sampling: bool = False):
         super().__init__()
         self.model = model
+        self.ming3_sampling = ming3_sampling
 
     def sample(
         self,
@@ -1136,18 +1141,11 @@ class CFM(nn.Module):
         patch_size: int = 1,
         sigma: float = 0.25,
         temperature: float = 1.5,
+        sde_noise: Optional[mx.array] = None,
     ) -> Tuple[mx.array, List[mx.array]]:
-        solver_dtype = mx.float32
+        solver_dtype = noise.dtype if self.ming3_sampling else mx.float32
 
         def fn(t: mx.array, x: mx.array) -> mx.array:
-            if cfg_scale < 1e-5:
-                pred = self.model(
-                    x=x,
-                    t=mx.full((x.shape[0],), t, dtype=x.dtype),
-                    c=c,
-                    latent_history=latent_history,
-                )
-                return pred.astype(solver_dtype)
             pred_cfg = self.model.forward_with_cfg(
                 x=x,
                 t=t,
@@ -1159,7 +1157,8 @@ class CFM(nn.Module):
             pred, null_pred = mx.split(pred_cfg, 2, axis=0)
             return (pred + (pred - null_pred) * cfg_scale).astype(solver_dtype)
 
-        y0 = noise.transpose(0, 2, 1).astype(solver_dtype)
+        y0 = noise if self.ming3_sampling else noise.transpose(0, 2, 1)
+        y0 = y0.astype(solver_dtype)
         if use_epss:
             t = get_epss_timesteps(steps, dtype=solver_dtype)
         else:
@@ -1168,16 +1167,23 @@ class CFM(nn.Module):
             t = t + sway_sampling_coef * (mx.cos(math.pi / 2 * t) - 1 + t)
 
         solver = Solver(fn, y0, sigma=sigma, temperature=temperature)
-        trajectory = solver.integrate(t)
+        trajectory = solver.integrate(t, sde_noise=sde_noise)
         return trajectory[-1], trajectory
 
 
 class FlowLoss(nn.Module):
-    def __init__(self, z_channels: int, llm_cond_dim: int, **kwargs: Any):
+    def __init__(
+        self,
+        z_channels: int,
+        llm_cond_dim: int,
+        ming3_sampling: bool = False,
+        **kwargs: Any,
+    ):
         super().__init__()
         self.z_channels = z_channels
         self.cfm = CFM(
-            model=DiT(in_channels=z_channels, llm_cond_dim=llm_cond_dim, **kwargs)
+            model=DiT(in_channels=z_channels, llm_cond_dim=llm_cond_dim, **kwargs),
+            ming3_sampling=ming3_sampling,
         )
 
     def sample(
@@ -1190,10 +1196,17 @@ class FlowLoss(nn.Module):
         temperature: float = 0.0,
         steps: int = 10,
     ) -> Tuple[mx.array, List[mx.array]]:
-        # Match Torch path: sample diffusion noise in float32 and integrate in float32.
-        noise = mx.random.normal(
-            (z.shape[0], self.z_channels, patch_size), dtype=mx.float32
-        )
+        if self.cfm.ming3_sampling:
+            # Draw all noise up front, including at zero temperature.
+            noise = mx.random.normal(
+                (z.shape[0], patch_size, self.z_channels), dtype=z.dtype
+            )
+            sde_noise = mx.random.normal((steps, *noise.shape), dtype=z.dtype)
+        else:
+            noise = mx.random.normal(
+                (z.shape[0], self.z_channels, patch_size), dtype=mx.float32
+            )
+            sde_noise = None
         sampled, trajectory = self.cfm.sample(
             noise=noise,
             c=z,
@@ -1203,6 +1216,7 @@ class FlowLoss(nn.Module):
             sigma=sigma,
             temperature=temperature,
             steps=steps,
+            sde_noise=sde_noise,
         )
         return sampled, trajectory
 
@@ -1211,8 +1225,7 @@ class _ISTFTWindowState(nn.Module):
     def __init__(self, n_fft: int):
         super().__init__()
         n = n_fft
-        # Default to torch.hann_window(periodic=True); checkpoint can overwrite this
-        # via audio.decoder.head.istft.window for exact parity.
+        # Periodic Hann window.
         self.window = mx.array(
             0.5 - 0.5 * mx.cos(2.0 * math.pi * mx.arange(n, dtype=mx.float32) / n),
             dtype=mx.float32,
@@ -1369,6 +1382,9 @@ class Encoder(nn.Module):
 
     def __call__(self, waveform: mx.array) -> mx.array:
         x = self.get_frames(waveform)
+        # Frame extraction returns float32; project in the encoder's dtype.
+        weight = getattr(self.fc1, "scales", self.fc1.weight)
+        x = x.astype(weight.dtype)
         x = self.fc1(x)
         x = self.fc2(x)
         dummy = mx.zeros((x.shape[0], x.shape[1]), dtype=mx.int32)
@@ -1598,8 +1614,7 @@ class Model(nn.Module):
             raise ValueError("Missing aggregator_config in Ming Omni config")
 
         llm_cfg = dict(config.text_config)
-        # The dense (Qwen2) checkpoints were trained on the Qwen chat template;
-        # only the MoE checkpoints use <role>HUMAN</role> turns.
+        # Dense backbones use Qwen chat turns; MoE backbones use role tags.
         self.chat_layout = not self._is_moe_llm_config(llm_cfg)
         if self._is_moe_llm_config(llm_cfg):
             self.llm_args = BailingMoeModelArgs.from_dict(llm_cfg)
@@ -1614,11 +1629,11 @@ class Model(nn.Module):
         self.history_patch_size = int(
             config.ditar_config.get("history_patch_size", self.patch_size)
         )
-        # Ming-3.0-tts-0.5B ships the same config as Ming-omni-tts-0.5B apart
-        # from one-latent patches, so the patch sizes are what tell them apart.
+        # One-latent patches distinguish Ming-3.0 from Ming Omni dense models.
         self.ming3 = (
             self.chat_layout and self.patch_size == 1 and self.history_patch_size == 1
         )
+        self.generate_config = {"temperature": 0.0}
 
         self.linear_proj_audio = Aggregator(
             in_channels=self.latent_dim,
@@ -1628,6 +1643,7 @@ class Model(nn.Module):
         self.flowloss = FlowLoss(
             z_channels=self.latent_dim,
             llm_cond_dim=self.llm_args.hidden_size,
+            ming3_sampling=self.ming3,
             **config.ditar_config,
         )
         self.stop_head = nn.Linear(self.llm_args.hidden_size, 2, bias=True)
@@ -1654,7 +1670,7 @@ class Model(nn.Module):
         return all(llm_cfg.get(k) is not None for k in moe_keys)
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-        # First sanitize the LLM shard with mlx-lm's bailing_moe remapping.
+        # Apply the backbone's weight remapping to the LLM shard.
         llm_weights = {
             k[len("model.") :]: v for k, v in weights.items() if k.startswith("model.")
         }
@@ -1712,6 +1728,10 @@ class Model(nn.Module):
         prompt_text_token = []
         prompt_latent_token = []
         if prompt_latent is not None and prompt_text is not None:
+            if self.ming3:
+                embedding = self.model.model.word_embeddings
+                weight = getattr(embedding, "scales", embedding.weight)
+                prompt_latent = prompt_latent.astype(weight.dtype)
             bsz = prompt_latent.shape[0]
             prompt_latent = prompt_latent.reshape(-1, self.patch_size, self.latent_dim)
             prompt_latent = self.linear_proj_audio(prompt_latent)
@@ -1732,7 +1752,6 @@ class Model(nn.Module):
 
         instruction_prompt = []
         if instruction is not None:
-            # Ming-3.0 was trained with the caption ending in <|im_end|>.
             instruction_eos = "<|im_end|>" if self.ming3 else "<|endoftext|>"
             instruction_prompt = self._encode(instruction) + self._encode(
                 instruction_eos
@@ -1794,7 +1813,7 @@ class Model(nn.Module):
     def _pad_prompt_waveform(self, waveform: mx.array) -> mx.array:
         if waveform.ndim == 1:
             waveform = waveform[None, :]
-        # Match Torch Ming alignment for 12.5 Hz tokenizer frames.
+        # Align to the tokenizer's 12.5 Hz frames.
         pad_align = int((1 / 12.5) * self.patch_size * self.sample_rate)
         if pad_align <= 0:
             return waveform
@@ -1822,7 +1841,7 @@ class Model(nn.Module):
     ) -> Optional[List[mx.array]]:
         """Project 192-dim speaker embeddings into the LLM's speaker slots."""
         if use_zero_spk_emb:
-            # The reference zeroes the projected slot, not the 192-dim input.
+            # Zero the projected speaker slot.
             return [mx.zeros((self.llm_args.hidden_size,))]
         if spk_emb is None:
             return None
@@ -1871,7 +1890,7 @@ class Model(nn.Module):
         instruction: Optional[str] = None,
         prompt_waveform: Optional[mx.array] = None,
         prompt_text: Optional[str] = None,
-        max_decode_steps: int = 200,
+        max_decode_steps: Optional[int] = None,
         cfg: float = 2.0,
         sigma: float = 0.25,
         temperature: float = 0.0,
@@ -1895,6 +1914,8 @@ class Model(nn.Module):
 
         cache = [KVCache() for _ in range(self.llm_args.num_hidden_layers)]
         latent_history = None
+        if max_decode_steps is None:
+            max_decode_steps = 1000 if self.ming3 else 200
 
         if self.ming3:
             budget = (MING3_MAX_CACHE_LEN - inputs_embeds.shape[1]) // self.patch_size
@@ -1915,6 +1936,7 @@ class Model(nn.Module):
                     dtype=z_diff.dtype,
                 )
                 if prompt_latent is not None:
+                    prompt_latent = prompt_latent.astype(z_diff.dtype)
                     start = self.history_patch_size - prompt_latent.shape[1]
                     if start < 0:
                         latent_history = prompt_latent[:, -start:, :]
@@ -2011,9 +2033,10 @@ class Model(nn.Module):
         if ref_audio is not None and ref_text is not None:
             prompt_latent = self._encode_prompt_latent(ref_audio)
 
-        if self.ming3 and _is_style_instruction(instruct):
-            # Freeform and voice-design captions describe the whole utterance,
-            # so the reference does not split their text.
+        if self.ming3 and kwargs.get("raw_text", False):
+            fragments = [text]
+        elif self.ming3 and _is_style_instruction(instruct):
+            # Apply style captions to the whole utterance.
             fragments = [_add_period(" ".join(text.split()))]
         elif self.ming3:
             max_length = int(kwargs.get("max_length", MING3_MAX_FRAGMENT_LENGTH))
@@ -2022,7 +2045,6 @@ class Model(nn.Module):
             fragments = [text]
 
         if speed != 1.0:
-            # Speed control is not implemented for Ming Omni yet; keep native timing.
             if verbose:
                 print("[WARN] speed parameter is currently ignored for Ming Omni TTS.")
 
@@ -2068,7 +2090,7 @@ class Model(nn.Module):
                 spk_emb=spk_emb,
             )
             if self.ming3:
-                # One pass per fragment, as the reference decodes it.
+                # Decode all latents in one pass per fragment.
                 latents = [tokens for tokens, _ in sampler]
                 if not latents:
                     raise RuntimeError(
@@ -2077,7 +2099,9 @@ class Model(nn.Module):
                 part, _, _ = self.audio.decode(
                     mx.concatenate(latents, axis=1), use_cache=False, last_chunk=True
                 )
-                part = _trim_trailing_silence(part[0], self.sample_rate)
+                part = part[0]
+                if kwargs.get("trim_silence", True):
+                    part = _trim_trailing_silence(part, self.sample_rate)
                 if stream:
                     # Fragments decode independently, so each can play once ready.
                     is_final = idx == len(fragments) - 1

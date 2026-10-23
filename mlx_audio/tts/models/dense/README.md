@@ -8,7 +8,7 @@ This implementation powers `model_type: "dense"`, the Qwen2.5-0.5B Ming checkpoi
 Both checkpoints share one config. Ming-3.0 is detected by its one-latent patches (`ditar_config.patch_size == 1`). It gets the Ming-3.0 prompt contract:
 - the caption ends with `<|im_end|>`;
 - the reference clip is padded at the front;
-- text is split into fragments of about 50 words or Chinese characters;
+- text is split into fragments of about 24 words or Chinese characters;
 - each fragment's trailing silence is trimmed;
 - a `Target language:` line is added for `de`, `es`, `fr`, `ja` and `ko`.
 
@@ -113,10 +113,12 @@ design = next(
 
 ### Limitations
 
-- **Speaker embeddings.** The reference implementation also conditions cloning and the emotion, attribute and dialect tasks on a CAM++ speaker embedding (`use_spk_emb=True`). This port does not extract one yet. Cloning works from the reference audio and transcript alone. If you have a precomputed 192-dim embedding, pass it as `spk_emb=`.
-- **Freeform and voice-design length.** As in the reference, freeform and voice-design text is not split, because the instruction describes the whole utterance. Each request is therefore capped by the 512-position budget, about 30 seconds of speech.
-- **Text normalization.** The reference's FST text normalization (numbers, dates and units) is not ported. Write numbers out as words for the most reliable reading.
-- **Stopping.** The stop head occasionally fails to fire, leaving several seconds of low noise after the speech. Re-run with another seed if that happens.
+- **Speaker embeddings.** Automatic CAM++ speaker embedding extraction is not implemented. Cloning uses the supplied audio and transcript. If you have a precomputed 192-dim embedding, pass it as `spk_emb=`.
+- **Freeform and voice-design length.** Freeform and voice-design text is kept in one fragment, capped by the 512-position budget, about 30 seconds of speech.
+- **Text normalization.** Numbers, dates and units are not expanded automatically. Write numbers out as words for the most reliable reading.
+- **Generation and stopping.** Ming-3.0 defaults to CFG 2.0, sigma 0.25, temperature 0.0, and 10 flow steps. The stop head must exceed 0.5 after the first four patches; its final patch is included. `max_tokens` (default 1000) or `max_decode_steps` sets the requested budget, bounded by the remaining 512-position cache. Trailing silence is trimmed. Some generations can still have long tails; re-run with another seed if that happens.
+
+Pass `raw_text=True` to skip text splitting and punctuation changes. `trim_silence=False` disables the trailing-silence trim.
 
 ## Ming-omni-tts-0.5B
 

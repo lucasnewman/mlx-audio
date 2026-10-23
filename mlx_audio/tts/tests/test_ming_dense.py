@@ -1,15 +1,22 @@
 import re
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 
 from mlx_audio.tts.models.bailingmm.bailingmm import (
     _MING3_VOICE_RE,
+    CFM,
     MING3_MAX_CACHE_LEN,
+    DiT,
+    Encoder,
+    FlowLoss,
     Model,
+    RMSNorm,
+    RotaryEmbedding,
     _add_period,
     _is_style_instruction,
     _semantic_length,
@@ -136,6 +143,18 @@ class TestMingPromptLayout(unittest.TestCase):
         self.assertTrue(mx.all(emb == 0).item())
         self.assertIsNone(model._speaker_embeddings(None, use_zero_spk_emb=False))
 
+    def test_prompt_projection_preserves_bfloat16_conditioning(self):
+        model = make_model(chat_layout=True, ming3=True)
+        model.model.model.word_embeddings.set_dtype(mx.bfloat16)
+        model.linear_proj_audio = MagicMock(
+            return_value=mx.zeros((1, 1, 8), dtype=mx.bfloat16)
+        )
+        _, embeds = model._prepare_input_embed(
+            PROMPT, "Hi.", prompt_text="Ref.", prompt_latent=mx.ones((1, 1, 4))
+        )
+        self.assertEqual(model.linear_proj_audio.call_args.args[0].dtype, mx.bfloat16)
+        self.assertEqual(embeds.dtype, mx.bfloat16)
+
     def test_prompt_padding_side(self):
         wav = mx.ones((1, 100))
         model = make_model(chat_layout=True, ming3=True)
@@ -154,8 +173,7 @@ class TestMingPromptLayout(unittest.TestCase):
 
 
 class TestMing3Instruction(unittest.TestCase):
-    def test_ip_caption_matches_reference(self):
-        # Output of Ming-3.0-tts tts_tasks.build_task_instruction("IP", ip="US_James").
+    def test_ip_caption_format(self):
         self.assertEqual(
             ming3_instruction(ip="US_James"),
             '{"audio_sequence": [{"序号": 1, "说话人": "speaker_1", "方言": null, '
@@ -266,6 +284,10 @@ class TestMingText(unittest.TestCase):
         trimmed = _trim_trailing_silence(speech, sr)
         self.assertEqual(trimmed.shape[0], 500 + 300)
 
+    def test_trim_drops_partial_frame(self):
+        trimmed = _trim_trailing_silence(mx.ones((555,)), 1000)
+        self.assertEqual(trimmed.shape[0], 500)
+
 
 class TestMing3GenerationBudget(unittest.TestCase):
     def test_full_or_oversized_prompt_is_rejected_before_inference(self):
@@ -296,6 +318,57 @@ class TestMing3GenerationBudget(unittest.TestCase):
                 latents = list(model.sample(PROMPT, text, max_decode_steps=requested))
                 self.assertEqual(len(latents), min(remaining, requested))
 
+    def test_generate_defaults_and_explicit_budgets(self):
+        model = make_model(chat_layout=True, ming3=True)
+        model.audio = SimpleNamespace(sample_rate=1000, decode=MagicMock())
+        model.audio.decode.return_value = (mx.ones((1, 100)), None, None)
+        latent = mx.zeros((1, 1, 4))
+        model.sample = MagicMock(side_effect=lambda **_: iter([(latent, True)]))
+
+        list(model.generate("Yes."))
+        options = model.sample.call_args.kwargs
+        for name, value in {
+            "max_decode_steps": 1000,
+            "cfg": 2.0,
+            "sigma": 0.25,
+            "temperature": 0.0,
+            "flow_steps": 10,
+        }.items():
+            self.assertEqual(options[name], value)
+
+        for options, expected in (
+            ({"max_tokens": 1200}, 1200),
+            ({"max_tokens": 10}, 10),
+            ({"max_tokens": 10, "max_decode_steps": 300}, 300),
+        ):
+            list(model.generate("Yes.", **options))
+            self.assertEqual(
+                model.sample.call_args.kwargs["max_decode_steps"], expected
+            )
+
+        model.sample.reset_mock()
+        list(model.generate("one two three four five six seven eight. " * 4))
+        self.assertEqual(model.sample.call_count, 2)
+        self.assertTrue(
+            all(
+                _semantic_length(call.kwargs["text"]) <= 24
+                for call in model.sample.call_args_list
+            )
+        )
+
+    def test_raw_text_and_silence_trim_switches(self):
+        model = make_model(chat_layout=True, ming3=True)
+        model.audio = SimpleNamespace(sample_rate=1000, decode=MagicMock())
+        model.audio.decode.return_value = (mx.ones((1, 555)), None, None)
+        latent = mx.zeros((1, 1, 4))
+        model.sample = MagicMock(side_effect=lambda **_: iter([(latent, True)]))
+        (result,) = list(model.generate("Yes", raw_text=True, trim_silence=False))
+        self.assertEqual(model.sample.call_args.kwargs["text"], "Yes")
+        self.assertEqual(result.samples, 555)
+        (result,) = list(model.generate("Yes"))
+        self.assertEqual(model.sample.call_args.kwargs["text"], "Yes.")
+        self.assertEqual(result.samples, 500)
+
     def test_generate_does_not_skip_an_empty_fragment(self):
         model = make_model(chat_layout=True, ming3=True)
         model.audio = SimpleNamespace(sample_rate=1000, decode=MagicMock())
@@ -319,7 +392,7 @@ class TestMing3GenerationBudget(unittest.TestCase):
         model.sample = MagicMock(side_effect=lambda **_: iter([(latent, True)]))
         text = " ".join(["hello"] * 50) + ". Goodbye."
 
-        results = model.generate(text, stream=True)
+        results = model.generate(text, stream=True, max_length=50)
         first = next(results)
         self.assertEqual(model.audio.decode.call_count, 1)
         self.assertEqual(first.samples, 100)
@@ -337,10 +410,187 @@ class TestMing3GenerationBudget(unittest.TestCase):
             (mx.full((1, 100), 1.0), None, None),
             (mx.full((1, 200), 2.0), None, None),
         ]
-        (joined,) = list(model.generate(text))
+        (joined,) = list(model.generate(text, max_length=50))
         self.assertEqual(joined.samples, 300)
         self.assertFalse(joined.is_streaming_chunk)
         self.assertTrue(joined.is_final_chunk)
+
+
+class ConstantDiT(nn.Module):
+    forward_with_cfg = DiT.forward_with_cfg
+
+    def __call__(self, x, t, c, latent_history):
+        prefix = mx.full((x.shape[0], 2, x.shape[-1]), 100.0, dtype=x.dtype)
+        prediction = mx.broadcast_to(c.mean(axis=-1, keepdims=True), x.shape)
+        return mx.concatenate([prefix, prediction], axis=1)
+
+
+class TestMing3FlowSampling(unittest.TestCase):
+    def test_reference_audio_encoder_preserves_model_dtype(self):
+        encoder = Encoder(
+            dict(
+                model_type="qwen2",
+                hidden_size=8,
+                num_hidden_layers=1,
+                intermediate_size=16,
+                num_attention_heads=2,
+                num_key_value_heads=2,
+                rms_norm_eps=1e-6,
+                vocab_size=1,
+            ),
+            input_dim=4,
+            hop_size=4,
+            latent_dim=2,
+            patch_size=-1,
+        )
+        encoder.set_dtype(mx.bfloat16)
+        output = encoder(mx.ones((1, 16)))
+        self.assertEqual(output.dtype, mx.bfloat16)
+
+    def test_bfloat16_rms_norm_values(self):
+        norm = RMSNorm(4)
+        norm.weight = mx.array([0.125, 1.75, 0.3, -0.5], dtype=mx.bfloat16)
+        output = norm(mx.array([[0.123, 1.5, -2.1, 3.3]], dtype=mx.bfloat16))
+        np.testing.assert_allclose(
+            np.array(output.astype(mx.float32)),
+            [[0.007354736328125, 1.2578125, -0.30078125, -0.7890625]],
+            rtol=8e-3,  # Allow one BF16 ULP across CPU and Metal reductions.
+            atol=0,
+        )
+
+    def test_bfloat16_dit_does_not_promote_the_autoregressive_state(self):
+        dit = DiT(4, hidden_size=8, depth=1, num_heads=2, llm_cond_dim=8)
+        dit.set_dtype(mx.bfloat16)
+        dit.eval()
+        output = dit.forward_with_cfg(
+            x=mx.ones((1, 1, 4), dtype=mx.bfloat16),
+            t=mx.array(0.25, dtype=mx.bfloat16),
+            c=mx.ones((1, 1, 8), dtype=mx.bfloat16),
+            latent_history=mx.zeros((1, 1, 4), dtype=mx.bfloat16),
+            cfg_scale=2.0,
+            patch_size=1,
+        )
+        self.assertEqual(output.dtype, mx.bfloat16)
+
+    def test_rotary_preserves_query_and_key_dtype(self):
+        rotary = RotaryEmbedding(4)
+        query = mx.ones((1, 2, 3, 4), dtype=mx.bfloat16)
+        q, k = rotary(query, query)
+        self.assertEqual(q.dtype, query.dtype)
+        self.assertEqual(k.dtype, query.dtype)
+
+    def test_guidance_zero_one_and_two(self):
+        for dtype in (mx.float32, mx.bfloat16):
+            for cfg in (0.0, 1.0, 2.0):
+                with self.subTest(dtype=dtype, cfg=cfg):
+                    flow = CFM(ConstantDiT(), ming3_sampling=True)
+                    latent, _ = flow.sample(
+                        noise=mx.zeros((1, 2, 4), dtype=dtype),
+                        c=mx.ones((1, 1, 8), dtype=dtype),
+                        latent_history=mx.zeros((1, 1, 4), dtype=dtype),
+                        cfg_scale=cfg,
+                        patch_size=2,
+                        steps=1,
+                        temperature=0.0,
+                        sde_noise=mx.zeros((1, 1, 2, 4), dtype=dtype),
+                    )
+                    self.assertEqual(latent.shape, (1, 2, 4))
+                    self.assertEqual(latent.dtype, dtype)
+                    np.testing.assert_array_equal(
+                        np.array(latent.astype(mx.float32)), 1.0 + cfg
+                    )
+
+    def test_noise_is_drawn_up_front_in_latent_shape_and_dtype(self):
+        flow = FlowLoss(4, 8, ming3_sampling=True, hidden_size=8, depth=0)
+        flow.cfm.sample = MagicMock(return_value=(None, None))
+        with patch(
+            "mlx_audio.tts.models.bailingmm.bailingmm.mx.random.normal",
+            side_effect=lambda shape, dtype: mx.zeros(shape, dtype=dtype),
+        ) as normal:
+            flow.sample(
+                mx.zeros((1, 1, 8), dtype=mx.bfloat16),
+                mx.zeros((1, 1, 4), dtype=mx.bfloat16),
+                patch_size=2,
+                steps=10,
+                temperature=0.0,
+            )
+        self.assertEqual(
+            normal.call_args_list,
+            [
+                unittest.mock.call((1, 2, 4), dtype=mx.bfloat16),
+                unittest.mock.call((10, 1, 2, 4), dtype=mx.bfloat16),
+            ],
+        )
+
+    def test_final_sde_noise_is_included(self):
+        flow = CFM(ConstantDiT(), ming3_sampling=True)
+        latent, _ = flow.sample(
+            noise=mx.zeros((1, 1, 4)),
+            c=mx.zeros((1, 1, 8)),
+            latent_history=mx.zeros((1, 1, 4)),
+            steps=1,
+            cfg_scale=2.0,
+            sigma=0.25,
+            temperature=4.0,
+            sde_noise=mx.ones((1, 1, 1, 4)),
+        )
+        np.testing.assert_array_equal(np.array(latent), 0.5)
+
+
+class TestMing3StopHead(unittest.TestCase):
+    def make_sampler(self, logits):
+        model = make_model(chat_layout=True, ming3=True)
+        model.llm_args.num_hidden_layers = 0
+        model.history_patch_size = 1
+        model._prepare_input_embed = MagicMock(
+            return_value=(None, mx.zeros((1, 2, 8), dtype=mx.bfloat16))
+        )
+        model._forward_llm_hidden = MagicMock(
+            return_value=mx.zeros((1, 1, 8), dtype=mx.bfloat16)
+        )
+        latent = mx.full((1, 1, 4), 7.0, dtype=mx.bfloat16)
+        model.flowloss = SimpleNamespace(sample=MagicMock(return_value=(latent, None)))
+        model.stop_head = MagicMock(side_effect=[mx.array([[v]]) for v in logits])
+        return model
+
+    def test_earliest_stop_is_fifth_patch_and_keeps_that_patch(self):
+        model = self.make_sampler([[0.0, 1.0]] * 10)
+        patches = list(model.sample(PROMPT, "Yes.", max_decode_steps=10))
+        self.assertEqual([last for _, last in patches], [False] * 4 + [True])
+        self.assertEqual(patches[-1][0][0, 0, 0].item(), 7.0)
+        self.assertEqual(model.flowloss.sample.call_count, 5)
+
+    def test_half_probability_does_not_stop(self):
+        model = self.make_sampler([[0.0, 0.0]] * 6 + [[0.0, 1.0]])
+        patches = list(model.sample(PROMPT, "Yes.", max_decode_steps=10))
+        self.assertEqual([last for _, last in patches], [False] * 6 + [True])
+
+    def test_direct_sampler_default_uses_remaining_cache_budget(self):
+        model = self.make_sampler([[0.0, 0.0]] * MING3_MAX_CACHE_LEN)
+        patches = list(model.sample(PROMPT, "Yes."))
+        self.assertEqual(len(patches), MING3_MAX_CACHE_LEN - 2)
+        self.assertFalse(any(last for _, last in patches))
+
+    def test_history_uses_reference_tail_and_hidden_dtype(self):
+        model = self.make_sampler([[1.0, 0.0]] * 2)
+        reference = mx.arange(12, dtype=mx.float32).reshape(1, 3, 4)
+        list(
+            model.sample(
+                PROMPT,
+                "Yes.",
+                prompt_text="Ref.",
+                prompt_latent=reference,
+                max_decode_steps=2,
+            )
+        )
+        first, second = model.flowloss.sample.call_args_list
+        self.assertEqual(first.args[1].dtype, mx.bfloat16)
+        np.testing.assert_array_equal(
+            np.array(first.args[1].astype(mx.float32)), [[[8, 9, 10, 11]]]
+        )
+        np.testing.assert_array_equal(
+            np.array(second.args[1].astype(mx.float32)), [[[7, 7, 7, 7]]]
+        )
 
 
 if __name__ == "__main__":
