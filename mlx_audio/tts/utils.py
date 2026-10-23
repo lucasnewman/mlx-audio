@@ -17,6 +17,8 @@ from mlx_audio.utils import (
 )
 
 MODEL_REMAPPING = {
+    "gradium_phonon_tts": "pocket_tts",
+    "pocket_tts": "pocket_tts",
     "lingv3_tts": "lingv3_tts",
     "breeze": "breeze_tts",
     "breeze-tts": "breeze_tts",

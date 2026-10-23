@@ -2,6 +2,7 @@
 
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from unittest.mock import patch
 
@@ -347,7 +348,10 @@ def test_upstream_decoder_mapping_and_optional_encoders(config, dtype):
 
 
 @pytest.mark.parametrize("num_layers", [6, 9])
-def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers):
+@pytest.mark.parametrize("model_type", [None, "gradium_phonon_tts"])
+def test_official_checkpoint_loads_and_converts(
+    config, tmp_path, num_layers, model_type
+):
     from mlx_audio.tts.utils import load
 
     config["flow_lm"].update(num_layers=num_layers, time_rms_norm="rms", gelu="erf")
@@ -376,6 +380,8 @@ def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers):
         {"speaker_wavs": mx.ones((1, 8, 2))},
     )
     config.pop("model_path")
+    if model_type is not None:
+        config["model_type"] = model_type
     (tmp_path / "config.json").write_text(json.dumps(config))
 
     # Resolve the architecture from the config, independently of the folder name.
@@ -397,8 +403,17 @@ def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers):
     assert mx.array_equal(
         loaded.flow_lm._conditioning_embedding, expected_condition
     ).item()
-    mx.random.seed(0)
-    audio = next(loaded.generate("Hello world.")).audio
+
+    # Servers preload on one thread and synthesize on an audio worker. Private
+    # cached arrays must not retain unevaluated work on the loading stream.
+    def generate_on_worker():
+        mx.random.seed(0)
+        audio = next(loaded.generate("Hello world.")).audio
+        mx.eval(audio)
+        return audio
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        audio = executor.submit(generate_on_worker).result(timeout=30)
     assert audio.size > 0 and mx.all(mx.isfinite(audio)).item()
 
     destination = tmp_path.with_name(tmp_path.name + "-converted")
