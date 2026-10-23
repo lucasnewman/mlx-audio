@@ -4023,6 +4023,13 @@ class TestBailingMMModel(unittest.TestCase):
         mock_qwen2_lm.assert_called_once()
         mock_moe_lm.assert_not_called()
         self.assertEqual(model.llm_args.model_type, "qwen2")
+        self.assertEqual(model.generate_config["temperature"], 0.0)
+        self.assertFalse(_mock_flowloss.call_args.kwargs["ming3_sampling"])
+
+        config["ditar_config"] = {"patch_size": 1, "history_patch_size": 1}
+        model = Model(config)
+        self.assertTrue(model.ming3)
+        self.assertTrue(_mock_flowloss.call_args.kwargs["ming3_sampling"])
 
     @patch(
         "mlx_audio.tts.models.bailingmm.bailingmm.mx.get_peak_memory",
@@ -4040,7 +4047,7 @@ class TestBailingMMModel(unittest.TestCase):
         latent = mx.zeros((1, 1, 64), dtype=mx.float32)
         model.sample = MagicMock(return_value=iter([(latent, True)]))
 
-        # Torch path does not apply a trailing low-energy trim pass.
+        # Ming Omni decoding keeps trailing samples.
         chunk = mx.array([[0.25, 0.15, 0.0, 0.0, 0.0]], dtype=mx.float32)
         model.audio.decode.return_value = (chunk, (None, None, None), None)
 
