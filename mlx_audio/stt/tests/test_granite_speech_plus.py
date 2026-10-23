@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import mlx.core as mx
 import mlx.nn as nn
 import pytest
+from mlx.utils import tree_flatten
 
 from mlx_audio.lm.models.rope_utils import YarnRoPE
 from mlx_audio.stt.generate import save_as_json
@@ -147,6 +148,21 @@ def _tiny_plus_model(**text_config):
 def test_decoder_rope_follows_rope_parameters(rope_parameters, rope_class):
     model = _tiny_plus_model(rope_parameters=rope_parameters)
     assert type(model.language_model.model.layers[0].self_attn.rope) is rope_class
+
+
+def test_sanitize_unnests_v2610_decoder_keys():
+    model = _tiny_plus_model()
+    native = dict(tree_flatten(model.parameters()))
+    nested = {
+        k.replace("language_model.model.", "language_model.model.model.", 1): v
+        for k, v in native.items()
+    }
+
+    sanitized = Model.sanitize(nested)
+
+    assert sanitized.keys() == native.keys()
+    assert Model.sanitize(sanitized).keys() == native.keys()
+    model.load_weights(list(sanitized.items()), strict=True)
 
 
 def test_non_aligned_attention_preserves_bfloat16():
