@@ -157,7 +157,7 @@ for result in model.generate(
 | **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **MOSS-Transcribe-Diarize** | Timestamped transcription with speaker labels | Multiple major languages | https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize |
 | **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
-| **Phonon-2** | Five-value Parakeet TDT | EN | [mlx-community/Phonon-2](https://huggingface.co/mlx-community/Phonon-2) · [README](mlx_audio/stt/models/phonon2/README.md) |
+| **Phonon-2 / 2.5** | Five-value Parakeet TDT | EN / 25 European languages | [2.5](https://huggingface.co/FermionResearch/Phonon-2.5) · [2.5 English](https://huggingface.co/FermionResearch/Phonon-2.5-English) · [2](https://huggingface.co/mlx-community/Phonon-2) · [README](mlx_audio/stt/models/phonon2/README.md) |
 | **Nemotron 3.5 ASR (streaming)** | NVIDIA's cache-aware streaming FastConformer-RNNT with language-ID prompting | 40 language-locales | [mlx-community/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Nemotron Speech Streaming 0.6B** | NVIDIA's English FastConformer-RNNT with 80/160/560/1120 ms streaming modes | EN | [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
@@ -444,20 +444,22 @@ python -m mlx_audio.stt.generate \
     --verbose
 ```
 
-### Phonon-2
+### Phonon-2 and Phonon-2.5
 
-English speech recognition with Fermion Research's five-value Parakeet TDT model.
-Load the preconverted MLX weights directly; no converter or Fermion runtime is needed.
+Speech recognition with Fermion Research's five-value Parakeet TDT models.
+Phonon-2.5 supports 25 European languages; Phonon-2.5 English and Phonon-2 support
+English. Load the published checkpoints directly; no Fermion runtime is needed.
 
 ```python
 from mlx_audio.stt import load
 
-model = load("mlx-community/Phonon-2")
+model = load("FermionResearch/Phonon-2.5")
 result = model.generate("audio.wav", chunk_duration=30, overlap_duration=2)
 print(result.text)
 ```
 
-See the [Phonon-2 README](mlx_audio/stt/models/phonon2/README.md) for timestamps
+Use `FermionResearch/Phonon-2.5-English` for English-only recognition. See the
+[Phonon README](mlx_audio/stt/models/phonon2/README.md) for all model IDs, timestamps,
 and chunk streaming.
 
 ### Parakeet (Multilingual STT)
