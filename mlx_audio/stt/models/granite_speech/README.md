@@ -277,8 +277,6 @@ result = model.generate(
 )
 ```
 
-`repetition_penalty` multiplies the log-probability of every token already in the prompt or output (`repetition_context_size=N` limits this to the last N tokens). Transformers applies the penalty the same way during beam search, and IBM reports its granite-speech-4.1-2b-plus results with beam search and `repetition_penalty=2.0`. Transformers 5.10 and later skip `logits_scaling` for Granite Speech ([huggingface/transformers#49937](https://github.com/huggingface/transformers/issues/49937)), so their beam search currently applies the penalty to logits that are 8x too large. At 2.0, short clips transcribe the same as without a penalty, and repetition loops on long audio stop. Applied to raw logits instead (Transformers greedy decoding), 2.0 drops common words such as "the" and "a" and continues past the end of the audio.
-
 ## Architecture
 
 - **Encoder**: CTC Conformer (16 layers, 1024 hidden dim, Shaw's relative positional embeddings, block-wise attention with context_size=200)

@@ -276,16 +276,11 @@ def _parse_segments(task: str, text: str) -> List[dict]:
 def _make_repetition_penalty(
     penalty: Optional[float], context_size: Optional[int] = None
 ) -> list:
-    """Repetition penalty applied to log-probabilities.
+    """Scale log-probabilities of previously seen tokens by ``penalty``.
 
-    IBM reports granite-speech-4.1-2b-plus results with
-    ``repetition_penalty=2.0`` and beam search, where Transformers applies
-    logits processors to log-softmax scores. On raw logits over the prompt
-    (Transformers greedy, ``make_repetition_penalty``) the same value
-    suppresses common words such as "the" and "a" and lets the decoder
-    continue past the end of the audio. Here the log-probabilities of tokens
-    already in the prompt or output (the last ``context_size`` if set) are
-    multiplied by ``penalty``, which leaves confident repeats intact.
+    The history includes the full prompt and output unless ``context_size``
+    limits it to the most recent tokens. Penalties greater than one suppress
+    low-confidence repeats more strongly than high-confidence repeats.
     """
     if penalty is None:
         return []
@@ -781,9 +776,7 @@ class Model(nn.Module):
         else:
             logits = self.language_model.lm_head(h)
 
-        # As in GraniteForCausalLM and vLLM. Transformers 5.10+ skips this in its
-        # Granite Speech models (huggingface/transformers#49937), so its logits
-        # are logits_scaling (8x) larger than these.
+        # Apply the decoder's configured output scaling.
         return logits / self.language_model.logits_scaling
 
     def get_audio_features(self, input_features: mx.array) -> mx.array:
