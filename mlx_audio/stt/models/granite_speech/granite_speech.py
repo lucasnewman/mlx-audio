@@ -781,6 +781,9 @@ class Model(nn.Module):
         else:
             logits = self.language_model.lm_head(h)
 
+        # As in GraniteForCausalLM and vLLM. Transformers 5.10+ skips this in its
+        # Granite Speech models (huggingface/transformers#49937), so its logits
+        # are logits_scaling (8x) larger than these.
         return logits / self.language_model.logits_scaling
 
     def get_audio_features(self, input_features: mx.array) -> mx.array:
