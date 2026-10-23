@@ -273,6 +273,37 @@ def _parse_segments(task: str, text: str) -> List[dict]:
     return []
 
 
+def _make_repetition_penalty(
+    penalty: Optional[float], context_size: Optional[int] = None
+) -> list:
+    """Repetition penalty applied to log-probabilities.
+
+    IBM reports granite-speech-4.1-2b-plus results with
+    ``repetition_penalty=2.0`` and beam search, where Transformers applies
+    logits processors to log-softmax scores. On raw logits over the prompt
+    (Transformers greedy, ``make_repetition_penalty``) the same value
+    suppresses common words such as "the" and "a" and lets the decoder
+    continue past the end of the audio. Here the log-probabilities of tokens
+    already in the prompt or output (the last ``context_size`` if set) are
+    multiplied by ``penalty``, which leaves confident repeats intact.
+    """
+    if penalty is None:
+        return []
+    if not isinstance(penalty, (int, float)) or penalty <= 0:
+        raise ValueError(f"repetition_penalty must be a positive float, got {penalty}")
+
+    def processor(tokens: mx.array, logits: mx.array) -> mx.array:
+        logits = logits.astype(mx.float32)
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        if context_size is not None:
+            tokens = tokens[-context_size:]
+        if len(tokens) > 0:
+            logprobs[:, tokens] = logprobs[:, tokens] * penalty
+        return logprobs
+
+    return [processor]
+
+
 @dataclass
 class StreamingResult:
     text: str
@@ -977,7 +1008,7 @@ class Model(nn.Module):
         top_k: int = 0,
         min_p: float = 0.0,
         repetition_penalty: Optional[float] = None,
-        repetition_context_size: int = 100,
+        repetition_context_size: Optional[int] = None,
         task: str = "asr",
         prompt: str = None,
         language: str = None,
@@ -1045,7 +1076,7 @@ class Model(nn.Module):
         start_time = time.time()
 
         from mlx_audio.lm.generate import generate_step
-        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.sample_utils import make_sampler
 
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)
@@ -1070,9 +1101,8 @@ class Model(nn.Module):
         prompt_tokens = len(prompt_ids)
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
-        logits_processors = make_logits_processors(
-            repetition_penalty=repetition_penalty,
-            repetition_context_size=repetition_context_size,
+        logits_processors = _make_repetition_penalty(
+            repetition_penalty, repetition_context_size
         )
 
         eos_token_id = self._tokenizer.eos_token_id
@@ -1144,7 +1174,7 @@ class Model(nn.Module):
         top_k: int = 0,
         min_p: float = 0.0,
         repetition_penalty: Optional[float] = None,
-        repetition_context_size: int = 100,
+        repetition_context_size: Optional[int] = None,
         prompt: str = None,
         system_prompt: Optional[str] = None,
         prefill_step_size: int = 2048,
@@ -1153,7 +1183,7 @@ class Model(nn.Module):
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
         from mlx_audio.lm.generate import StreamingDetokenizer, generate_step
-        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.sample_utils import make_sampler
 
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)
@@ -1176,9 +1206,8 @@ class Model(nn.Module):
         prompt_token_count = len(prompt_ids)
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
-        logits_processors = make_logits_processors(
-            repetition_penalty=repetition_penalty,
-            repetition_context_size=repetition_context_size,
+        logits_processors = _make_repetition_penalty(
+            repetition_penalty, repetition_context_size
         )
 
         eos_token_id = self._tokenizer.eos_token_id
