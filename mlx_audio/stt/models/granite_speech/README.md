@@ -277,6 +277,8 @@ result = model.generate(
 )
 ```
 
+`repetition_penalty` multiplies the log-probability of every token already in the prompt or output (`repetition_context_size=N` limits this to the last N tokens). This matches how Transformers applies the penalty during beam search, which IBM used for its granite-speech-4.1-2b-plus results with `repetition_penalty=2.0`. At that value, short clips transcribe the same as without a penalty, and repetition loops on long audio stop. Applied to raw logits instead (Transformers greedy decoding), 2.0 drops common words such as "the" and "a" and continues past the end of the audio.
+
 ## Architecture
 
 - **Encoder**: CTC Conformer (16 layers, 1024 hidden dim, Shaw's relative positional embeddings, block-wise attention with context_size=200)
