@@ -94,6 +94,7 @@ MODEL_REMAPPING = {
     "qwen3_asr": "qwen3_asr",
     "phonon": "phonon",
     "phonon2": "phonon2",
+    "parakeet_tdt_five_value": "phonon2",
     "moss_transcribe_diarize": "moss_transcribe_diarize",
     "fun_asr_nano": "fun_asr_nano",
     "canary": "canary",
@@ -211,6 +212,7 @@ def load_model(
         model_remapping=MODEL_REMAPPING,
         lazy=lazy,
         strict=strict,
+        source_model_path=source,
         **kwargs,
     )
 

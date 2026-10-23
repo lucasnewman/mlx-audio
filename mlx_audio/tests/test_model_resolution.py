@@ -68,3 +68,86 @@ def test_model_name_fallback_preserves_known_config(
         f"mlx_audio.stt.models.{expected}",
         expected,
     )
+
+
+def test_checkpoint_preparation_precedes_config_and_weight_loading(
+    tmp_path, monkeypatch
+):
+    import json
+
+    source = tmp_path / "snapshot"
+    prepared = tmp_path / "prepared"
+    source.mkdir()
+    prepared.mkdir()
+    (source / "config.json").write_text('{"model_type": "packed"}')
+    (prepared / "config.json").write_text('{"model_type": "runtime", "ready": true}')
+    calls = []
+
+    def download(repo, **kwargs):
+        assert repo == "example/checkpoint"
+        assert kwargs["revision"] == "pinned"
+        assert kwargs["force_download"] is True
+        return source
+
+    def prepare(path, **kwargs):
+        assert path == source
+        assert kwargs == {
+            "source": "example/checkpoint",
+            "revision": "pinned",
+            "force_download": True,
+        }
+        calls.append("prepare")
+        return prepared
+
+    def config_from_dict(config):
+        assert config["ready"]
+        assert config["model_path"] == str(prepared)
+        calls.append("config")
+        return config
+
+    class RuntimeModel:
+        def __init__(self, config):
+            self.config = config
+            calls.append("model")
+
+        def load_weights(self, weights, strict):
+            assert weights == [("weight", "loaded")]
+            assert strict
+            calls.append("weights")
+
+        def eval(self):
+            calls.append("eval")
+
+        @staticmethod
+        def post_load_hook(model, path):
+            assert path == prepared
+            calls.append("post_load")
+            return model
+
+    def load_weights(path):
+        assert path == prepared
+        return {"weight": "loaded"}
+
+    modules = {
+        "mlx_audio.stt.models.packed": SimpleNamespace(prepare_model_path=prepare),
+        "mlx_audio.stt.models.runtime": SimpleNamespace(
+            Model=RuntimeModel,
+            ModelConfig=SimpleNamespace(from_dict=config_from_dict),
+        ),
+    }
+    monkeypatch.setattr(utils, "get_model_path", download)
+    monkeypatch.setattr(utils.importlib, "import_module", modules.__getitem__)
+    monkeypatch.setattr(utils, "load_weights", load_weights)
+    monkeypatch.setattr(utils, "apply_quantization", lambda *args: None)
+    model = utils.base_load_model(
+        "example/checkpoint",
+        category="stt",
+        model_remapping={},
+        lazy=True,
+        strict=True,
+        revision="pinned",
+        force_download=True,
+    )
+    assert isinstance(model, RuntimeModel)
+    assert json.loads((source / "config.json").read_text()) == {"model_type": "packed"}
+    assert calls == ["prepare", "config", "model", "weights", "eval", "post_load"]

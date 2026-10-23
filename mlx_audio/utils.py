@@ -341,6 +341,7 @@ def base_load_model(
     model_name = kwargs.pop("model_name_parts", None)
     model_type = kwargs.pop("model_type", None)
     allow_patterns = kwargs.pop("allow_patterns", None)
+    source_model_path = kwargs.pop("source_model_path", model_path)
 
     if isinstance(model_path, str):
         if model_name is None:
@@ -360,7 +361,6 @@ def base_load_model(
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
     config = load_config(model_path)
-    config["model_path"] = str(model_path)
 
     # Determine model_type from config or model_name
     if model_type is None:
@@ -380,6 +380,35 @@ def base_load_model(
         category=category,
         model_remapping=model_remapping,
     )
+
+    # Model packages can materialize nonstandard checkpoint formats before
+    # config construction and weight loading. Keep transport details local.
+    if hasattr(model_class, "prepare_model_path"):
+        source = (
+            source_model_path
+            if isinstance(source_model_path, str)
+            and not Path(source_model_path).expanduser().exists()
+            else None
+        )
+        prepared_path = Path(
+            model_class.prepare_model_path(
+                model_path,
+                source=source,
+                revision=kwargs.get("revision"),
+                force_download=kwargs.get("force_download", False),
+            )
+        )
+        if prepared_path != model_path:
+            model_path = prepared_path
+            config = load_config(model_path)
+            model_class, model_type = get_model_class(
+                model_type=model_type_from_config(config) or model_type,
+                model_name=model_name,
+                category=category,
+                model_remapping=model_remapping,
+            )
+
+    config["model_path"] = str(model_path)
 
     # Get model config from model class if it exists, otherwise use the config
     model_config = (
