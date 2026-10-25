@@ -158,6 +158,18 @@ class TestOptionalDeps:
             importlib.util.find_spec("jinja2") is not None
         ), "jinja2 is not installed; tokenizer.apply_chat_template() would raise ImportError"
 
+    def test_chat_template_sandbox_blocks_format_attribute_escape(self):
+        """Model templates must not bypass the sandbox through CVE-2025-27516."""
+        from jinja2.exceptions import SecurityError
+        from transformers.utils.chat_template_utils import render_jinja_template
+
+        # Older Jinja versions expose the type through an unchecked format method.
+        with pytest.raises(SecurityError):
+            render_jinja_template(
+                [[{"role": "user", "content": "hello"}]],
+                chat_template="{{ '{0.__class__.__name__}' | attr('format')(0) }}",
+            )
+
     def test_core_resolves(self):
         """Verify core install resolves without errors."""
         result = run_dry_run()
