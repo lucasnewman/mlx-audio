@@ -1281,6 +1281,19 @@ class TestIndexTTS(unittest.TestCase):
         # Check that model was created
         self.assertIsInstance(model, Model)
 
+    def test_prompt_ends_with_start_mel_at_mel_position_zero(self):
+        """The start mel token opens the mel sequence, as in the reference GPT2InferenceModel."""
+        from mlx_audio.tts.models.indextts.indextts import Model
+
+        model = Model(self._default_config)  # type: ignore
+        n_mels = model.args.gpt.condition_module.input_size
+        embedding = model.prepare_input_embedding(
+            ["hello"], None, ref_mel=mx.zeros((1, 20, n_mels))
+        )
+        start = mx.array([[model.args.gpt.start_mel_token]])
+        expected = model.mel_embedding(start) + model.mel_pos_embedding(start)
+        self.assertTrue(mx.allclose(embedding[:, -1:, :], expected).item())
+
     def test_tokenizer_defaults_to_model_path(self):
         """Converted checkpoints have no tokenizer_name; the loaded directory is used."""
         from pathlib import Path
