@@ -319,6 +319,7 @@ class TestKokoroPipeline(unittest.TestCase):
                     pipeline.voices = {}
                     # Add the missing repo_id attribute
                     pipeline.repo_id = "mlx-community/kokoro-tts"
+                    pipeline.model_path = None
 
                     # Mock the load voice return value
                     load_voice_tensor.return_value = mx.zeros((512, 1, 256))
