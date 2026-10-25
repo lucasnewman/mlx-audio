@@ -55,8 +55,9 @@ class GPTConfig:
 class ModelArgs:
     bigvgan: BigVGANConditioningConfig
     gpt: GPTConfig
-    tokenizer_name: str | Path
+    tokenizer_name: str | Path | None = None
     sample_rate: int = 24000
+    model_path: str | None = None
 
 
 class Model(nn.Module):
@@ -78,16 +79,21 @@ class Model(nn.Module):
         self.args = args
         self.sample_rate = args.sample_rate
 
+        tokenizer_name = args.tokenizer_name or args.model_path
+        if tokenizer_name is None:
+            raise ValueError(
+                "IndexTTS needs tokenizer_name or model_path in its config."
+            )
         try:
             self.tokenizer = spm.SentencePieceProcessor(
                 model_file=huggingface_hub.hf_hub_download(  # type: ignore
-                    str(args.tokenizer_name), "tokenizer.model"
+                    str(tokenizer_name), "tokenizer.model"
                 )
             )
         except Exception:
             self.tokenizer = spm.SentencePieceProcessor(
                 model_file=str(  # type: ignore
-                    (Path(args.tokenizer_name) / "tokenizer.model").resolve()
+                    (Path(tokenizer_name) / "tokenizer.model").resolve()
                 )
             )
 

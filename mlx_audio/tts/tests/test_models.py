@@ -1281,6 +1281,26 @@ class TestIndexTTS(unittest.TestCase):
         # Check that model was created
         self.assertIsInstance(model, Model)
 
+    def test_tokenizer_defaults_to_model_path(self):
+        """Converted checkpoints have no tokenizer_name; the loaded directory is used."""
+        from pathlib import Path
+
+        from mlx_audio.tts.models.indextts import indextts
+
+        config = dict(self._default_config)
+        del config["tokenizer_name"]
+        config["model_path"] = "/models/IndexTTS"
+        with (
+            patch.object(
+                indextts.huggingface_hub, "hf_hub_download", side_effect=ValueError
+            ),
+            patch.object(indextts.spm, "SentencePieceProcessor") as processor,
+        ):
+            indextts.Model(config)  # type: ignore
+        processor.assert_called_once_with(
+            model_file=str(Path("/models/IndexTTS/tokenizer.model").resolve())
+        )
+
 
 class TestVibeVoiceModel(unittest.TestCase):
     @property
