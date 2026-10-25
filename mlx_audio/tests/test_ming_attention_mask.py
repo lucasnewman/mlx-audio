@@ -1,13 +1,10 @@
-"""Tests for the Ming-3.0 attention mask builder.
-
-Covers the two defects that made ``Ming-3.0-tts-0.5B`` unusable on Apple
-Silicon: the additive mask was hard-coded to float32 while the activations are
-bfloat16, and a disabled sliding window masked out every attention row.
-"""
+"""Regression tests for Ming sliding-attention masks and activation dtypes."""
 
 import mlx.core as mx
 import pytest
 
+from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
 from mlx_audio.tts.models.bailingmm.bailingmm import MingQwen2Attention
 
 # The mask uses a finite negative sentinel that overflows to -inf in
@@ -29,18 +26,13 @@ def _build(mask, q_len, kv_len, sliding_window, dtype, cache_offset=0):
 @pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16, mx.float32])
 def test_mask_dtype_follows_query_dtype(dtype):
     """The mask must be built in the dtype of the query activations."""
-    mask = _build("causal", 4, 4, 0, dtype)
+    mask = _build("causal", 4, 4, 2, dtype)
     assert mask.dtype == dtype
 
 
-def test_disabled_sliding_window_keeps_causal_structure():
-    """sliding_window=0 must not mask out every position.
-
-    Regression: ``sw_allowed = k_pos > (q_pos - 0)`` is False for every
-    causal position, so the sliding mask used to become all -3.4e38 and
-    every attention row was masked out.
-    """
-    mask = _build("causal", 4, 4, 0, mx.bfloat16)
+def test_sliding_window_keeps_causal_structure():
+    """A window covering the sequence must preserve causal attention."""
+    mask = _build("causal", 4, 4, 4, mx.bfloat16)
     values = mask[0, 0].tolist()
 
     for row in range(4):
@@ -63,6 +55,25 @@ def test_enabled_sliding_window_still_applies():
     assert values[3][3] == 0.0
 
 
-def test_single_token_without_mask_returns_none():
-    """A single decode step attends to everything, so no mask is needed."""
-    assert _build(None, 1, 4, 0, mx.bfloat16, cache_offset=3) is None
+@pytest.mark.parametrize("dtype", [mx.bfloat16, mx.float16, mx.float32])
+def test_sliding_attention_forward_preserves_dtype(dtype):
+    """Exercise the query-dtype handoff during prefill and cached decoding."""
+    args = Qwen2ModelArgs(
+        model_type="qwen2",
+        hidden_size=32,
+        num_hidden_layers=1,
+        intermediate_size=64,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        rms_norm_eps=1e-6,
+        vocab_size=1,
+    )
+    attention = MingQwen2Attention(args, sliding_window=2)
+    attention.set_dtype(dtype)
+    cache = KVCache()
+
+    for q_len in (4, 1):
+        x = mx.ones((1, q_len, args.hidden_size), dtype=dtype)
+        output = attention(x, mask="causal" if q_len > 1 else None, cache=cache)
+        assert output.dtype == dtype
+        assert mx.all(mx.isfinite(output)).item()

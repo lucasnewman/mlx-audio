@@ -669,19 +669,7 @@ class MingQwen2Attention(qwen2_impl.Attention):
         cache_offset: int,
         sliding_window: int,
         dtype: Optional[mx.Dtype] = None,
-    ) -> Optional[mx.array]:
-        # Sliding window disabled: the plain causal / additive mask is the whole
-        # story. Reuse _prepare_sdpa_mask, which already emits the right dtype
-        # and shape. Applying the sliding mask with window == 0 masks out every
-        # position and yields NaNs.
-        if sliding_window <= 0:
-            return _prepare_sdpa_mask(
-                mask=mask,
-                q_len=q_len,
-                kv_len=kv_len,
-                cache_offset=cache_offset,
-                out_dtype=dtype if dtype is not None else mx.float32,
-            )
+    ) -> mx.array:
         dtype = dtype if dtype is not None else mx.float32
         neg_inf = mx.array(-3.4028235e38, dtype=mx.float32).astype(dtype)
         q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
