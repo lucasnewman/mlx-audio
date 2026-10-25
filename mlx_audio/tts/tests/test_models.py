@@ -170,6 +170,7 @@ class TestKokoroModel(unittest.TestCase):
                 "dropout": 0.1,
             },
             "vocab": {"a": 1, "b": 2},
+            "model_path": "/mock/model",
         }
         mock_json_load.return_value = config
 
@@ -185,6 +186,7 @@ class TestKokoroModel(unittest.TestCase):
         # Check that the model was initialized correctly
         self.assertIsInstance(model, nn.Module)
         self.assertEqual(model.vocab, {"a": 1, "b": 2})
+        self.assertEqual(model.config.model_path, "/mock/model")
 
     def test_output_dataclass(self):
         """Test KokoroModel.Output dataclass."""

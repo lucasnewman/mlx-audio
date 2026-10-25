@@ -1,7 +1,6 @@
 import time
 from dataclasses import dataclass
 from numbers import Number
-from pathlib import Path
 from typing import Dict, Optional, Union
 
 import mlx.core as mx
@@ -53,6 +52,7 @@ class ModelConfig(BaseModelArgs):
     plbert: dict
     vocab: Dict[str, int]
     sample_rate: int = 24000
+    model_path: str | None = None
 
 
 class Model(nn.Module):
@@ -103,11 +103,6 @@ class Model(nn.Module):
             **config.istftnet,
         )
         self._pipelines: Dict[str, KokoroPipeline] = {}  # Cache for pipelines
-
-    @staticmethod
-    def post_load_hook(model, model_path):
-        model._voice_model_path = Path(model_path)
-        return model
 
     @dataclass
     class Output:
@@ -293,7 +288,7 @@ class Model(nn.Module):
                 model=self,
                 repo_id=self.REPO_ID if self.repo_id is None else self.repo_id,
                 lang_code=lang_code,
-                model_path=getattr(self, "_voice_model_path", None),
+                model_path=self.config.model_path,
             )
         return self._pipelines[lang_code]
 

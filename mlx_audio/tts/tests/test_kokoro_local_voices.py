@@ -22,9 +22,12 @@ def save_voice(path, value):
     mx.save_safetensors(str(path), {"voice": mx.full((2, 3), value)})
 
 
-def unloaded_model():
+def unloaded_model(model_path=None):
     model = Model.__new__(Model)
     nn.Module.__init__(model)
+    model.config = SimpleNamespace(
+        model_path=str(model_path) if model_path is not None else None
+    )
     model.repo_id = None
     model._pipelines = {}
     return model
@@ -42,8 +45,7 @@ def test_named_voice_uses_the_loaded_snapshot_without_hub_access(tmp_path, monke
         raise AssertionError("a voice in the loaded snapshot must not access the Hub")
 
     monkeypatch.setattr(kokoro_pipeline, "snapshot_download", no_download)
-    model = unloaded_model()
-    assert Model.post_load_hook(model, snapshot) is model
+    model = unloaded_model(snapshot)
     pipeline = Model._get_pipeline(model, "p")
 
     voice = pipeline.load_single_voice("pf_dora")
@@ -57,8 +59,7 @@ def test_explicit_voice_file_takes_precedence_over_snapshot(tmp_path):
     save_voice(snapshot / "voices" / "pf_dora.safetensors", 1.0)
     explicit = tmp_path / "custom" / "pf_dora.safetensors"
     save_voice(explicit, 3.0)
-    model = unloaded_model()
-    Model.post_load_hook(model, snapshot)
+    model = unloaded_model(snapshot)
     pipeline = Model._get_pipeline(model, "p")
 
     assert bool(
@@ -67,24 +68,31 @@ def test_explicit_voice_file_takes_precedence_over_snapshot(tmp_path):
 
 
 @pytest.mark.parametrize("model_path", [None, "empty-model"])
-def test_missing_local_voice_preserves_hub_fallback(tmp_path, monkeypatch, model_path):
+@pytest.mark.parametrize("cache_miss", [False, True])
+def test_missing_local_voice_preserves_hub_fallback(
+    tmp_path, monkeypatch, model_path, cache_miss
+):
     hub_snapshot = tmp_path / "hub"
     save_voice(hub_snapshot / "voices" / "pf_dora.safetensors", 4.0)
     calls = []
 
     def download(**kwargs):
         calls.append(kwargs)
+        if cache_miss and kwargs.get("local_files_only"):
+            raise FileNotFoundError
         return str(hub_snapshot)
 
     monkeypatch.setattr(kokoro_pipeline, "snapshot_download", download)
-    pipeline = kokoro_pipeline.KokoroPipeline(
-        lang_code="p",
-        model=False,
-        repo_id="example/kokoro",
-        model_path=tmp_path / model_path if model_path else None,
-    )
+    model = unloaded_model(tmp_path / model_path if model_path else None)
+    model.repo_id = "example/kokoro"
+    pipeline = Model._get_pipeline(model, "p")
 
     assert bool(
         mx.array_equal(pipeline.load_single_voice("pf_dora"), mx.full((2, 3), 4.0))
     )
     assert calls[0]["repo_id"] == "example/kokoro"
+    assert calls[0]["local_files_only"] is True
+    assert len(calls) == (2 if cache_miss else 1)
+    if cache_miss:
+        assert calls[1]["repo_id"] == "example/kokoro"
+        assert "local_files_only" not in calls[1]
