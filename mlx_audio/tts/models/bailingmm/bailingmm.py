@@ -668,12 +668,26 @@ class MingQwen2Attention(qwen2_impl.Attention):
         kv_len: int,
         cache_offset: int,
         sliding_window: int,
-    ) -> mx.array:
-        neg_inf = mx.array(-3.4028235e38, dtype=mx.float32)
+        dtype: Optional[mx.Dtype] = None,
+    ) -> Optional[mx.array]:
+        # Sliding window disabled: the plain causal / additive mask is the whole
+        # story. Reuse _prepare_sdpa_mask, which already emits the right dtype
+        # and shape. Applying the sliding mask with window == 0 masks out every
+        # position and yields NaNs.
+        if sliding_window <= 0:
+            return _prepare_sdpa_mask(
+                mask=mask,
+                q_len=q_len,
+                kv_len=kv_len,
+                cache_offset=cache_offset,
+                out_dtype=dtype if dtype is not None else mx.float32,
+            )
+        dtype = dtype if dtype is not None else mx.float32
+        neg_inf = mx.array(-3.4028235e38, dtype=mx.float32).astype(dtype)
         q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
         k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
         sw_allowed = k_pos > (q_pos - sliding_window)
-        sw_add = mx.where(sw_allowed, mx.array(0.0, dtype=mx.float32), neg_inf)[
+        sw_add = mx.where(sw_allowed, mx.array(0.0, dtype=dtype), neg_inf)[
             None, None, :, :
         ]
 
@@ -684,16 +698,16 @@ class MingQwen2Attention(qwen2_impl.Attention):
             if mask != "causal":
                 raise ValueError(f"Unsupported attention mask spec: {mask}")
             causal_allowed = q_pos >= k_pos
-            causal_add = mx.where(
-                causal_allowed, mx.array(0.0, dtype=mx.float32), neg_inf
-            )[None, None, :, :]
+            causal_add = mx.where(causal_allowed, mx.array(0.0, dtype=dtype), neg_inf)[
+                None, None, :, :
+            ]
             return mx.minimum(causal_add, sw_add)
 
         add_mask = mask
         if add_mask.dtype == mx.bool_:
-            add_mask = mx.where(add_mask, mx.array(0.0, dtype=mx.float32), neg_inf)
+            add_mask = mx.where(add_mask, mx.array(0.0, dtype=dtype), neg_inf)
         else:
-            add_mask = add_mask.astype(mx.float32)
+            add_mask = add_mask.astype(dtype)
         while add_mask.ndim < 4:
             add_mask = mx.expand_dims(add_mask, axis=0)
         return mx.minimum(add_mask, sw_add)
@@ -728,6 +742,7 @@ class MingQwen2Attention(qwen2_impl.Attention):
             kv_len=keys.shape[2],
             cache_offset=cache_offset,
             sliding_window=self.sliding_window,
+            dtype=queries.dtype,
         )
         output = mx.fast.scaled_dot_product_attention(
             queries, keys, values, scale=self.scale, mask=attn_mask
