@@ -1,3 +1,4 @@
+import gc
 import json
 import tempfile
 import unittest
@@ -394,15 +395,27 @@ class TestGeneration(unittest.TestCase):
         self.assertEqual(result.audio.shape, expected.shape)
         self.assertTrue(mx.allclose(result.audio, expected, atol=1e-5).item())
 
-    def test_a_long_chunk_decodes_in_a_fraction_of_one_codec_call(self):
-        def decode_peak(frames_per_call: int) -> int:
+    def decode_peak(self, codes: list[mx.array]) -> int:
+        """Bytes one chunk's decode adds to MLX's active memory at its peak."""
+        peaks = []
+        # A busy machine returns freed buffers late or hands out cached ones up to
+        # twice the size asked for, which only ever raises a peak: keep the least.
+        for _ in range(3):
             self.model.codec.reset_streaming_state()
+            # Arrays that earlier tests left in reference cycles would otherwise be
+            # freed by a collection mid-decode, lowering the peak by their size.
+            gc.collect()
             mx.clear_cache()
             before = mx.get_active_memory()
             mx.reset_peak_memory()
+            self.model._result(codes, 0, 0.0, False, True)
+            peaks.append(mx.get_peak_memory() - before)
+        return min(peaks)
+
+    def test_a_long_chunk_decodes_in_a_fraction_of_one_codec_call(self):
+        def decode_peak(frames_per_call: int) -> int:
             with patch(f"{module}.DECODE_FRAMES", frames_per_call):
-                self.model._result(codes, 0, 0.0, False, True)
-            return mx.get_peak_memory() - before
+                return self.decode_peak(codes)
 
         mx.random.seed(17)
         codes = list(mx.random.randint(0, TOWER_VOCAB, (56, 3)))
@@ -415,19 +428,14 @@ class TestGeneration(unittest.TestCase):
         def decode_peak(frames: int) -> int:
             codes = list(mx.random.randint(0, TOWER_VOCAB, (frames, 3)))
             mx.eval(codes)
-            self.model.codec.reset_streaming_state()
-            mx.clear_cache()
-            before = mx.get_active_memory()
-            mx.reset_peak_memory()
-            self.model._result(codes, 0, 0.0, False, True)
-            return mx.get_peak_memory() - before
+            return self.decode_peak(codes)
 
         mx.random.seed(19)
         module = "mlx_audio.tts.models.fish_drama3.drama3"
         with patch(f"{module}.DECODE_FRAMES", 8):
             short, long = decode_peak(56), decode_peak(1792)
-        # Measured: 0.9 to 1.7 with each piece evaluated, 3.3 to 6 when all
-        # pieces form one lazy graph.
+        # Measured: 1.2 to 1.5 with each piece evaluated, 4 to 5 when all pieces
+        # form one lazy graph.
         self.assertLess(long, 2 * short)
 
     def test_encoding_and_every_chunk_leave_the_mlx_cache_empty(self):
