@@ -218,6 +218,26 @@ class TestSampler(unittest.TestCase):
         self.assertEqual(len(draws), 3)
         self.assertTrue(draws <= {0, 1, 2, 3})
 
+    def test_no_top_k_draws_past_the_first_thirty(self):
+        # Nearly flat but strictly falling, so the id of a candidate is its rank.
+        logits = -0.001 * mx.arange(4097, dtype=mx.float32)[None]
+        mx.random.seed(0)
+        for top_k, beyond in ((None, True), (30, False)):
+            draws = [
+                sample_top_k_top_p(logits, 1.0, top_k, 0.9).item() for _ in range(200)
+            ]
+            self.assertEqual(max(draws) >= 30, beyond)
+
+    def test_keep_crossing_keeps_the_token_that_crosses_top_p(self):
+        logits = mx.log(mx.array([[0.85, 0.15]]))
+        mx.random.seed(0)
+        for keep, expected in ((False, {0}), (True, {0, 1})):
+            draws = {
+                sample_top_k_top_p(logits, 1.0, None, 0.9, keep_crossing=keep).item()
+                for _ in range(200)
+            }
+            self.assertEqual(draws, expected)
+
 
 class TestConversion(unittest.TestCase):
     def test_tensors_land_where_the_model_reads_them(self):
@@ -537,6 +557,46 @@ class TestGeneration(unittest.TestCase):
         server |= dict(repetition_penalty=1.0, stream=True, streaming_interval=2.0)
         for kwargs in (cli, server):
             self.assertTrue(self.speak(**kwargs)[-1].is_final_chunk)
+
+    def test_main_token_draws_uncapped_and_codebook_heads_at_most_30(self):
+        # The split is not audible on the tiny model, so the draws are recorded.
+        calls = []
+
+        def record(logits, temperature, top_k, top_p, keep_crossing=False):
+            calls.append((top_k, top_p, keep_crossing))
+            return sample_top_k_top_p(logits, temperature, top_k, top_p, keep_crossing)
+
+        drama3 = "mlx_audio.tts.models.fish_drama3.drama3"
+        with patch(f"{drama3}.sample_top_k_top_p", side_effect=record):
+            self.speak()
+            default = set(calls)
+            calls.clear()
+            self.speak(top_k=5)
+            capped = set(calls)
+        repetition_redraw = (30, 0.95, True)
+        self.assertEqual(
+            default, {(None, 0.9, True), repetition_redraw, (30, 0.9, False)}
+        )
+        self.assertEqual(capped, {(5, 0.9, True), repetition_redraw, (5, 0.9, False)})
+
+    def test_server_requests_without_sampling_fields_get_these_defaults(self):
+        try:
+            from mlx_audio.server import SpeechRequest, _resolve_sampling_params
+        except ImportError as error:
+            self.skipTest(f"server extras missing: {error}")
+        omitted = SpeechRequest(model="drama3", input="Hallo du.")
+        self.assertEqual(
+            _resolve_sampling_params(self.model, omitted),
+            # Every candidate: the semantic band and EOS, so no cap.
+            {
+                "temperature": 1.0,
+                "top_p": 0.9,
+                "top_k": TOWER_VOCAB + 1,
+                "repetition_penalty": 1.0,
+            },
+        )
+        sent = SpeechRequest(model="drama3", input="Hallo du.", top_k=30)
+        self.assertEqual(_resolve_sampling_params(self.model, sent)["top_k"], 30)
 
     def test_rejects_options_it_cannot_honor(self):
         for kwargs in ({"speed": 1.2}, {"instruct": "whisper"}):

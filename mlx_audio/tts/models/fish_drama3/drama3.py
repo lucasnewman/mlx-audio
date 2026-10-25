@@ -33,11 +33,15 @@ RAS_TEMPERATURE = 1.0
 RAS_TOP_K = 30
 RAS_TOP_P = 0.95
 MIN_TEMPERATURE = 1e-5
-# The reference recipe's sampling defaults.
 DEFAULT_MAX_FRAMES = 1024
-DEFAULT_TEMPERATURE = 0.7
-DEFAULT_TOP_K = 30
-DEFAULT_TOP_P = 0.7
+# SGLang-Omni's sampling defaults (sgl-project/sglang-omni#2890 and #2810). A
+# top-k cap on the main token lets a take without a reference fall silent after
+# a phrase and stay silent until the frame cap, most often at fish-speech's
+# 0.7 / 0.7 / 30. The codebook heads keep a cap of 30, which holds the voice.
+DEFAULT_TEMPERATURE = 1.0
+DEFAULT_TOP_K = None
+DEFAULT_TOP_P = 0.9
+CODEBOOK_TOP_K = 30
 PREFILL_CHUNK = 256
 # Frames per codec call when a chunk is decoded at once. The codec's working set
 # grows with the frames of one call: a 1024-frame chunk needs about 20 GB on top
@@ -50,26 +54,33 @@ AudioInput = Union[str, Path, mx.array, np.ndarray]
 
 
 def sample_top_k_top_p(
-    logits: mx.array, temperature: float, top_k: int, top_p: float
+    logits: mx.array,
+    temperature: float,
+    top_k: Optional[int],
+    top_p: float,
+    keep_crossing: bool = False,
 ) -> mx.array:
     """One id per row of logits [B, V], as the reference samples.
 
     Temperature applies before top-p; the cumulative probability runs over the
-    full vocabulary; the token that crosses top_p is dropped unless it ranks
-    first. Only the top_k candidates are sorted, since all others are dropped.
+    full vocabulary; top_k None keeps every candidate. The token that crosses
+    top_p is dropped unless it ranks first; keep_crossing keeps it, as the main
+    token's draws do so that EOS stays reachable. Only the top_k candidates are
+    sorted, since all others are dropped.
     """
     x = logits.astype(mx.float32) / max(temperature, MIN_TEMPERATURE)
     # At low temperature the logits share a huge offset that would swamp the
     # log-sum-exp in float32 and push every probability to 1.
     x = x - x.max(axis=-1, keepdims=True)
-    k = min(top_k, x.shape[-1])
+    k = x.shape[-1] if top_k is None else min(top_k, x.shape[-1])
     ids = mx.argpartition(-x, kth=k - 1, axis=-1)[..., :k]
     values = mx.take_along_axis(x, ids, axis=-1)
     order = mx.argsort(-values, axis=-1)
     values = mx.take_along_axis(values, order, axis=-1)
     ids = mx.take_along_axis(ids, order, axis=-1)
     probs = mx.exp(values - mx.logsumexp(x, axis=-1, keepdims=True))
-    dropped = (mx.cumsum(probs, axis=-1) > top_p) & (mx.arange(k) > 0)
+    passed = mx.cumsum(probs, axis=-1, inclusive=not keep_crossing)
+    dropped = (passed > top_p) & (mx.arange(k) > 0)
     choice = mx.random.categorical(mx.where(dropped, -mx.inf, values))
     return mx.take_along_axis(ids, choice[..., None], axis=-1)[..., 0]
 
@@ -141,6 +152,16 @@ class Model(nn.Module):
     @property
     def sample_rate(self) -> int:
         return self.codec.sample_rate
+
+    @property
+    def generate_config(self) -> dict:
+        """The defaults the server uses for sampling fields a request leaves out.
+        A top_k of every candidate leaves the main token uncapped, as None does."""
+        return {
+            "temperature": DEFAULT_TEMPERATURE,
+            "top_p": DEFAULT_TOP_P,
+            "top_k": int(self._candidate_ids.size),
+        }
 
     def sanitize(self, weights: dict[str, mx.array]) -> dict[str, mx.array]:
         # The loader also reads codec.safetensors; the codec loads separately.
@@ -354,18 +375,21 @@ class Model(nn.Module):
         backbone_cache, tower_cache = caches
         logits = self.semantic_head(hidden[:, 0]).astype(mx.float32)
         first = self._candidate_ids[
-            sample_top_k_top_p(logits, temperature, top_k, top_p)
+            sample_top_k_top_p(logits, temperature, top_k, top_p, keep_crossing=True)
         ]
         retry = self._candidate_ids[
-            sample_top_k_top_p(logits, RAS_TEMPERATURE, RAS_TOP_K, RAS_TOP_P)
+            sample_top_k_top_p(
+                logits, RAS_TEMPERATURE, RAS_TOP_K, RAS_TOP_P, keep_crossing=True
+            )
         ]
         repeated = (history[None, :] == first[:, None]).any(axis=-1)
         main = mx.where(repeated & self.tower.is_semantic(first), retry, first)
         c0 = mx.clip(main - self.semantic_begin, 0, self.tower.vocab_size - 1)
         semantic = self.tower.is_semantic(main)[:, None]
+        head_top_k = CODEBOOK_TOP_K if top_k is None else min(top_k, CODEBOOK_TOP_K)
 
         def sample(head_logits: mx.array) -> mx.array:
-            ids = sample_top_k_top_p(head_logits[:, 0], temperature, top_k, top_p)
+            ids = sample_top_k_top_p(head_logits[:, 0], temperature, head_top_k, top_p)
             return ids[:, None]
 
         codes = self.tower.residual_codes(
@@ -386,7 +410,7 @@ class Model(nn.Module):
         voice: _Voice,
         max_frames: int,
         temperature: float,
-        top_k: int,
+        top_k: Optional[int],
         top_p: float,
     ) -> Iterator[mx.array]:
         """Codes [num_codebooks] of each generated frame until EOS.
@@ -443,7 +467,8 @@ class Model(nn.Module):
 
         Long text is generated chunk by chunk; each chunk sees the first and the
         previous chunk as history, and max_tokens caps the frames of one chunk.
-        Sampling arguments left as None use the reference recipe.
+        Sampling arguments left as None use SGLang-Omni's defaults; a top_k
+        caps the main token, and the codebook heads at most 30.
         With stream=True, audio is yielded every streaming_interval seconds;
         first_chunk_frames sets a smaller first piece for a faster first audio.
         Delivery cues go inline, e.g. "[whispers]". Other keyword arguments that

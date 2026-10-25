@@ -47,8 +47,7 @@ For example, [`fcmeyer/drama-3-MLX-3bit-HQ`](https://huggingface.co/fcmeyer/dram
         --model mlx-community/fish-audio-drama-3-4bit \
         --text "[sighs] Fine. If we miss it, it's on you." \
         --ref_audio reference.wav \
-        --ref_text "Transcript of the reference clip." \
-        --temperature 0.7 --top_p 0.7 --top_k 30
+        --ref_text "Transcript of the reference clip."
     ```
 
 === "Python"
@@ -66,7 +65,7 @@ For example, [`fcmeyer/drama-3-MLX-3bit-HQ`](https://huggingface.co/fcmeyer/dram
         print(result.audio_duration)
     ```
 
-The output copies the bandwidth of the reference, so use references recorded at 44.1 kHz or higher; a 16 kHz clip gives duller speech. Without a reference the model picks a voice itself. Delivery cues such as `[whispers]` or `[laughs]` go inline where they should happen. In Python, sampling arguments left unset use the reference recipe (temperature 0.7, top-p 0.7, top-k 30); the CLI has its own defaults, so pass them explicitly there.
+The output copies the bandwidth of the reference, so use references recorded at 44.1 kHz or higher; a 16 kHz clip gives duller speech. Without a reference the model picks a voice itself. Delivery cues such as `[whispers]` or `[laughs]` go inline where they should happen. Sampling arguments left unset use SGLang-Omni's defaults, in Python, the CLI and the server: temperature 1.0 and top-p 0.9, with no top-k cap on the main token and a cap of 30 on the codebook heads. A top-k cap on the main token makes takes without a reference fall silent more often. A `top_k` you pass caps the main token, and the codebook heads at most 30.
 
 ## Multiple speakers
 
