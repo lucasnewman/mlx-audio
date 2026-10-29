@@ -404,6 +404,15 @@ class Model(nn.Module):
 
         return sanitized
 
+    @staticmethod
+    def _has_speech_tokens(tokenizer) -> bool:
+        """Whether the tokenizer knows the Qwen2.5 tokens VibeVoice uses for speech."""
+        if tokenizer is None:
+            return False
+        speech_tokens = ("<|object_ref_start|>", "<|object_ref_end|>", "<|box_start|>")
+        ids = [tokenizer.convert_tokens_to_ids(token) for token in speech_tokens]
+        return all(i is not None and i != tokenizer.unk_token_id for i in ids)
+
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
         """
@@ -412,12 +421,17 @@ class Model(nn.Module):
         """
         from transformers import AutoTokenizer
 
-        # Load tokenizer (Qwen2.5-7B base, which has the special tokens we need)
+        # Load tokenizer (Qwen2.5-7B base, which has the special tokens we need).
+        # Checkpoints without tokenizer files either raise or, with recent
+        # transformers, silently return an empty tokenizer, so check that the
+        # speech tokens resolve instead of relying on an exception.
         try:
             tokenizer = AutoTokenizer.from_pretrained(
                 str(model_path), trust_remote_code=True
             )
         except Exception:
+            tokenizer = None
+        if not cls._has_speech_tokens(tokenizer):
             tokenizer = AutoTokenizer.from_pretrained(
                 "Qwen/Qwen2.5-7B", trust_remote_code=True
             )
