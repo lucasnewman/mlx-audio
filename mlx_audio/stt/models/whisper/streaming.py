@@ -8,7 +8,7 @@ Reference: https://arxiv.org/abs/2211.00895 (SimulMT with AlignAtt)
 """
 
 from dataclasses import dataclass
-from typing import List, Union
+from typing import List, Tuple, Union
 
 import mlx.core as mx
 
@@ -173,6 +173,19 @@ class StreamingDecoder:
         self._pending_tokens = []
         self._accumulated_mel = None
 
+    def _take_new_tokens(
+        self, text_tokens: List[int], is_last: bool
+    ) -> Tuple[List[int], str]:
+        new_tokens = text_tokens[len(self._emitted_tokens) :]
+        text = self.tokenizer.decode(new_tokens)
+        while not is_last and new_tokens and text.endswith("\ufffd"):
+            new_tokens = new_tokens[:-1]
+            text = self.tokenizer.decode(new_tokens)
+        self._emitted_tokens = text_tokens[
+            : len(self._emitted_tokens) + len(new_tokens)
+        ]
+        return new_tokens, text
+
     def decode_chunk(self, mel: mx.array, is_last: bool = False) -> StreamingResult:
         """Decode an audio chunk using AlignAtt streaming.
 
@@ -268,8 +281,7 @@ class StreamingDecoder:
         ]
 
         # Calculate what's new since last emission
-        new_tokens = text_tokens[len(self._emitted_tokens) :]
-        self._emitted_tokens = text_tokens
+        new_tokens, text = self._take_new_tokens(text_tokens, is_last)
 
         emit_start_time = (
             len(self._emitted_tokens) - len(new_tokens)
@@ -277,7 +289,7 @@ class StreamingDecoder:
         emit_end_time = len(self._emitted_tokens) / TOKENS_PER_SECOND
 
         return StreamingResult(
-            text=self.tokenizer.decode(new_tokens),
+            text=text,
             tokens=new_tokens,
             is_final=is_last,
             start_time=emit_start_time,

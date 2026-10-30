@@ -218,6 +218,39 @@ class TestStreamingDecoder:
         assert decoder._emitted_tokens == []
 
 
+class TestTakeNewTokens:
+    class ByteTokenizer:
+        vocab = {1: b"Caf", 2: b"\xc3", 3: b"\xa9", 4: b" cr"}
+
+        def decode(self, tokens):
+            return b"".join(self.vocab[t] for t in tokens).decode(
+                "utf-8", errors="replace"
+            )
+
+    def make_decoder(self):
+        from mlx_audio.stt.models.whisper.streaming import StreamingDecoder
+
+        decoder = StreamingDecoder.__new__(StreamingDecoder)
+        decoder.tokenizer = self.ByteTokenizer()
+        decoder._emitted_tokens = []
+        return decoder
+
+    def test_holds_a_character_split_across_tokens(self):
+        decoder = self.make_decoder()
+
+        first = decoder._take_new_tokens([1, 2], is_last=False)
+        second = decoder._take_new_tokens([1, 2, 3, 4], is_last=False)
+
+        assert first == ([1], "Caf")
+        assert second == ([2, 3, 4], "\u00e9 cr")
+        assert decoder._emitted_tokens == [1, 2, 3, 4]
+
+    def test_flushes_on_the_last_chunk(self):
+        decoder = self.make_decoder()
+
+        assert decoder._take_new_tokens([1, 2], is_last=True) == ([1, 2], "Caf\ufffd")
+
+
 class TestDecodeChunk:
     """Test streaming decode_chunk method."""
 
