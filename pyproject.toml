@@ -20,6 +20,7 @@ requires-python = ">=3.10"
 # Core dependencies
 dependencies = [
     "huggingface_hub>=1.0",
+    "jinja2>=3.1.6",
     "miniaudio>=1.71",
     "mlx==0.32.4",
     "numpy>=1.26.4",
@@ -27,7 +28,7 @@ dependencies = [
     "sentencepiece>=0.2.0",
     "sounddevice>=0.5.3",
     "tqdm>=4.67.1",
-    "transformers>=5.14.0",
+    "transformers[chat-template]>=5.14.0",
 ]
 
 [project.optional-dependencies]
