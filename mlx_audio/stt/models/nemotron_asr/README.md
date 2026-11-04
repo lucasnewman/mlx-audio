@@ -98,6 +98,8 @@ stripped from the returned text (Unified's vocabulary has no tag pieces).
 `generate(..., att_context_size=[left, right])` selects one of the trained
 look-aheads (`[56,3]`, `[56,0]`, `[56,6]`, `[56,13]`). The default `[56,13]`
 gives the best offline accuracy; smaller right contexts trade accuracy for lower latency.
+A streaming session takes the same choice as `transcription_delay_ms`, at
+`(right + 1) * 80` ms: `80`, `320`, `560` or `1120`.
 
 ## Architecture
 
