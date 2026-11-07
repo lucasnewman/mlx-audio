@@ -168,7 +168,7 @@ class FlowMatchingAudioTransformer(nn.Module):
         llm_output: mx.array,
     ) -> mx.array:
         """Predict velocity field for one Euler step."""
-        time_emb = self.time_projection(self._time_embedding(t))
+        time_emb = self.time_projection(self._time_embedding(t).astype(x_t.dtype))
         llm_emb = self.llm_projection(llm_output)
         acoustic_emb = self.input_projection(x_t)
 
@@ -206,7 +206,9 @@ class FlowMatchingAudioTransformer(nn.Module):
 
         # Euler integration with linspace(0, 1, n_steps) timesteps
         # Loop runs n_steps-1 iterations (steps 0..6 for 8 timesteps)
-        x_t = mx.random.normal((B, args.n_acoustic_codebook)) * args.sigma_max
+        x_t = (mx.random.normal((B, args.n_acoustic_codebook)) * args.sigma_max).astype(
+            llm_output.dtype
+        )
         n_steps = args.n_denoising_steps
         timesteps = [i / (n_steps - 1) for i in range(n_steps)]
 
