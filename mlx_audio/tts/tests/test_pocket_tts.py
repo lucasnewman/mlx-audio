@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from unittest.mock import patch
@@ -26,6 +27,7 @@ from mlx_audio.tts.models.pocket_tts.convert import (
     load_source_weights,
 )
 from mlx_audio.tts.models.pocket_tts.flow_lm import FlowLMModel, lsd_decode
+from mlx_audio.tts.models.pocket_tts.pocket_tts import split_into_best_sentences
 from mlx_audio.tts.models.pocket_tts.weights import _seanet_names
 
 
@@ -729,3 +731,49 @@ def test_conversion_preserves_assets_and_packed_weights(config, tmp_path, conver
         assert layer.weight.dtype == mx.uint32
         assert (layer.bits, layer.group_size) == (8, 32)
     assert loaded.flow_lm.conditioner.prepare("Hello world").tokens.shape == (1, 2)
+
+
+class CharTokenizer:
+    """One token per character, with a space kept on the character after it,
+    as SentencePiece keeps it on the next word."""
+
+    def __init__(self):
+        self.pieces = []
+
+    def __call__(self, text):
+        ids = []
+        for piece in re.findall(r"\s?\S", text):
+            if piece not in self.pieces:
+                self.pieces.append(piece)
+            ids.append(self.pieces.index(piece))
+        return TokenizedText(mx.array(ids, dtype=mx.int32)[None, :])
+
+    def decode(self, tokens):
+        return "".join(self.pieces[token] for token in tokens).lstrip()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "It costs 3.14 dollars today.",
+        "We paid $822.95 for the new chairs.",
+        "Read the guide at www.kyutai.org first.",
+        "Write to jo@icloud.com before noon.",
+        "Bring a tool, e.g. a hammer or a saw.",
+        "We start at 4 p.m. on the first day.",
+    ],
+)
+def test_split_keeps_periods_inside_numbers_and_words(text):
+    assert split_into_best_sentences(CharTokenizer(), text) == [text]
+
+
+def test_split_does_not_end_a_chunk_after_a_title():
+    text = "We will meet the new doctor at noon, Dr. Miller from the clinic."
+    assert split_into_best_sentences(CharTokenizer(), text) == [text]
+
+
+def test_split_still_ends_sentences_at_periods():
+    assert split_into_best_sentences(
+        CharTokenizer(),
+        "I counted to 3. 14 people were there. They all stayed until the end.",
+    ) == ["I counted to 3. 14 people were there.", "They all stayed until the end."]

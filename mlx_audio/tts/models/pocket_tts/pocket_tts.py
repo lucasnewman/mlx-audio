@@ -624,6 +624,35 @@ def prepare_text_prompt(text: str) -> tuple[str, int]:
     return text, frames_after_eos_guess
 
 
+# Abbreviations that always precede a name or an example, never end a sentence.
+_TITLES = {"Mr.", "Mrs.", "Ms.", "Dr.", "Prof.", "Rev.", "vs.", "e.g.", "i.e."}
+
+
+def _is_inner_punctuation(
+    list_of_tokens: list[int], segment_start_idx: int, tokenizer
+) -> bool:
+    """Return True when the punctuation right before segment_start_idx does not
+    end a sentence: it is followed by a letter or digit without a space ("3.14",
+    "4 p.m.", "www.kyutai.org", "jo@icloud.com"), or it ends a title that
+    precedes a name ("Dr. Miller", "e.g. this"), as in pocket-tts.
+
+    Only the tokens next to the boundary are decoded. Decoding the period
+    together with the next token keeps the space between them: in "I counted
+    to 3. 14 people were there." the period ends a sentence.
+    """
+    after = tokenizer.decode(
+        list_of_tokens[segment_start_idx - 1 : segment_start_idx + 1]
+    )
+    if len(after) >= 2 and after[1].isalnum():
+        return True
+    window_start = max(0, segment_start_idx - 6)
+    words = tokenizer.decode(list_of_tokens[window_start:segment_start_idx]).split()
+    # The first word of the window may be cut, unless the window starts the text.
+    return (
+        bool(words) and words[-1] in _TITLES and (len(words) > 1 or window_start == 0)
+    )
+
+
 def split_into_best_sentences(tokenizer, text_to_generate: str) -> list[str]:
     text_to_generate, _ = prepare_text_prompt(text_to_generate)
     text_to_generate = text_to_generate.strip()
@@ -639,7 +668,9 @@ def split_into_best_sentences(tokenizer, text_to_generate: str) -> list[str]:
         if token in end_of_sentence_tokens:
             previous_was_end_of_sentence_token = True
         else:
-            if previous_was_end_of_sentence_token:
+            if previous_was_end_of_sentence_token and not _is_inner_punctuation(
+                list_of_tokens, token_idx, tokenizer
+            ):
                 end_of_sentences_indices.append(token_idx)
             previous_was_end_of_sentence_token = False
     end_of_sentences_indices.append(len(list_of_tokens))
