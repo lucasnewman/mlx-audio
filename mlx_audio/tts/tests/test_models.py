@@ -2409,6 +2409,30 @@ class TestSoprano(unittest.TestCase):
         self.assertEqual(clean_text("The 21st lap."), "the twenty first lap.")
         self.assertEqual(clean_text("It is 10K."), "it is ten thousand.")
 
+    def test_phone_numbers(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        # Phone numbers are read digit by digit in three groups, as in Soprano's
+        # reference normalizer, instead of as three large numbers.
+        self.assertEqual(
+            clean_text("Call 555-123-4567 now."),
+            "call five five five, one two three, four five six seven now.",
+        )
+        self.assertEqual(
+            clean_text("Call (415) 555-0123 today."),
+            "call four one five, five five five, zero one two three today.",
+        )
+        self.assertEqual(
+            clean_text("Fax 555.123.4567."),
+            "fax five five five, one two three, four five six seven.",
+        )
+        # Digits inside a longer number are not a phone number.
+        self.assertEqual(
+            clean_text("Order 12345 678 9012 shipped."),
+            "order twelve thousand three hundred forty five six hundred seventy eight"
+            " nine thousand twelve shipped.",
+        )
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations
