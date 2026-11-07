@@ -350,10 +350,14 @@ class MiMoAudioMLX(nn.Module):
         # Mark speech positions (where text token is empty)
         is_speech = text_input_ids == self.config.empty_idx  # [B, T_groups]
 
+        # ── Text embeddings ──
+        text_embeds = self.model.embed_tokens(text_input_ids)  # [B, T_groups, 4096]
+
         # Speech embeddings: sum across audio channels
+        dtype = text_embeds.dtype
         speech_embeds = mx.zeros(
             (B, T_groups, group_size, self.config.input_local_dim),
-            dtype=mx.float32,
+            dtype=dtype,
         )
 
         for i in range(audio_c):
@@ -372,11 +376,11 @@ class MiMoAudioMLX(nn.Module):
             speech_embeds = speech_embeds + cur_embeds
 
         # Zero out non-speech positions
-        speech_embeds = speech_embeds * is_speech[:, :, None, None].astype(mx.float32)
+        speech_embeds = speech_embeds * is_speech[:, :, None, None].astype(dtype)
 
         # ── Input Local Transformer (full attention, group-wise) ──
         speech_embeds = self._apply_input_local_transformer(speech_embeds)
-        speech_embeds = speech_embeds * is_speech[:, :, None, None].astype(mx.float32)
+        speech_embeds = speech_embeds * is_speech[:, :, None, None].astype(dtype)
 
         # ── speech_group_downcast: flatten group_size dim → 4096 ──
         speech_grouped = speech_embeds.reshape(
@@ -385,9 +389,6 @@ class MiMoAudioMLX(nn.Module):
         speech_group_embeds = self.speech_group_downcast(
             speech_grouped
         )  # [B, T_groups, 4096]
-
-        # ── Text embeddings ──
-        text_embeds = self.model.embed_tokens(text_input_ids)  # [B, T_groups, 4096]
 
         # Zero out empty text positions
         text_zero_mask = text_input_ids == self.config.empty_idx
