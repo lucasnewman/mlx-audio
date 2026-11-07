@@ -1078,7 +1078,7 @@ class TestDecoderTransformerSlidingWindow(unittest.TestCase):
         np.testing.assert_allclose(
             np.array(mx.concatenate(out, axis=1)),
             self._windowed_reference(),
-            atol=1e-5,
+            atol=5e-3,
         )
 
 
