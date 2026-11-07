@@ -168,6 +168,7 @@ class Model(nn.Module):
 
         lt = LANGUAGE_TOKEN.get(lang, LANGUAGE_TOKEN["en"])
         ids = self._tok.encode(f"You are a helpful assistant. {lt}:{text}").ids
+        ids.append(self._tok.token_to_id("</s>"))
         cond_emb = self.prefix.cond_emb(cond_vec)
         text_emb = self.prefix.text_emb(mx.array([ids]))
         codes, latent = self.t2s.generate(
