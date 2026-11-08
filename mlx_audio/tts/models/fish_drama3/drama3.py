@@ -231,7 +231,7 @@ class Model(nn.Module):
     def _samples(self, audio: AudioInput) -> np.ndarray:
         """Mono samples at the codec rate. Arrays must be at that rate already.
         A file is read as fish-speech reads it: the channel mean, resampled with
-        torchaudio's default kernel. Another kernel changes the reference codes."""
+        torchaudio's default kernel."""
         if isinstance(audio, (str, Path)):
             from mlx_audio.utils import load_audio
 

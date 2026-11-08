@@ -196,8 +196,7 @@ def sinc_resample(
     Output sample ``k`` is row ``k % new`` of torchaudio's kernel applied to the
     padded input from ``floor(k * orig / new)`` on, with the reduced rates. Each
     row is zero outside ``2 * width + 1`` taps, so only those are gathered, one
-    chunk at a time. Memory follows the signal, also for rates such as 44099 Hz,
-    where torchaudio's dense kernel takes 7.8 GB.
+    chunk at a time. Memory follows the signal, also for rates such as 44099 Hz.
     """
     if orig_sample_rate == sample_rate:
         return waveform
@@ -209,8 +208,8 @@ def sinc_resample(
     width = math.ceil(_SINC_LOWPASS_FILTER_WIDTH * orig / base_freq)
     taps = 2 * width + 1
 
-    # torchaudio's t from the first tap of each row on, in float64. Its two
-    # terms nearly cancel: in float32, samples miss torchaudio by over 1e-6.
+    # torchaudio's t from the first tap of each row on, in float64, because its
+    # two terms nearly cancel.
     phases = np.arange(new)
     first = phases * orig // new
     t = (first[:, None] + np.arange(taps) - width) / orig - phases[:, None] / new
@@ -228,6 +227,6 @@ def sinc_resample(
         phase = k % new
         rows = padded[(k // new * orig + first[phase])[:, None] + offsets]
         chunks.append((rows * kernel[phase]).sum(axis=1))
-        # One chunk's gather at a time. Lazily, all chunks would coexist.
+        # Keeps one chunk's gather in memory at a time.
         mx.eval(chunks[-1])
     return mx.concatenate(chunks) if chunks else padded[:0]

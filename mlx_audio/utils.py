@@ -706,7 +706,7 @@ def load_audio(
         raise FileNotFoundError(f"Audio file not found: {audio}")
 
     if resampling_method == "sinc_interp_hann":
-        # A read cut at the file's rate would end the filter's input early.
+        # The filter needs input past the cut.
         if duration is not None:
             raise ValueError("duration is not supported with sinc_interp_hann")
         from mlx_audio.resample import sinc_resample
