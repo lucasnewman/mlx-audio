@@ -397,6 +397,7 @@ class T3(nn.Module):
                 logits = processor(tokens_for_penalty, logits)
 
             # Sample next token using the sampler (handles temperature, top_p, min_p)
+            logits = logits.astype(mx.float32)
             logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
             next_token = sampler(logprobs)
 

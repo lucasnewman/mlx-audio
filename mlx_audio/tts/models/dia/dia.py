@@ -27,6 +27,7 @@ def _sample_next_token(
     if temperature == 0.0:
         return mx.argmax(logits_BCxV, axis=-1)
 
+    logits_BCxV = logits_BCxV.astype(mx.float32)
     logprobs_BCxV = logits_BCxV - mx.logsumexp(logits_BCxV, axis=-1, keepdims=True)
     return sampler(logprobs_BCxV)
 

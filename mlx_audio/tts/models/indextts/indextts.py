@@ -399,7 +399,7 @@ class Model(nn.Module):
             hidden_states = self.final_norm(hidden_states)
 
             latent_states.append(hidden_states[:, -1:, :])
-            mel_logits = self.mel_head(hidden_states[:, -1:, :])
+            mel_logits = self.mel_head(hidden_states[:, -1:, :]).astype(mx.float32)
             mel_logprobs = mel_logits - mx.logsumexp(mel_logits, axis=-1, keepdims=True)
             next_token = sampler(mel_logprobs)
 
