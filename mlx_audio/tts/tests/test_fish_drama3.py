@@ -416,7 +416,8 @@ class TestGeneration(unittest.TestCase):
         self.assertTrue(mx.allclose(result.audio, expected, atol=1e-5).item())
 
     def decode_peak(self, codes: list[mx.array]) -> int:
-        """Bytes one chunk's decode adds to MLX's active memory at its peak."""
+        """Bytes one chunk's decode adds to MLX's active memory at its peak,
+        minus the size of the audio it returns."""
         peaks = []
         # A busy machine returns freed buffers late or hands out cached ones up to
         # twice the size asked for, which only ever raises a peak: keep the least.
@@ -428,8 +429,10 @@ class TestGeneration(unittest.TestCase):
             mx.clear_cache()
             before = mx.get_active_memory()
             mx.reset_peak_memory()
-            self.model._result(codes, 0, 0.0, False, True)
-            peaks.append(mx.get_peak_memory() - before)
+            result = self.model._result(codes, 0, 0.0, False, True)
+            # Decoded pieces stay alive until the last one. Their audio grows with
+            # the chunk by design, 57 KB for 1792 frames, so it is left out.
+            peaks.append(mx.get_peak_memory() - before - result.audio.nbytes)
         return min(peaks)
 
     def test_a_long_chunk_decodes_in_a_fraction_of_one_codec_call(self):
@@ -454,7 +457,7 @@ class TestGeneration(unittest.TestCase):
         module = "mlx_audio.tts.models.fish_drama3.drama3"
         with patch(f"{module}.DECODE_FRAMES", 8):
             short, long = decode_peak(56), decode_peak(1792)
-        # Measured: 1.2 to 1.5 with each piece evaluated, 4 to 5 when all pieces
+        # Measured: 1.0 to 1.7 with each piece evaluated, 2.4 to 5 when all pieces
         # form one lazy graph.
         self.assertLess(long, 2 * short)
 
