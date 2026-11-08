@@ -400,8 +400,8 @@ class Model(nn.Module):
 
             latent_states.append(hidden_states[:, -1:, :])
             mel_logits = self.mel_head(hidden_states[:, -1:, :])
-
-            next_token = sampler(mel_logits)
+            mel_logprobs = mel_logits - mx.logsumexp(mel_logits, axis=-1, keepdims=True)
+            next_token = sampler(mel_logprobs)
 
             if next_token.item() == self.args.gpt.stop_mel_token:
                 break

@@ -343,7 +343,10 @@ class Model(nn.Module):
             if temperature == 0:
                 next_token = mx.argmax(next_logits, axis=-1, keepdims=True)
             else:
-                next_token = sampler(next_logits)
+                logprobs = next_logits - mx.logsumexp(
+                    next_logits, axis=-1, keepdims=True
+                )
+                next_token = sampler(logprobs)
                 if next_token.ndim == 1:
                     next_token = next_token[:, None]
 

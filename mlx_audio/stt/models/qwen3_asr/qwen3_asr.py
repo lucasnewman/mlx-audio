@@ -1178,7 +1178,9 @@ class Qwen3ASRModel(nn.Module):
                     processed.append(sample_logits)
                 return mx.concatenate(processed, axis=0)
 
-            y = sampler(apply_logits_processors(logits[:, -1, :]))
+            logits = apply_logits_processors(logits[:, -1, :])
+            logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+            y = sampler(logprobs)
             mx.async_eval(y)
 
             out_ids = [[] for _ in range(bsz)]
@@ -1199,7 +1201,11 @@ class Qwen3ASRModel(nn.Module):
                 next_logits = self._forward_with_embeds(
                     self.model.embed_tokens(y[:, None]), cache
                 )
-                next_y = sampler(apply_logits_processors(next_logits[:, -1, :]))
+                next_logits = apply_logits_processors(next_logits[:, -1, :])
+                next_logprobs = next_logits - mx.logsumexp(
+                    next_logits, axis=-1, keepdims=True
+                )
+                next_y = sampler(next_logprobs)
                 mx.async_eval(next_y)
 
                 current_tokens = y.tolist()

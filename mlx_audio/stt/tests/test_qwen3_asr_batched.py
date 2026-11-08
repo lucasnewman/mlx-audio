@@ -126,13 +126,15 @@ class TestBatchedGeneration(unittest.TestCase):
         )
         histories = []
         processed_logits = []
+        prob_sums = []
 
         def record_history(tokens, logits):
             histories.append(tokens.tolist())
-            return logits + len(histories)
+            return logits + len(histories) * mx.arange(logits.shape[-1])
 
-        def sample(logits):
-            processed_logits.append(logits[:, 0].tolist())
+        def sample(logprobs):
+            prob_sums.append(mx.exp(logprobs).sum(axis=-1).tolist())
+            processed_logits.append((logprobs[:, 0] - logprobs[:, 1]).tolist())
             return next(sampler_outputs)
 
         model._generate_chunks_batched(
@@ -150,7 +152,12 @@ class TestBatchedGeneration(unittest.TestCase):
             histories,
             [[0], [0], [0, 10], [0, 20], [0, 10, 11], [0, 20, 21]],
         )
-        self.assertEqual(processed_logits, [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        self.assertEqual(processed_logits, [[-1.0, -2.0], [-3.0, -4.0], [-5.0, -6.0]])
+        for row_sums in prob_sums:
+            self.assertTrue(
+                np.allclose(row_sums, 1.0, atol=1e-4),
+                f"sampler input is not normalized log-probs: {row_sums}",
+            )
 
     def test_batched_repetition_penalty_matches_single_generation(self):
         model = self.make_minimal_model()
