@@ -245,7 +245,7 @@ def create_voice_clone_prompt(
         return mx.zeros((0, 8), dtype=mx.int32)
 
     from mlx_audio.audio_io import read as audio_read
-    from mlx_audio.codec.models.higgs_audio.higgs_audio import _sinc_resample
+    from mlx_audio.resample import sinc_resample
 
     path = Path(ref_audio_path)
     if not path.exists():
@@ -255,7 +255,7 @@ def create_voice_clone_prompt(
     mono = audio.mean(axis=1).astype(np.float32)
 
     if sr != 24000:
-        mono = _sinc_resample(mono, sr, 24000)
+        mono = np.array(sinc_resample(mx.array(mono), sr, 24000))
     sr = 24000
 
     if preprocess:
