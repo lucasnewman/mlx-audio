@@ -10,6 +10,7 @@ import mlx.nn as nn
 import numpy as np
 from mlx.utils import tree_flatten
 
+from mlx_audio.codec.models.fish_s1_dac import fish_s1_dac
 from mlx_audio.codec.tests.test_fish_s1_dac import _tiny_streaming_dac
 from mlx_audio.tts.models.fish_drama3 import Model, ModelConfig
 from mlx_audio.tts.models.fish_drama3.chunking import (
@@ -436,10 +437,24 @@ class TestGeneration(unittest.TestCase):
         return min(peaks)
 
     def test_a_long_chunk_decodes_in_a_fraction_of_one_codec_call(self):
+        def step_evaluated(layer: nn.Module, x: mx.array) -> mx.array:
+            y = step(layer, x)
+            mx.eval(y)
+            return y
+
         def decode_peak(frames_per_call: int) -> int:
-            with patch(f"{module}.DECODE_FRAMES", frames_per_call):
+            with (
+                patch(f"{module}.DECODE_FRAMES", frames_per_call),
+                # One call's peak also holds the buffers of every GPU command
+                # buffer still in flight: 340 KB to 1.1 MB for 56 frames,
+                # lowest when a busy CPU lets the GPU catch up. Evaluating each
+                # codec layer on its own leaves one layer in flight, so the peak
+                # is the working set: 186 to 259 KB.
+                patch.object(fish_s1_dac, "_step", step_evaluated),
+            ):
                 return self.decode_peak(codes)
 
+        step = fish_s1_dac._step
         mx.random.seed(17)
         codes = list(mx.random.randint(0, TOWER_VOCAB, (56, 3)))
         mx.eval(codes)
