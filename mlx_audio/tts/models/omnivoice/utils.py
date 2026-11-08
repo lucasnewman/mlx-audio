@@ -244,19 +244,16 @@ def create_voice_clone_prompt(
     if tokenizer is None:
         return mx.zeros((0, 8), dtype=mx.int32)
 
-    from mlx_audio.audio_io import read as audio_read
-    from mlx_audio.resample import sinc_resample
+    from mlx_audio.utils import load_audio
 
     path = Path(ref_audio_path)
     if not path.exists():
         raise FileNotFoundError(f"Reference audio not found: {ref_audio_path}")
 
-    audio, sr = audio_read(str(path), dtype="float32", always_2d=True)
-    mono = audio.mean(axis=1).astype(np.float32)
-
-    if sr != 24000:
-        mono = np.array(sinc_resample(mx.array(mono), sr, 24000))
     sr = 24000
+    mono = np.array(
+        load_audio(str(path), sample_rate=sr, resampling_method="sinc_interp_hann")
+    )
 
     if preprocess:
         rms = np.sqrt(np.mean(mono**2))
