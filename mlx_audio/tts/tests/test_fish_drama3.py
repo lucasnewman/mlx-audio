@@ -10,6 +10,7 @@ import mlx.nn as nn
 import numpy as np
 from mlx.utils import tree_flatten
 
+from mlx_audio.codec.models.fish_s1_dac import fish_s1_dac
 from mlx_audio.codec.tests.test_fish_s1_dac import _tiny_streaming_dac
 from mlx_audio.tts.models.fish_drama3 import Model, ModelConfig
 from mlx_audio.tts.models.fish_drama3.chunking import (
@@ -416,7 +417,8 @@ class TestGeneration(unittest.TestCase):
         self.assertTrue(mx.allclose(result.audio, expected, atol=1e-5).item())
 
     def decode_peak(self, codes: list[mx.array]) -> int:
-        """Bytes one chunk's decode adds to MLX's active memory at its peak."""
+        """Bytes one chunk's decode adds to MLX's active memory at its peak,
+        minus the size of the audio it returns."""
         peaks = []
         # A busy machine returns freed buffers late or hands out cached ones up to
         # twice the size asked for, which only ever raises a peak: keep the least.
@@ -428,15 +430,31 @@ class TestGeneration(unittest.TestCase):
             mx.clear_cache()
             before = mx.get_active_memory()
             mx.reset_peak_memory()
-            self.model._result(codes, 0, 0.0, False, True)
-            peaks.append(mx.get_peak_memory() - before)
+            result = self.model._result(codes, 0, 0.0, False, True)
+            # Decoded pieces stay alive until the last one. Their audio grows with
+            # the chunk by design, 57 KB for 1792 frames, so it is left out.
+            peaks.append(mx.get_peak_memory() - before - result.audio.nbytes)
         return min(peaks)
 
     def test_a_long_chunk_decodes_in_a_fraction_of_one_codec_call(self):
+        def step_evaluated(layer: nn.Module, x: mx.array) -> mx.array:
+            y = step(layer, x)
+            mx.eval(y)
+            return y
+
         def decode_peak(frames_per_call: int) -> int:
-            with patch(f"{module}.DECODE_FRAMES", frames_per_call):
+            with (
+                patch(f"{module}.DECODE_FRAMES", frames_per_call),
+                # One call's peak also holds the buffers of every GPU command
+                # buffer still in flight: 340 KB to 1.1 MB for 56 frames,
+                # lowest when a busy CPU lets the GPU catch up. Evaluating each
+                # codec layer on its own leaves one layer in flight, so the peak
+                # is the working set: 186 to 259 KB.
+                patch.object(fish_s1_dac, "_step", step_evaluated),
+            ):
                 return self.decode_peak(codes)
 
+        step = fish_s1_dac._step
         mx.random.seed(17)
         codes = list(mx.random.randint(0, TOWER_VOCAB, (56, 3)))
         mx.eval(codes)
@@ -454,7 +472,7 @@ class TestGeneration(unittest.TestCase):
         module = "mlx_audio.tts.models.fish_drama3.drama3"
         with patch(f"{module}.DECODE_FRAMES", 8):
             short, long = decode_peak(56), decode_peak(1792)
-        # Measured: 1.2 to 1.5 with each piece evaluated, 4 to 5 when all pieces
+        # Measured: 1.0 to 1.7 with each piece evaluated, 2.4 to 5 when all pieces
         # form one lazy graph.
         self.assertLess(long, 2 * short)
 
