@@ -62,4 +62,6 @@ Add `--quantize int8` (or `int4`) to quantize the T2S body matmuls.
   `convert.py` for weight conversion.
 - Reference audio is decoded and resampled to 16 kHz mono internally via the
   repo's audio I/O and resampling utilities.
+- Long text is split at sentence punctuation into segments of about 80 tokens,
+  synthesized one by one and joined into a single result.
 ```
