@@ -32,7 +32,7 @@ def _att_context_for_delay(model, delay_ms):
             f"Unsupported transcription_delay_ms={delay_ms}; "
             f"expected one of {sorted(delays)}"
         )
-    return list(delays[delay_ms])
+    return delays[delay_ms]
 
 
 class NemotronStreamingSession:

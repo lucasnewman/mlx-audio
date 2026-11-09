@@ -100,16 +100,26 @@ def test_rejects_untrained_transcription_delay():
         m.create_streaming_session(transcription_delay_ms=240)
 
 
+def nemotron_35_model():
+    # The mlx-community Nemotron 3.5 conversions use model_type "nemotron_asr".
+    m = model()
+    m.encoder_config.att_context_size = [[56, 3], [56, 0], [56, 6], [56, 13]]
+    return m
+
+
 @pytest.mark.parametrize(
     ("delay_ms", "lookahead"), [(80, 0), (320, 3), (560, 6), (1120, 13)]
 )
 def test_nemotron_35_transcription_delay_modes(delay_ms, lookahead):
-    # The mlx-community Nemotron 3.5 conversions use model_type "nemotron_asr".
-    m = model()
-    m.encoder_config.att_context_size = [[56, 3], [56, 0], [56, 6], [56, 13]]
-    session = m.create_streaming_session(transcription_delay_ms=delay_ms)
+    session = nemotron_35_model().create_streaming_session(
+        transcription_delay_ms=delay_ms
+    )
     assert session.att_context_size == [56, lookahead]
     assert session._encoder.chunk_mel == 8 * (lookahead + 1)
+
+
+def test_nemotron_35_rejects_untrained_delay():
+    m = nemotron_35_model()
     with pytest.raises(ValueError, match="expected one of \\[80, 320, 560, 1120\\]"):
         m.create_streaming_session(transcription_delay_ms=160)
 
