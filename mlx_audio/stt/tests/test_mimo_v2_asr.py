@@ -145,3 +145,38 @@ def test_audio_encoder_sanitize_preserves_bias_free_keys():
     }
     assert weights["layers.0.self_attn.k_proj.weight"] is projection
     assert mx.array_equal(weights["conv1.weight"], conv.transpose(0, 2, 1))
+
+
+def test_input_embeds_keep_the_language_model_dtype():
+    from mlx.utils import tree_map
+
+    from mlx_audio.stt.models.mimo_v2_asr.model import MiMoAudioMLX
+
+    config = MiMoAudioConfig(
+        vocab_size=32,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        audio_channels=2,
+        group_size=2,
+        speech_vocab_size="8-8",
+        speech_zeroemb_idx="7-7",
+        delay_pattern=[0, 1],
+        input_local_layers=1,
+        input_local_dim=8,
+        input_local_attn_heads=2,
+        input_local_head_dim=4,
+        input_local_intermediate_size=16,
+        local_layers=1,
+        local_dim=8,
+        local_attn_heads=2,
+        local_ffn_dim=16,
+        out_hidden_size=8,
+        empty_idx=31,
+    )
+    model = MiMoAudioMLX(config)
+    model.update(tree_map(lambda p: p.astype(mx.bfloat16), model.parameters()))
+    input_ids = mx.array([[[31, 31, 5, 5], [1, 2, 7, 7], [3, 0, 7, 7]]], dtype=mx.int32)
+    assert model._prepare_input_embeds(input_ids).dtype == mx.bfloat16
