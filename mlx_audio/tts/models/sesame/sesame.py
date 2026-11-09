@@ -373,8 +373,9 @@ class SesameModel(nn.Module):
         h = self.backbone(h, cache=self.backbone_cache)
 
         last_h = h[:, -1, :]
-        c0_logits = self.codebook0_head(last_h)
-        c0_sample = mx.expand_dims(sampler(c0_logits), axis=-1)
+        c0_logits = self.codebook0_head(last_h).astype(mx.float32)
+        c0_logprobs = c0_logits - mx.logsumexp(c0_logits, axis=-1, keepdims=True)
+        c0_sample = mx.expand_dims(sampler(c0_logprobs), axis=-1)
         c0_embed = self._embed_audio(0, c0_sample)
 
         curr_h = mx.concat([mx.expand_dims(last_h, 1), c0_embed], axis=1)
@@ -393,8 +394,11 @@ class SesameModel(nn.Module):
                 cache=self.decoder_cache,
             )
 
-            ci_logits = mx.matmul(decoder_h[:, -1, :], self.audio_head[i - 1])
-            ci_sample = mx.expand_dims(sampler(ci_logits), axis=-1)
+            ci_logits = mx.matmul(decoder_h[:, -1, :], self.audio_head[i - 1]).astype(
+                mx.float32
+            )
+            ci_logprobs = ci_logits - mx.logsumexp(ci_logits, axis=-1, keepdims=True)
+            ci_sample = mx.expand_dims(sampler(ci_logprobs), axis=-1)
             ci_embed = self._embed_audio(i, ci_sample)
 
             curr_h = ci_embed

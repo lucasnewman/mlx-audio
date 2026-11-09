@@ -7,7 +7,7 @@ import mlx.nn as nn
 import numpy as np
 
 from mlx_audio.lm.generate import generate_step
-from mlx_audio.lm.sample_utils import make_logits_processors
+from mlx_audio.lm.sample_utils import apply_top_p, make_logits_processors, make_sampler
 from mlx_audio.stt.models.base import STTOutput
 from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel, _rope_safe
 
@@ -126,13 +126,15 @@ class TestBatchedGeneration(unittest.TestCase):
         )
         histories = []
         processed_logits = []
+        prob_sums = []
 
         def record_history(tokens, logits):
             histories.append(tokens.tolist())
-            return logits + len(histories)
+            return logits + len(histories) * mx.arange(logits.shape[-1])
 
-        def sample(logits):
-            processed_logits.append(logits[:, 0].tolist())
+        def sample(logprobs):
+            prob_sums.append(mx.exp(logprobs).sum(axis=-1).tolist())
+            processed_logits.append((logprobs[:, 0] - logprobs[:, 1]).tolist())
             return next(sampler_outputs)
 
         model._generate_chunks_batched(
@@ -150,7 +152,79 @@ class TestBatchedGeneration(unittest.TestCase):
             histories,
             [[0], [0], [0, 10], [0, 20], [0, 10, 11], [0, 20, 21]],
         )
-        self.assertEqual(processed_logits, [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        self.assertEqual(processed_logits, [[-1.0, -2.0], [-3.0, -4.0], [-5.0, -6.0]])
+        for row_sums in prob_sums:
+            self.assertTrue(
+                np.allclose(row_sums, 1.0, atol=1e-4),
+                f"sampler input is not normalized log-probs: {row_sums}",
+            )
+
+    def test_batched_greedy_preserves_reduced_precision_argmax(self):
+        for dtype in (mx.float16, mx.bfloat16):
+            with self.subTest(dtype=dtype):
+                model = self.make_minimal_model()
+                logits = mx.zeros((2, 1, 128), dtype=dtype)
+                logits[0, 0, 10] = 0.001
+                logits[1, 0, 20] = 0.001
+                model.lm_head = lambda hidden: logits
+                model._forward_with_embeds = Mock(
+                    return_value=mx.roll(logits, shift=1, axis=-1)
+                )
+
+                texts, gen_tokens, _, _ = model._generate_chunks_batched(
+                    [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
+                    max_tokens=4,
+                    sampler=make_sampler(temp=0),
+                    logits_processors=None,
+                    language="en",
+                    system_prompt=None,
+                    batch_size=2,
+                    verbose=False,
+                )
+
+                self.assertEqual(texts, ["10 11", "20 21"])
+                self.assertEqual(gen_tokens, [2, 2])
+
+    def test_batched_reduced_precision_nucleus_survives_normalization(self):
+        for dtype in (mx.float16, mx.bfloat16):
+            with self.subTest(dtype=dtype):
+                model = self.make_minimal_model()
+                logits = mx.full((2, 1, 128), -mx.inf, dtype=dtype)
+                logits[0, 0, 9:13] = mx.array([29, 32, 31, 30], dtype=dtype)
+                logits[1, 0, 19:23] = mx.array([29, 32, 31, 30], dtype=dtype)
+                model.lm_head = lambda hidden: logits
+                model._forward_with_embeds = Mock(
+                    return_value=mx.roll(logits, shift=1, axis=-1)
+                )
+                sampler = make_sampler(temp=0.3, top_p=0.05)
+
+                def sample(logprobs):
+                    self.assertTrue(
+                        mx.allclose(
+                            mx.exp(logprobs).sum(axis=-1),
+                            mx.ones(logprobs.shape[:-1]),
+                            atol=1e-5,
+                        ).item()
+                    )
+                    filtered = apply_top_p(logprobs, top_p=0.05)
+                    self.assertEqual(
+                        mx.isfinite(filtered).sum(axis=-1).tolist(), [1, 1]
+                    )
+                    return sampler(logprobs)
+
+                texts, gen_tokens, _, _ = model._generate_chunks_batched(
+                    [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
+                    max_tokens=4,
+                    sampler=sample,
+                    logits_processors=None,
+                    language="en",
+                    system_prompt=None,
+                    batch_size=2,
+                    verbose=False,
+                )
+
+                self.assertEqual(texts, ["10 11", "20 21"])
+                self.assertEqual(gen_tokens, [2, 2])
 
     def test_batched_repetition_penalty_matches_single_generation(self):
         model = self.make_minimal_model()

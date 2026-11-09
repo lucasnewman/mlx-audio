@@ -27,8 +27,9 @@ def _sample_next_token(
     if temperature == 0.0:
         return mx.argmax(logits_BCxV, axis=-1)
 
-    sampled = sampler(logits_BCxV)
-    return sampled
+    logits_BCxV = logits_BCxV.astype(mx.float32)
+    logprobs_BCxV = logits_BCxV - mx.logsumexp(logits_BCxV, axis=-1, keepdims=True)
+    return sampler(logprobs_BCxV)
 
 
 class Model(nn.Module):
@@ -45,6 +46,7 @@ class Model(nn.Module):
         self.config = DiaConfig.load_dict(config)
         self.model = DiaModel(self.config)
         self.dac_model = DAC.from_pretrained("mlx-community/descript-audio-codec-44khz")
+        self.generate_config = {"temperature": 1.3, "top_p": 0.95}
 
     @classmethod
     def from_local(cls, config_path: str, checkpoint_path: str) -> "Dia":
@@ -262,6 +264,8 @@ class Model(nn.Module):
             audio, token_count = self._generate(
                 segment,
                 max_tokens=max_tokens,
+                temperature=temperature if temperature is not None else 1.3,
+                top_p=top_p if top_p is not None else 0.95,
                 ref_audio=ref_audio,
                 ref_text=ref_text,
             )

@@ -137,6 +137,8 @@ class DepthDecoder(nn.Module):
                     + self.level_emb.weight[level]
                 )
             h = self.run(x, group, memory, cache=cache)
-            codes.append(sampler(self.heads[level - 1](h).astype(mx.float32)))
+            logits = self.heads[level - 1](h).astype(mx.float32)
+            logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+            codes.append(sampler(logprobs))
             previous = group
         return mx.stack(codes, axis=1)

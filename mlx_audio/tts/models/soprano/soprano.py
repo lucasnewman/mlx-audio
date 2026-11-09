@@ -343,7 +343,12 @@ class Model(nn.Module):
             if temperature == 0:
                 next_token = mx.argmax(next_logits, axis=-1, keepdims=True)
             else:
-                next_token = sampler(next_logits)
+                # Normalize in float32 so rounding cannot empty the nucleus.
+                next_logits = next_logits.astype(mx.float32)
+                logprobs = next_logits - mx.logsumexp(
+                    next_logits, axis=-1, keepdims=True
+                )
+                next_token = sampler(logprobs)
                 if next_token.ndim == 1:
                     next_token = next_token[:, None]
 
