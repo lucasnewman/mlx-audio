@@ -280,8 +280,8 @@ async def _preflight_model_load(model_name: str) -> None:
 _STT_EXTRA_KWARGS = {"word_timestamps", "timestamp_granularities"}
 
 # Floor for max_tokens when the client does not send one. Models whose own
-# generate() default is larger (e.g. Qwen3-ASR's 8192, which is one budget for
-# every chunk of the file) keep that default, so long audio is not truncated.
+# generate() default is larger (e.g. Qwen3-ASR's 8192) keep that default, so
+# long audio is not truncated.
 _STT_MIN_DEFAULT_MAX_TOKENS = 1024
 
 
