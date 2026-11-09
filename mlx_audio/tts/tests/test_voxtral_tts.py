@@ -98,6 +98,46 @@ class TestVoxtralGenerationStart(unittest.TestCase):
         self.assertEqual(results[-1].samples, 2 * 1920)
 
 
+class TestVoxtralFlowDtype(unittest.TestCase):
+    def test_bfloat16_head_stays_bfloat16_through_decode_one_frame(self):
+        import mlx.core as mx
+        from mlx.utils import tree_map
+
+        from mlx_audio.tts.models.voxtral_tts.acoustic_head import (
+            AcousticTransformerArgs,
+            FlowMatchingAudioTransformer,
+        )
+
+        args = AcousticTransformerArgs(
+            input_dim=8,
+            dim=8,
+            n_layers=1,
+            head_dim=4,
+            hidden_dim=16,
+            n_heads=2,
+            n_kv_heads=1,
+            semantic_codebook_size=4,
+            acoustic_codebook_size=5,
+            n_acoustic_codebook=2,
+            n_denoising_steps=3,
+        )
+        head = FlowMatchingAudioTransformer(args)
+        head.update(tree_map(lambda p: p.astype(mx.bfloat16), head.parameters()))
+        predict_velocity = head._predict_velocity
+        dtypes = []
+
+        def recording_velocity(x_t, t, llm_output):
+            velocity = predict_velocity(x_t, t, llm_output)
+            dtypes.append(velocity.dtype)
+            return velocity
+
+        head._predict_velocity = recording_velocity
+        codes = head.decode_one_frame(mx.zeros((1, 8), dtype=mx.bfloat16))
+
+        self.assertEqual(codes.shape, (1, 3))
+        self.assertEqual(dtypes, [mx.bfloat16, mx.bfloat16])
+
+
 class TestVoxtralStreamingContext(unittest.TestCase):
     def test_streamed_chunks_match_offline_decode(self):
         import mlx.core as mx
