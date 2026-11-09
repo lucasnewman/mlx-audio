@@ -95,7 +95,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `top_p` | float | `0.95`* | Nucleus sampling threshold |
 | `top_k` | int | `40`* | Top-k sampling |
 | `repetition_penalty` | float | `1.0`* | Repetition penalty |
-| `max_tokens` | int | `1200` | Maximum generation tokens |
+| `max_tokens` | int | `null` | Maximum generation tokens. When omitted, the model's own default (for Qwen3-TTS, `max_new_tokens` from `generation_config.json`) |
 | `ref_audio` | string | `null` | Path to reference audio for voice cloning |
 | `ref_text` | string | `null` | Transcript of reference audio |
 | `instruct` | string | `null` | Style/emotion instruction |

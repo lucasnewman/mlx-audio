@@ -183,7 +183,7 @@ class SpeechRequest(BaseModel):
     response_format: str | None = "mp3"
     stream: bool = False
     streaming_interval: float = 2.0
-    max_tokens: int = 1200
+    max_tokens: int | None = None
     verbose: bool = False
 
 
@@ -467,6 +467,17 @@ def _resolve_sampling_params(model, speech_request: SpeechRequest) -> dict[str, 
     return params
 
 
+def _resolve_max_tokens(model, speech_request: SpeechRequest) -> dict[str, int]:
+    if speech_request.max_tokens is not None:
+        return {"max_tokens": speech_request.max_tokens}
+    generate_config = getattr(model, "generate_config", None)
+    if isinstance(generate_config, dict) and isinstance(
+        generate_config.get("max_new_tokens"), int
+    ):
+        return {"max_tokens": generate_config["max_new_tokens"]}
+    return {}
+
+
 class TTSExecutionAdapter(BaseModelExecutionAdapter):
     _REQUEST_MODEL_ATTR = "_mlx_audio_loaded_model"
 
@@ -489,7 +500,7 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
         model = self._get_model_for_request(request)
         return TTSBatchOptions(
             **_resolve_sampling_params(model, speech_request),
-            max_tokens=speech_request.max_tokens,
+            **_resolve_max_tokens(model, speech_request),
             lang_code=speech_request.lang_code,
             stream=speech_request.stream,
             streaming_interval=speech_request.streaming_interval,
@@ -676,7 +687,7 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             **_resolve_sampling_params(model, speech_request),
             "stream": speech_request.stream,
             "streaming_interval": speech_request.streaming_interval,
-            "max_tokens": speech_request.max_tokens,
+            **_resolve_max_tokens(model, speech_request),
             "verbose": speech_request.verbose,
         }
 
@@ -754,7 +765,7 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             # Requests in one batch share a batch_key, so they resolve alike.
             **_resolve_sampling_params(model, first_speech_request),
             "lang_code": first_speech_request.lang_code,
-            "max_tokens": first_speech_request.max_tokens,
+            **_resolve_max_tokens(model, first_speech_request),
             "stream": False,
             "verbose": first_speech_request.verbose,
         }
