@@ -169,6 +169,8 @@ class T2SMLX:
             logits[g] = np.where(
                 logits[g] > 0, logits[g] / rep_pen, logits[g] * rep_pen
             )
+        if temperature <= 0:
+            return int(np.argmax(logits))
         logits = logits / temperature
         if top_k and top_k < logits.shape[0]:
             kth = np.partition(logits, -top_k)[-top_k]

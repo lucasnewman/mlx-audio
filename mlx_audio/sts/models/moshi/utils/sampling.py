@@ -80,12 +80,11 @@ def top_k_sampling(
         top_k (int): Top k tokens to sample from.
     """
     vocab_size = logprobs.shape[-1]
-    if not isinstance(top_k, int) or not (0 < top_k < vocab_size):
-        raise ValueError(
-            f"`top_k` has to be an integer in the (0, {vocab_size}] interval,"
-            f" but is {top_k}."
-        )
+    if not isinstance(top_k, int) or not 0 < top_k:
+        raise ValueError(f"`top_k` has to be a positive integer, but is {top_k}.")
     logprobs = logprobs * (1 / temperature)
+    if top_k >= vocab_size:
+        return mx.random.categorical(logprobs, axis=-1)
     mask_idx = mx.argpartition(-logprobs, kth=top_k - 1, axis=-1)[..., top_k:]
     masked_logprobs = mx.put_along_axis(
         logprobs, mask_idx, mx.array(-float("inf"), logprobs.dtype), axis=-1
@@ -145,8 +144,8 @@ class Sampler:
         if self.logit_bias:
             indices = mx.array(list(self.logit_bias.keys()))
             values = mx.array(list(self.logit_bias.values()))
-            logits[:, indices] += values
-        logprobs = logits - mx.logsumexp(logits)
+            logits = logits.at[:, indices].add(values)
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 
         if self.temp == 0:
             token = mx.argmax(logits, axis=-1)
