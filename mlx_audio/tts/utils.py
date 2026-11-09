@@ -17,6 +17,7 @@ from mlx_audio.utils import (
 )
 
 MODEL_REMAPPING = {
+    "zonos3_mini": "zonos3",
     "maya3": "maya2",
     "maya2": "maya2",
     "gradium_phonon_tts": "pocket_tts",
