@@ -18,7 +18,7 @@ from mlx_audio.stt.models.voxtral_realtime.config import (
 )
 from mlx_audio.stt.models.voxtral_realtime.voxtral_realtime import Model
 from mlx_audio.stt.streaming import StreamingSession
-from mlx_audio.stt.tests.test_nemotron_session import model as nemotron_model
+from mlx_audio.stt.tests.test_nemotron_session import model as tiny_nemotron
 
 
 def voxtral_model():
@@ -49,6 +49,13 @@ def voxtral_model():
     model.encoder.audio_language_projection_2 = nn.Linear(32, 32, bias=False)
     model._tokenizer = SimpleNamespace(decode=lambda tokens: "a" * len(tokens))
     model._next_token_mx = lambda logits, temperature: mx.array(3)
+    return model
+
+
+def nemotron_model():
+    model = tiny_nemotron()
+    # The contract opens sessions at 80 ms, so the checkpoint must list it.
+    model.encoder_config.att_context_size = [[56, 13], [56, 0]]
     return model
 
 
