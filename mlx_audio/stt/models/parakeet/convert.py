@@ -41,7 +41,7 @@ def convert(
     if source.resolve() == destination.resolve():
         raise ValueError("The output directory must differ from the source checkpoint.")
     model = load(source, strict=True)
-    if not isinstance(model, ParakeetRedux):
+    if not isinstance(model, ParakeetRedux) or not model._ternary_shapes:
         raise ValueError("This converter supports ternary Parakeet Redux checkpoints.")
     weights = dict(tree_flatten(model.parameters()))
     if dtype is not None:

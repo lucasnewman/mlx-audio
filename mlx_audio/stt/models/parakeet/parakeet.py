@@ -424,7 +424,7 @@ class Model(nn.Module):
     @classmethod
     def from_config(cls, config: dict):
         """Loads model from config (randomized weights)"""
-        if config.get("ternary_modules"):
+        if "encoder_config" in config and "durations" in config:
             from .redux import ParakeetRedux
 
             model = ParakeetRedux(config)

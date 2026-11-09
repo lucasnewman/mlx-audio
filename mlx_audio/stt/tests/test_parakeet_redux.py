@@ -153,6 +153,26 @@ def checkpoint(tmp_path):
     return source, config, weights
 
 
+@pytest.fixture
+def dense_checkpoint(checkpoint):
+    source, config, weights = checkpoint
+    rng = np.random.default_rng(13)
+    for name in config["ternary_modules"]:
+        scales = weights.pop(name + ".scales")
+        del weights[name + ".qweight"]
+        shape = (scales.shape[0], scales.shape[1] * 128)
+        if ".conv.pointwise_conv" in name:
+            shape += (1,)
+        weights[name + ".weight"] = mx.array(
+            rng.normal(0, 0.05, shape).astype(np.float32)
+        )
+    config = {k: v for k, v in config.items() if not k.startswith("ternary_")}
+    (source / "ternary.json").unlink()
+    (source / "config.json").write_text(json.dumps(config))
+    mx.save_safetensors(str(source / "model.safetensors"), weights)
+    return source, config, weights
+
+
 @pytest.mark.parametrize("width", [128, 256, 1024, 4096])
 def test_lossless_repacking_and_matmul(width):
     rng = np.random.default_rng(width)
@@ -333,4 +353,38 @@ def test_generic_converter_redirects_to_lossless_converter(checkpoint):
     assert detect_model_domain(config, path) == Domain.STT
     assert get_model_type(config, path, Domain.STT) == "parakeet"
     with pytest.raises(ValueError, match="mlx_audio.stt.models.parakeet.convert"):
+        prepare_config(config, path)
+
+
+def test_dense_hf_checkpoint_routes_to_hf_loader(dense_checkpoint):
+    path, config, weights = dense_checkpoint
+    model = load(path, strict=True)
+    assert isinstance(model, ParakeetRedux)
+    assert model._ternary_shapes == {}
+    conv = model.encoder.layers[0].conv.pointwise_conv1
+    assert isinstance(conv, nn.Conv1d)
+    np.testing.assert_array_equal(
+        conv.weight,
+        weights["encoder.layers.0.conv.pointwise_conv1.weight"].transpose(0, 2, 1),
+    )
+    np.testing.assert_array_equal(
+        model.encoder.layers[0].feed_forward1.linear1.weight,
+        weights["encoder.layers.0.feed_forward1.linear1.weight"],
+    )
+    features, _ = model.encoder(mx.random.normal((1, 8, 8)))
+    assert features.shape == (1, 4, 128)
+
+    del config["durations"]
+    (path / "config.json").write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="not supported"):
+        load(path)
+
+
+def test_dense_checkpoint_is_not_converted(dense_checkpoint, tmp_path):
+    from mlx_audio.stt.models.parakeet import prepare_config
+
+    path, config, _ = dense_checkpoint
+    with pytest.raises(ValueError, match="ternary"):
+        convert(str(path), str(tmp_path / "converted"))
+    with pytest.raises(ValueError, match="load directly"):
         prepare_config(config, path)
