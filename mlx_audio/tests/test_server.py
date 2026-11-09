@@ -1137,8 +1137,7 @@ def test_tts_speech_omitted_sampling_uses_model_generate_config(
         "top_k": 50,
         "repetition_penalty": 1.05,
     }
-    # Only the four sampling fields are resolved from the config.
-    assert kwargs["max_tokens"] == 1200
+    assert kwargs["max_tokens"] == 8192
 
 
 @pytest.mark.parametrize(
@@ -1263,6 +1262,7 @@ class _BatchTTSModel:
                 "top_p": top_p,
                 "top_k": top_k,
                 "repetition_penalty": repetition_penalty,
+                "max_tokens": max_tokens,
             }
         )
         for idx, _ in enumerate(texts):
@@ -1281,11 +1281,68 @@ def test_tts_run_batch_uses_generate_config():
     adapter.run_batch(requests)
 
     assert model.batch_calls == [
-        {"temperature": 0.9, "top_p": 1.0, "top_k": 50, "repetition_penalty": 1.05}
+        {
+            "temperature": 0.9,
+            "top_p": 1.0,
+            "top_k": 50,
+            "repetition_penalty": 1.05,
+            "max_tokens": 8192,
+        }
     ]
     for request in requests:
         kinds = [request.result_queue.get_nowait().kind for _ in range(2)]
         assert kinds == ["data", "done"]
+
+
+@pytest.mark.parametrize(
+    "generate_config, sent, expected",
+    [
+        (None, {}, None),
+        ({"temperature": 0.9}, {}, None),
+        (None, {"max_tokens": 300}, 300),
+        (dict(QWEN_GENERATE_CONFIG), {"max_tokens": 300}, 300),
+    ],
+)
+def test_tts_speech_max_tokens_defaults_to_the_model(
+    client, mock_model_provider, generate_config, sent, expected
+):
+    model = _tts_model_with_config(generate_config)
+    mock_model_provider.load_model = MagicMock(return_value=model)
+
+    payload = {"model": "other_tts", "input": "Hello", **sent}
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 200
+    _, kwargs = model.generate.call_args
+    assert kwargs.get("max_tokens") == expected
+
+
+def test_tts_continuous_batch_options_max_tokens():
+    from mlx_audio.server import TTSExecutionAdapter
+    from mlx_audio.tts.continuous import TTSBatchOptions
+
+    adapter = TTSExecutionAdapter()
+    qwen = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
+
+    options = adapter._build_batch_options(_tts_inference_request(qwen))
+    assert options.max_tokens == 8192
+    options = adapter._build_batch_options(_tts_inference_request(qwen, max_tokens=300))
+    assert options.max_tokens == 300
+
+    plain = adapter._build_batch_options(_tts_inference_request(MagicMock()))
+    assert plain.max_tokens == TTSBatchOptions().max_tokens
+
+
+def test_tts_run_batch_max_tokens():
+    from mlx_audio.server import TTSExecutionAdapter
+
+    adapter = TTSExecutionAdapter()
+
+    model = _BatchTTSModel(None)
+    adapter.run_batch([_tts_inference_request(model) for _ in range(2)])
+    adapter.run_batch([_tts_inference_request(model, max_tokens=300) for _ in range(2)])
+
+    assert [call["max_tokens"] for call in model.batch_calls] == [0, 300]
 
 
 def test_tts_batch_key_separates_omitted_from_sent_sampling():
