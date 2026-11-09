@@ -124,6 +124,15 @@ def test_nemotron_35_rejects_untrained_delay():
         m.create_streaming_session(transcription_delay_ms=160)
 
 
+def test_delay_uses_the_trained_left_context():
+    # Older conversions carry no default_att_context_size, so the model keeps
+    # its [56, 13] fallback while the checkpoint was trained with left 70.
+    m = model()
+    m.encoder_config.att_context_size = [[70, 13], [70, 6], [70, 1], [70, 0]]
+    session = m.create_streaming_session(transcription_delay_ms=160)
+    assert session.att_context_size == [70, 1]
+
+
 def test_cooperative_budget_and_decoder_state():
     session = model().create_streaming_session()
     session.feed(np.zeros(20000))
