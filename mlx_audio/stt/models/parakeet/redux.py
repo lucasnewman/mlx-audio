@@ -1,4 +1,4 @@
-"""Parakeet Redux: HF tensor names and lossless ternary-to-MLX repacking.
+"""HF-format Parakeet TDT: tensor names and Redux's ternary-to-MLX repacking.
 
 The source ``thrush-ternary-v2`` export stores five base-3 digits per byte.
 MLX's affine 2-bit format represents the same weights exactly with codes
@@ -176,7 +176,7 @@ def _model_args(config: dict, vocabulary: list[str]) -> ParakeetTDTArgs:
 
 
 class ParakeetRedux(ParakeetTDT):
-    """Ternary Parakeet with the standard mlx-audio transcription interface.
+    """HF-format Parakeet, dense or ternary, with the standard transcription interface.
 
     The auxiliary VAD head is not used. Long audio uses the existing explicit
     chunking/streaming interface, rather than Photon's VAD segmentation.
@@ -195,13 +195,15 @@ class ParakeetRedux(ParakeetTDT):
         vocabulary = _vocabulary(path, config["blank_token_id"])
         super().__init__(_model_args(config, vocabulary))
 
-        names = config["ternary_modules"]
-        if len(names) != len(set(names)) or config["ternary_group_size"] != 128:
+        names = config.get("ternary_modules", [])
+        if names and (
+            len(names) != len(set(names)) or config["ternary_group_size"] != 128
+        ):
             raise ValueError(
                 "Redux requires unique ternary modules with group size 128."
             )
         manifest = None
-        if self._weight_format == "thrush-ternary-v2":
+        if names and self._weight_format == "thrush-ternary-v2":
             manifest = json.loads((path / "ternary.json").read_text())
             if (
                 manifest.get("format") != "thrush-ternary-v2"

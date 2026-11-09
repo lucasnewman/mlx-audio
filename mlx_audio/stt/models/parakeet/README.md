@@ -7,7 +7,8 @@ supports 25 European languages with automatic language detection, punctuation,
 and capitalization.
 
 The family also supports Moondream's Parakeet Redux, a ternary version of
-Parakeet TDT v3 with the same language coverage.
+Parakeet TDT v3 with the same language coverage, and dense Parakeet TDT v3
+checkpoints in Hugging Face format, such as Parakeet Ultra and Orukeet.
 
 ## Supported Models
 
@@ -16,6 +17,8 @@ Parakeet TDT v3 with the same language coverage.
 | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) | English | Parakeet TDT v2 |
 | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) | 25 European languages | Multilingual Parakeet TDT v3 |
 | [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) | 25 European languages | Ternary encoder; approximately 217 MB of MLX weights |
+| [moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) | 25 European languages | Dense Hugging Face `ParakeetForTDT` export |
+| [oruk/orukeet](https://huggingface.co/oruk/orukeet) | 25 European languages | Dense Hugging Face `ParakeetForTDT` export; CC-BY-SA-4.0 |
 
 All listed repositories load directly with `mlx_audio.stt.load`. A local
 checkpoint directory can also be passed to `load`.
@@ -90,7 +93,7 @@ file extension.
 
 ## Supported Languages
 
-Parakeet TDT v3 and Redux support Bulgarian, Croatian, Czech, Danish, Dutch,
-English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian,
-Lithuanian, Maltese, Polish, Portuguese, Romanian, Russian, Slovak, Slovenian,
-Spanish, Swedish, and Ukrainian.
+Parakeet TDT v3, Redux, Ultra, and Orukeet support Bulgarian, Croatian, Czech,
+Danish, Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian,
+Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Russian,
+Slovak, Slovenian, Spanish, Swedish, and Ukrainian.
