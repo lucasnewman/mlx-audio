@@ -49,11 +49,14 @@ class Model(nn.Module):
 
         if self.is_non_streaming:
             self.language_model = Qwen2Model(decoder_config, use_norm=True)
-            self.lm_head = nn.Linear(
-                decoder_config.hidden_size,
-                decoder_config.vocab_size,
-                bias=False,
-            )
+            if not decoder_config.tie_word_embeddings:
+                self.lm_head = nn.Linear(
+                    decoder_config.hidden_size,
+                    decoder_config.vocab_size,
+                    bias=False,
+                )
+            else:
+                self.lm_head = None
 
             self.acoustic_tokenizer = AcousticTokenizer(
                 config.acoustic_tokenizer_config, include_encoder=True
@@ -497,6 +500,11 @@ class Model(nn.Module):
         """Get the token embedding layer."""
         return self.language_model.embed_tokens
 
+    def _lm_logits(self, hidden: mx.array) -> mx.array:
+        if self.lm_head is not None:
+            return self.lm_head(hidden)
+        return self.language_model.embed_tokens.as_linear(hidden)
+
     def sanitize(self, weights: dict) -> dict:
         """Sanitize weights for loading from HuggingFace format."""
         import re
@@ -801,7 +809,7 @@ class Model(nn.Module):
         generated_steps = 0
         for _ in range(max_steps):
             next_token_id = self._select_non_streaming_next_token(
-                self.lm_head(hidden[:, -1, :]),
+                self._lm_logits(hidden[:, -1, :]),
                 do_sample=do_sample,
                 temperature=temperature,
                 top_p=top_p,
@@ -857,7 +865,9 @@ class Model(nn.Module):
             if verbose and generated_steps % 20 == 0:
                 print(f"Generated {generated_steps}/{max_steps} control steps")
 
-        final_audio = mx.concatenate(audio_chunks) if audio_chunks else mx.array([])
+        final_audio = (
+            mx.concatenate(audio_chunks) if audio_chunks else mx.array([])
+        ).astype(mx.float32)
         mx.eval(final_audio)
         elapsed_time = time.perf_counter() - start_time
         samples = final_audio.size
