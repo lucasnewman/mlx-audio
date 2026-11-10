@@ -73,7 +73,9 @@ def snac_lm(module_path, start_of_speech, end_of_speech, audio_offset):
                 patch.object(
                     module,
                     "decode_audio_stream",
-                    lambda codes, prev, context_frames: (fake_snac_decode(codes), prev),
+                    lambda codes, start, end: fake_snac_decode(
+                        codes[start * 7 : end * 7]
+                    ),
                 )
             )
         yield model.generate
