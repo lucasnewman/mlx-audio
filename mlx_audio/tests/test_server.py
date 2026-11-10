@@ -3,6 +3,7 @@ import inspect
 import io
 import json
 import queue
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx2
@@ -140,6 +141,33 @@ def test_tts_speech(client, mock_model_provider):
         assert len(audio_data) > 0
     except Exception as e:
         pytest.fail(f"Failed to read or validate MP3 content: {e}")
+
+
+def test_tts_speech_releases_buffer_cache_after_request(
+    client, mock_model_provider, monkeypatch
+):
+    generated = threading.Event()
+    cleared = threading.Event()
+
+    def generate(input_text: str, **kwargs):
+        generated.set()
+        yield from sync_mock_audio_stream_generator(input_text, **kwargs)
+
+    def clear_cache():
+        if generated.is_set():
+            cleared.set()
+
+    mock_tts_model = MagicMock()
+    mock_tts_model.generate = generate
+    mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
+    monkeypatch.setattr(mx, "clear_cache", clear_cache)
+
+    response = client.post(
+        "/v1/audio/speech", json={"model": "test_tts_model", "input": "Hello world"}
+    )
+
+    assert response.status_code == 200
+    assert cleared.wait(timeout=5)
 
 
 def _hf_repo_not_found(model_name: str) -> RepositoryNotFoundError:
