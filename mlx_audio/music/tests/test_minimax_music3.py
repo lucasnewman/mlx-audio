@@ -44,6 +44,8 @@ def test_tiny_generation_returns_finite_stereo_audio() -> None:
     assert result.prompt["tokens-per-sec"] > 0
     assert result.audio_samples["samples"] == result.samples
     assert result.audio_samples["samples-per-sec"] > 0
+    with pytest.raises(ValueError, match="Lyrics are required"):
+        next(model.generate(text="Genre: acoustic pop."))
 
 
 @pytest.mark.parametrize(

@@ -194,7 +194,7 @@ class Model(nn.Module):
         self,
         text: str,
         *,
-        lyrics: str,
+        lyrics: str = "",
         duration: float | None = None,
         gen_duration: float | None = None,
         steps: int = 30,
