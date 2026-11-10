@@ -423,14 +423,12 @@ class ApplyTimestampRules(LogitFilter):
                 else:  # cannot be normal text tokens
                     mask[k, : self.tokenizer.eot] = -np.inf
 
-            timestamps = [
-                i for i, v in enumerate(seq) if v > self.tokenizer.timestamp_begin
-            ]
+            timestamps = [v for v in seq if v >= self.tokenizer.timestamp_begin]
             if len(timestamps) > 0:
                 # timestamps shouldn't decrease; forbid timestamp tokens smaller than the last
                 # also force each segment to have a nonzero length, to prevent infinite looping
                 last_timestamp = timestamps[-1]
-                if not last_timestamp or penultimate_was_timestamp:
+                if not last_was_timestamp or penultimate_was_timestamp:
                     last_timestamp += 1
                 mask[k, self.tokenizer.timestamp_begin : last_timestamp] = -np.inf
 
@@ -447,7 +445,8 @@ class ApplyTimestampRules(LogitFilter):
 
         # if sum of probability over timestamps is above any other token, sample timestamp
         mask = mx.array(mask)
-        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        masked_logits = logits + mask
+        logprobs = masked_logits - mx.logsumexp(masked_logits, axis=-1, keepdims=True)
         timestamp_logprob = logprobs[:, self.tokenizer.timestamp_begin :].logsumexp(
             axis=-1, keepdims=True
         )
