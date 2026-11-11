@@ -401,65 +401,56 @@ class ApplyTimestampRules(LogitFilter):
         self.max_initial_timestamp_index = max_initial_timestamp_index
 
     def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
-        mask = np.zeros(logits.shape, np.float32)
+        # Built from mx ops: reading tokens on the CPU would wait for the
+        # previous decoding step on every token.
+        timestamp_begin = self.tokenizer.timestamp_begin
+        token_ids = mx.arange(logits.shape[-1])
+        is_timestamp = token_ids >= timestamp_begin
+        blocked = mx.zeros(logits.shape, dtype=mx.bool_)
+
         # suppress <|notimestamps|> which is handled by without_timestamps
         if self.tokenizer.no_timestamps is not None:
-            mask[:, self.tokenizer.no_timestamps] = -np.inf
+            blocked = blocked | (token_ids == self.tokenizer.no_timestamps)
 
         ## timestamps have to appear in pairs, except directly before EOT; mask logits accordingly
-        tokens = tokens.tolist()
-        for k in range(len(tokens)):
-            seq = tokens[k][self.sample_begin :]
-            last_was_timestamp = (
-                len(seq) >= 1 and seq[-1] >= self.tokenizer.timestamp_begin
+        n_sampled = tokens.shape[1] - self.sample_begin
+        if n_sampled >= 1:
+            last_was_timestamp = tokens[:, -1:] >= timestamp_begin
+            if n_sampled >= 2:
+                penultimate_was_timestamp = tokens[:, -2:-1] >= timestamp_begin
+            else:
+                penultimate_was_timestamp = mx.ones_like(last_was_timestamp)
+            # after a pair it has to be text; after a lone timestamp it cannot be text
+            blocked = blocked | (
+                last_was_timestamp & penultimate_was_timestamp & is_timestamp
             )
-            penultimate_was_timestamp = (
-                len(seq) < 2 or seq[-2] >= self.tokenizer.timestamp_begin
+            blocked = blocked | (
+                last_was_timestamp
+                & ~penultimate_was_timestamp
+                & (token_ids < self.tokenizer.eot)
             )
-
-            if last_was_timestamp:
-                if penultimate_was_timestamp:  # has to be non-timestamp
-                    mask[k, self.tokenizer.timestamp_begin :] = -np.inf
-                else:  # cannot be normal text tokens
-                    mask[k, : self.tokenizer.eot] = -np.inf
-
-            timestamps = [
-                i for i, v in enumerate(seq) if v > self.tokenizer.timestamp_begin
-            ]
-            if len(timestamps) > 0:
-                # timestamps shouldn't decrease; forbid timestamp tokens smaller than the last
-                # also force each segment to have a nonzero length, to prevent infinite looping
-                last_timestamp = timestamps[-1]
-                if not last_timestamp or penultimate_was_timestamp:
-                    last_timestamp += 1
-                mask[k, self.tokenizer.timestamp_begin : last_timestamp] = -np.inf
-
-        if len(tokens[0]) == self.sample_begin:
+        else:
             # suppress generating non-timestamp tokens at the beginning
-            mask[:, : self.tokenizer.timestamp_begin] = -np.inf
+            blocked = blocked | ~is_timestamp
 
             # apply the `max_initial_timestamp` option
             if self.max_initial_timestamp_index is not None:
-                last_allowed = (
-                    self.tokenizer.timestamp_begin + self.max_initial_timestamp_index
-                )
-                mask[:, last_allowed + 1 :] = -np.inf
+                last_allowed = timestamp_begin + self.max_initial_timestamp_index
+                blocked = blocked | (token_ids > last_allowed)
 
         # if sum of probability over timestamps is above any other token, sample timestamp
-        mask = mx.array(mask)
         logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-        timestamp_logprob = logprobs[:, self.tokenizer.timestamp_begin :].logsumexp(
+        timestamp_logprob = logprobs[:, timestamp_begin:].logsumexp(
             axis=-1, keepdims=True
         )
-        max_text_token_logprob = logprobs[:, : self.tokenizer.timestamp_begin].max(
+        max_text_token_logprob = logprobs[:, :timestamp_begin].max(
             axis=-1, keepdims=True
         )
-        mask[:, : self.tokenizer.timestamp_begin] = mx.where(
-            timestamp_logprob > max_text_token_logprob,
-            -mx.inf,
-            mask[:, : self.tokenizer.timestamp_begin],
+        blocked = blocked | (
+            (timestamp_logprob > max_text_token_logprob) & ~is_timestamp
         )
-        return logits + mask
+        # float32 output: decoding has always run on promoted fp16 logits here
+        return mx.where(blocked, -mx.inf, logits.astype(mx.float32))
 
 
 class DecodingTask:
