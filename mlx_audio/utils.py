@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 from typing import (
     List,
+    Literal,
     Optional,
     Tuple,
     Type,
@@ -663,6 +664,7 @@ def load_audio(
     volume_normalize: bool = False,
     segment_duration: Optional[int] = None,
     duration: Optional[float] = None,
+    resampling_method: Literal["default", "sinc_interp_hann"] = "default",
 ) -> mx.array:
     """Load audio from file path or return mx.array as-is.
 
@@ -675,6 +677,11 @@ def load_audio(
         volume_normalize: Whether to normalize audio volume
         segment_duration: If specified, randomly select a segment of this duration (seconds)
         duration: If specified, only read this many seconds from the start of the file
+        resampling_method: "default" resamples while decoding: with the
+            kaiser_best FIR for WAV, MP3, FLAC and Vorbis, and with ffmpeg for other
+            formats. "sinc_interp_hann" reproduces torchaudio's default resampling
+            of the float channel mean, for models whose reference pipeline uses it.
+            It reads the whole file and does not take ``duration``.
 
     Returns:
         mx.array: Audio waveform at target sample rate
@@ -698,13 +705,23 @@ def load_audio(
     if not os.path.exists(audio):
         raise FileNotFoundError(f"Audio file not found: {audio}")
 
-    samples, _ = audio_read(
-        audio,
-        dtype="float32",
-        sample_rate=sample_rate,
-        nchannels=1,
-        duration=duration,
-    )
+    if resampling_method == "sinc_interp_hann":
+        # The filter needs input past the cut.
+        if duration is not None:
+            raise ValueError("duration is not supported with sinc_interp_hann")
+        from mlx_audio.resample import sinc_resample
+
+        samples, rate = audio_read(audio, dtype="float32", always_2d=True)
+        mono = mx.array(samples.mean(axis=1))
+        samples = np.array(sinc_resample(mono, rate, sample_rate))
+    else:
+        samples, _ = audio_read(
+            audio,
+            dtype="float32",
+            sample_rate=sample_rate,
+            nchannels=1,
+            duration=duration,
+        )
 
     # Random segment selection
     if segment_duration is not None:

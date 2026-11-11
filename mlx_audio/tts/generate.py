@@ -278,7 +278,10 @@ def generate_audio(
 
             if ref_text_values:
                 ref_text = _collapse_reference_list(ref_text_values)
-            elif preserve_ref_paths:
+            elif (
+                preserve_ref_paths
+                and getattr(model, "requires_ref_text", False) is not True
+            ):
                 ref_text = None
             elif _model_accepts_ref_text(model):
                 if stt_model is None:
@@ -291,6 +294,7 @@ def generate_audio(
 
                 if isinstance(stt_model, str):
                     stt_model = load_stt_model(stt_model)
+                # Preserved paths let STT load audio at its own sample rate.
                 transcribed_ref_text = [
                     stt_model.generate(audio).text for audio in loaded_ref_audio
                 ]

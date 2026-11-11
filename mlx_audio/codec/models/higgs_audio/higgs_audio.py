@@ -1,60 +1,14 @@
 import json
-import math
 from pathlib import Path
 from typing import Any, cast
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
+
+from mlx_audio.resample import sinc_resample
 
 from .config import HiggsAudioConfig
 from .dac import AcousticDecoder, AcousticEncoder, ResidualVectorQuantizer
-
-
-def _sinc_resample(
-    waveform: np.ndarray,
-    orig_freq: int,
-    new_freq: int,
-    lowpass_filter_width: int = 6,
-    rolloff: float = 0.99,
-) -> np.ndarray:
-    """Resample using Hann-windowed sinc interpolation (torchaudio-compatible).
-
-    Matches torchaudio.functional.resample with method='sinc_interp_hann'.
-    """
-    if orig_freq == new_freq:
-        return waveform
-    gcd = math.gcd(int(orig_freq), int(new_freq))
-    orig_r = orig_freq // gcd
-    new_r = new_freq // gcd
-
-    base_freq = min(orig_r, new_r) * rolloff
-    width = math.ceil(lowpass_filter_width * orig_r / base_freq)
-
-    idx = np.arange(-width, width + orig_r, dtype=np.float64)[None, :] / orig_r
-    t = np.arange(0, -new_r, -1, dtype=np.float64)[:, None] / new_r + idx
-    t *= base_freq
-    t = np.clip(t, -lowpass_filter_width, lowpass_filter_width)
-
-    window = np.cos(t * np.pi / lowpass_filter_width / 2) ** 2
-    t_pi = t * np.pi
-    kernel = np.where(t_pi == 0, 1.0, np.sin(t_pi) / t_pi)
-    kernel = (kernel * window * (base_freq / orig_r)).astype(np.float32)
-
-    length = len(waveform)
-    padded = np.pad(waveform, (width, width + orig_r))
-
-    out_len = math.ceil(length * new_r / orig_r)
-    result = np.zeros(out_len, dtype=np.float32)
-    for phase in range(new_r):
-        conv = np.convolve(padded, kernel[phase, ::-1], mode="valid")
-        samples = conv[::orig_r]
-        n = min(len(samples), math.ceil((out_len - phase) / new_r))
-        for i in range(n):
-            pos = phase + i * new_r
-            if pos < out_len:
-                result[pos] = samples[i]
-    return result
 
 
 class HiggsAudioTokenizer(nn.Module):
@@ -134,26 +88,21 @@ class HiggsAudioTokenizer(nn.Module):
                 "load via HiggsAudioTokenizer.from_pretrained()."
             )
 
-        waveform_np = np.asarray(waveform.astype(mx.float32))
-        if waveform_np.ndim != 3 or waveform_np.shape[-1] != 1:
+        if waveform.ndim != 3 or waveform.shape[-1] != 1:
             raise ValueError("waveform must have shape [B, T, 1]")
 
-        audio_24k = waveform_np[..., 0]
-        resampled = [
-            _sinc_resample(
-                sample, self.config.sample_rate, self.config.semantic_sample_rate
-            )
-            for sample in audio_24k
-        ]
-        target_len = min(len(r) for r in resampled)
-        audio_16k = np.stack([r[:target_len] for r in resampled], axis=0).astype(
-            np.float32
+        audio_16k = mx.stack(
+            [
+                sinc_resample(
+                    sample[:, 0],
+                    self.config.sample_rate,
+                    self.config.semantic_sample_rate,
+                )
+                for sample in waveform.astype(mx.float32)
+            ]
         )
         hubert_pad = self.config.downsample_factor // 2
-        audio_16k = np.pad(
-            audio_16k, ((0, 0), (hubert_pad, hubert_pad)), mode="constant"
-        )
-        audio_16k = mx.array(audio_16k)
+        audio_16k = mx.pad(audio_16k, ((0, 0), (hubert_pad, hubert_pad)))
 
         semantic_model = cast(nn.Module, self.semantic_model)
         encoder_semantic = cast(nn.Module, self.encoder_semantic)

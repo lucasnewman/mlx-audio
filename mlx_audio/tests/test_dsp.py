@@ -448,3 +448,66 @@ def test_log_mel_spectrogram_uses_periodic_hann_window():
 
     np.testing.assert_allclose(actual, _reference(periodic=True), atol=1e-6)
     assert not np.allclose(actual, _reference(periodic=False), atol=1e-3)
+
+
+# torchaudio 2.8.0 in float64: functional.resample(x.double(), orig, target) of the
+# broadband signal below. In float32, torchaudio's own kernel drifts by up to 2e-5
+# at 499 -> 500. 24000 -> 44100 checks the chunk boundaries at 65536 and 131072.
+_SINC_EXPECTED = {
+    (499, 500, 499): {
+        0: [-0.3124536, -0.005088031, 0.3010581, -0.388916]
+        + [-0.09231661, 0.2225614, -0.4652202, -0.180068],
+        246: [-0.281015, 0.3780479, 0.006857441, -0.3535656]
+        + [0.2936403, -0.06919065, -0.4379988, 0.2211303],
+        492: [0.1187831, 0.4067028, -0.2859417, 0.0339388]
+        + [0.3272217, -0.3622061, -0.05447907, 0.2518446],
+    },
+    (24000, 44100, 100000): {
+        65532: [0.4391935, 0.2545428, -0.1737369, -0.3737972]
+        + [-0.1240276, 0.2692448, 0.3231706, -0.03371502],
+        131068: [0.01149851, -0.3420646, -0.2822477, 0.1125591]
+        + [0.3575754, 0.1522769, -0.2758373, -0.4551273],
+        183742: [-0.2695291, -0.4862789, -0.3004324, -0.05346608]
+        + [0.09502418, 0.303336, 0.4518884, 0.2868194],
+    },
+    (44099, 44100, 44099): {
+        0: [-0.3124536, -0.003734352, 0.2995632, -0.3916828]
+        + [-0.08586589, 0.2176543, -0.4685035, -0.1740571],
+        22050: [0.06835812, -0.2961382, 0.3518103, -0.01260425]
+        + [-0.3783772, 0.2816107, -0.1278659, -0.3787352],
+        44092: [-0.00242004, 0.3037639, -0.3899877, -0.08303412]
+        + [0.2216083, -0.4687993, -0.1667318, 0.1435289],
+    },
+}
+
+
+def _broadband(length):
+    n = np.arange(length, dtype=np.int64)
+    return (((20077 * n + 12345) % 65536 - 32768) // 2 / 32768).astype(np.float32)
+
+
+@pytest.mark.parametrize("orig,target,length", list(_SINC_EXPECTED))
+def test_sinc_resample_matches_torchaudio(orig, target, length):
+    import mlx.core as mx
+
+    from mlx_audio.resample import sinc_resample
+
+    out = np.array(sinc_resample(mx.array(_broadband(length)), orig, target))
+
+    assert out.shape == (-(-length * target // orig),)
+    for start, values in _SINC_EXPECTED[orig, target, length].items():
+        np.testing.assert_allclose(out[start : start + 8], values, atol=1e-6)
+
+
+def test_sinc_resample_memory_follows_the_signal():
+    import mlx.core as mx
+
+    from mlx_audio.resample import sinc_resample
+
+    x = mx.array(_broadband(44099))
+    mx.eval(x)
+    mx.reset_peak_memory()
+    before = mx.get_active_memory()
+    mx.eval(sinc_resample(x, 44099, 44100))
+    # torchaudio's dense kernel for 44099 -> 44100 alone takes 7.8 GB.
+    assert mx.get_peak_memory() - before < 32 * 1024 * 1024

@@ -163,6 +163,43 @@ class TestAudioIOFormats:
         assert spur_ratio < 1e-6
         np.testing.assert_allclose(loaded, expected, atol=1e-6, rtol=1e-6)
 
+    def test_load_audio_sinc_resamples_the_channel_mean_like_torchaudio(self, tmp_path):
+        import wave
+
+        from mlx_audio.utils import load_audio
+
+        # torchaudio 2.8.0 in float64: resample((pcm / 32768).mean(0), 24000, 44100).
+        # A channel mean rounded to 16 bits differs by up to 1.5e-5.
+        expected = {
+            0: [-0.395506, -0.189854, 0.0893313, 0.108038]
+            + [-0.00489666, -0.029236, -0.00716447, -0.0331187],
+            2201: [-0.0702294, -0.38389, -0.288111, 0.0936868]
+            + [0.223218, -0.0732564, -0.320664, -0.120844],
+            4402: [0.0193383, -0.00460736, -0.0262335, -0.0388696]
+            + [-0.0600046, -0.0992567, -0.112415, -0.063562],
+        }
+        n = np.arange(2400, dtype=np.int64)
+        left = ((20077 * n + 12345) % 65536 - 32768) // 2
+        right = ((40503 * n + 777) % 65536 - 32768) // 2
+        path = tmp_path / "stereo.wav"
+        with wave.open(str(path), "wb") as wav:
+            wav.setnchannels(2)
+            wav.setsampwidth(2)
+            wav.setframerate(24000)
+            wav.writeframes(np.stack([left, right], 1).astype("<i2").tobytes())
+
+        loaded = np.asarray(
+            load_audio(
+                str(path), sample_rate=44100, resampling_method="sinc_interp_hann"
+            )
+        )
+
+        assert loaded.shape == (4410,)
+        for start, values in expected.items():
+            np.testing.assert_allclose(loaded[start : start + 8], values, atol=1e-6)
+        with pytest.raises(ValueError, match="duration"):
+            load_audio(str(path), resampling_method="sinc_interp_hann", duration=0.05)
+
     @pytest.mark.parametrize("use_buffer", [False, True])
     @pytest.mark.parametrize("channels", [1, 2])
     def test_miniaudio_upsampling_matches_fir(self, tmp_path, use_buffer, channels):
