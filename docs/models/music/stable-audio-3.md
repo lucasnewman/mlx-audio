@@ -43,7 +43,8 @@ the model calls per step and enables `--negative-prompt`.
 
 ## License
 
-The weights are under the
+The code follows Stability AI's MIT-licensed `optimized/mlx` code,
+Copyright (c) 2026 Stability AI. The weights are under the
 [Stability AI Community License](https://stability.ai/community-license-agreement)
 and the text encoder under the
 [Gemma Terms of Use](https://ai.google.dev/gemma/terms). Read both before you
