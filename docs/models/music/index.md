@@ -1,11 +1,12 @@
 # Music Generation
 
 MLX-Audio music models generate complete songs from a musical caption and
-structured lyrics.
+structured lyrics, or music and sound effects from a text prompt alone.
 
 | Model | Output | Models | Key features |
 |---|---|---|---|
 | [MiniMax Music 3](minimax-music3.md) | 44.1 kHz stereo | [BF16](https://huggingface.co/mlx-community/MiniMax-Music3-bf16), [8-bit](https://huggingface.co/mlx-community/MiniMax-Music3-8bit), [6-bit](https://huggingface.co/mlx-community/MiniMax-Music3-6bit), [4-bit](https://huggingface.co/mlx-community/MiniMax-Music3-4bit), [MXFP8](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8), [MXFP4](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4), [NVFP4](https://huggingface.co/mlx-community/MiniMax-Music3-nvfp4) | Multilingual lyrics, structural tags, long-form generation |
+| [Stable Audio 3](stable-audio-3.md) | 44.1 kHz stereo | [small-sfx](https://huggingface.co/mlx-community/stable-audio-3-small-sfx), [small-music](https://huggingface.co/mlx-community/stable-audio-3-small-music) | Text to sound effects or music, up to 120 seconds |
 
 ```bash
 python -m mlx_audio.music.generate \
