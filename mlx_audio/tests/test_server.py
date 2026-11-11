@@ -3,6 +3,7 @@ import inspect
 import io
 import json
 import queue
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx2
@@ -19,8 +20,9 @@ pytest.importorskip("multipart", reason="python-multipart is required for server
 
 from fastapi.testclient import TestClient
 
-from mlx_audio.server import _stream_inference_results, app
+from mlx_audio.server import _stream_inference_results, _stream_transcription, app
 from mlx_audio.server_inference import InferenceResultChunk
+from mlx_audio.utils import resample_audio
 
 
 @pytest.fixture
@@ -448,15 +450,16 @@ def _trackable(fn):
 
 
 def _ws_send_audio_and_collect(
-    client, mock_model_provider, generate_fn, config_extra=None
+    client, mock_model_provider, generate_fn, config_extra=None, sample_rate=16000
 ):
     """Connect WS, send config + 6s speech, stop, and return all messages."""
     mock_stt_model = MagicMock()
     mock_stt_model.generate = _trackable(generate_fn)
+    mock_stt_model.sample_rate = 16000
     mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
 
     messages = []
-    config = {"model": "test-model", "sample_rate": 16000}
+    config = {"model": "test-model", "sample_rate": sample_rate}
     if config_extra:
         config.update(config_extra)
     with client.websocket_connect("/v1/audio/transcriptions/realtime") as ws:
@@ -464,8 +467,8 @@ def _ws_send_audio_and_collect(
         assert ws.receive_json()["status"] == "ready"
 
         # 6s of speech exceeds initial_chunk_size (1.5s) and max_chunk_size (5s)
-        speech = make_speech_audio(6.0)
-        chunk_size = 4800  # 300ms chunks
+        speech = make_speech_audio(6.0, sample_rate=sample_rate)
+        chunk_size = int(sample_rate * 0.3)  # 300ms chunks
         for i in range(0, len(speech), chunk_size):
             ws.send_bytes(speech[i : i + chunk_size].tobytes())
 
@@ -586,6 +589,162 @@ def test_realtime_ws_streaming_disabled_fallback(client, mock_model_provider):
     # Should have at least one legacy text message
     text_msgs = [m for m in messages if "text" in m and "type" not in m]
     assert len(text_msgs) >= 1, f"Expected legacy text message, got: {messages}"
+
+
+def test_realtime_ws_declared_48k_reaches_model_at_16k(client, mock_model_provider):
+    """48 kHz client audio reaches the model resampled to 16 kHz.
+
+    First commit carries the 1.5 s initial buffer (72000 -> 24000 samples);
+    the second flushes after the 5 s cap crossing on a 300 ms boundary
+    (244800 -> 81600).
+    """
+    gen_fn = _make_streaming_generate(["ok"])
+    _, mock_stt_model = _ws_send_audio_and_collect(
+        client, mock_model_provider, gen_fn, sample_rate=48000
+    )
+
+    tracked = mock_stt_model.generate
+    assert len(tracked.call_args_list) == 2
+    first_audio = tracked.call_args_list[0][0][0]
+    second_audio = tracked.call_args_list[1][0][0]
+    assert isinstance(first_audio, mx.array)
+    assert len(first_audio) == 24000
+    assert len(second_audio) == 81600
+
+
+class _RecordingWebSocket:
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+
+class _RecordingStreamingModel:
+    def __init__(self, sample_rate=None, preprocessor_sample_rate=None):
+        if sample_rate is not None:
+            self.sample_rate = sample_rate
+        if preprocessor_sample_rate is not None:
+            self.preprocessor_config = SimpleNamespace(
+                sample_rate=preprocessor_sample_rate
+            )
+        self.received = []
+
+    def generate(self, audio, *, stream=False, language=None, verbose=False):
+        self.received.append(audio)
+        if stream:
+            return iter(["ok"])
+        return SimpleNamespace(text="ok", segments=None, language="en")
+
+
+@pytest.mark.parametrize("declared_rate", [8000, 16000, 32000, 48000])
+async def test_stream_transcription_resamples_to_default_rate(declared_rate):
+    model = _RecordingStreamingModel()
+    ws = _RecordingWebSocket()
+    audio = np.full(declared_rate, 0.1, dtype=np.float32)
+
+    await _stream_transcription(
+        ws, model, audio, declared_rate, "en", is_partial=False, streaming=True
+    )
+
+    assert len(model.received) == 1
+    assert isinstance(model.received[0], mx.array)
+    assert len(model.received[0]) == 16000
+
+
+async def test_stream_transcription_accepts_float_declared_rate():
+    model = _RecordingStreamingModel()
+    ws = _RecordingWebSocket()
+    audio = np.full(48000, 0.1, dtype=np.float32)
+
+    await _stream_transcription(
+        ws, model, audio, 48000.0, "en", is_partial=False, streaming=True
+    )
+
+    assert len(model.received) == 1
+    assert len(model.received[0]) == 16000
+
+
+async def test_stream_transcription_bad_model_rate_falls_back():
+    model = _RecordingStreamingModel(sample_rate="bogus")
+    ws = _RecordingWebSocket()
+
+    await _stream_transcription(
+        ws, model, np.zeros(16000, dtype=np.float32), 16000, "en", False
+    )
+
+    assert len(model.received[0]) == 16000
+
+
+async def test_stream_transcription_prefers_model_sample_rate():
+    model = _RecordingStreamingModel(sample_rate=24000, preprocessor_sample_rate=22050)
+    ws = _RecordingWebSocket()
+
+    await _stream_transcription(
+        ws, model, np.zeros(16000, dtype=np.float32), 16000, "en", False
+    )
+
+    assert len(model.received[0]) == 24000
+
+
+async def test_stream_transcription_uses_preprocessor_config_rate():
+    model = _RecordingStreamingModel(preprocessor_sample_rate=22050)
+    ws = _RecordingWebSocket()
+
+    await _stream_transcription(
+        ws, model, np.zeros(16000, dtype=np.float32), 16000, "en", False
+    )
+
+    assert len(model.received[0]) == 22050
+
+
+async def test_stream_transcription_equal_rate_no_resample(monkeypatch):
+    spy = MagicMock(wraps=resample_audio)
+    monkeypatch.setattr("mlx_audio.server.resample_audio", spy)
+    model = _RecordingStreamingModel(sample_rate=16000)
+    ws = _RecordingWebSocket()
+    audio = np.linspace(-0.5, 0.5, 16000, dtype=np.float32)
+
+    await _stream_transcription(
+        ws, model, audio, 16000, "en", is_partial=False, streaming=True
+    )
+
+    spy.assert_not_called()
+    assert np.array_equal(np.asarray(model.received[0]), audio)
+
+
+async def test_stream_transcription_non_streaming_keeps_declared_rate(
+    monkeypatch,
+):
+    written = {}
+
+    def fake_write(path, array, rate, **kwargs):
+        written["path"] = path
+        written["rate"] = rate
+        written["samples"] = len(array)
+
+    monkeypatch.setattr("mlx_audio.server.audio_write", fake_write)
+
+    model = _RecordingStreamingModel(sample_rate=16000)
+    ws = _RecordingWebSocket()
+
+    await _stream_transcription(
+        ws,
+        model,
+        np.zeros(48000, dtype=np.float32),
+        48000,
+        "en",
+        is_partial=False,
+        streaming=False,
+    )
+
+    assert written["rate"] == 48000
+    assert written["samples"] == 48000
+    assert isinstance(model.received[0], str)
+    message = ws.sent[0]
+    assert "type" not in message
+    assert message["text"] == "ok"
+    assert message["is_partial"] is False
 
 
 # --- /v1/realtime server-side VAD turn detection --------------------------
