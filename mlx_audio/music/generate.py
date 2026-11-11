@@ -16,10 +16,10 @@ from .utils import load_model
 
 def generate_music(
     caption: str,
-    lyrics: str,
+    lyrics: Optional[str],
     model: Union[str, Path, nn.Module],
     duration: Optional[float] = None,
-    steps: int = 30,
+    steps: Optional[int] = None,
     seed: int = 0,
     output_path: Union[str, Path] = "music.wav",
     verbose: bool = True,
@@ -29,13 +29,11 @@ def generate_music(
     if isinstance(model, (str, Path)):
         model = load_model(model)
 
-    generate_kwargs = {
-        "text": caption,
-        "lyrics": lyrics,
-        "steps": steps,
-        "seed": seed,
-        **kwargs,
-    }
+    generate_kwargs = {"text": caption, "seed": seed, **kwargs}
+    if lyrics is not None:
+        generate_kwargs["lyrics"] = lyrics
+    if steps is not None:
+        generate_kwargs["steps"] = steps
     if duration is not None:
         generate_kwargs["duration"] = duration
 
@@ -63,7 +61,7 @@ def generate_music(
 def configure_parser() -> argparse.ArgumentParser:
     """Build the music-generation command-line parser."""
     parser = argparse.ArgumentParser(
-        description="Generate music from a caption and structured lyrics"
+        description="Generate music or sound effects from a caption"
     )
     parser.add_argument(
         "--model",
@@ -75,7 +73,7 @@ def configure_parser() -> argparse.ArgumentParser:
         required=True,
         help="Music style, vocals, instrumentation, and arrangement description",
     )
-    lyrics = parser.add_mutually_exclusive_group(required=True)
+    lyrics = parser.add_mutually_exclusive_group()
     lyrics.add_argument(
         "--lyrics",
         help="Structured lyrics with section tags on separate lines",
@@ -94,8 +92,19 @@ def configure_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--steps",
         type=int,
-        default=30,
-        help="Flow-matching inference steps",
+        default=None,
+        help="Inference steps, the model default when omitted",
+    )
+    parser.add_argument(
+        "--cfg-scale",
+        type=float,
+        default=1.0,
+        help="Classifier-free guidance scale for models that support it",
+    )
+    parser.add_argument(
+        "--negative-prompt",
+        default=None,
+        help="Negative prompt for models that support guidance",
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument(
@@ -116,9 +125,9 @@ def main() -> None:
     """Run music generation from command-line arguments."""
     args = configure_parser().parse_args()
     lyrics = (
-        args.lyrics
-        if args.lyrics is not None
-        else args.lyrics_file.read_text(encoding="utf-8")
+        args.lyrics_file.read_text(encoding="utf-8")
+        if args.lyrics_file is not None
+        else args.lyrics
     )
     generate_music(
         caption=args.caption,
@@ -129,6 +138,8 @@ def main() -> None:
         seed=args.seed,
         output_path=args.output,
         verbose=args.verbose,
+        cfg_scale=args.cfg_scale,
+        negative_prompt=args.negative_prompt,
     )
 
 
