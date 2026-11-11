@@ -183,7 +183,7 @@ class SpeechRequest(BaseModel):
     response_format: str | None = "mp3"
     stream: bool = False
     streaming_interval: float = 2.0
-    max_tokens: int = 1200
+    max_tokens: int | None = None
     verbose: bool = False
 
 
@@ -676,9 +676,10 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             **_resolve_sampling_params(model, speech_request),
             "stream": speech_request.stream,
             "streaming_interval": speech_request.streaming_interval,
-            "max_tokens": speech_request.max_tokens,
             "verbose": speech_request.verbose,
         }
+        if speech_request.max_tokens is not None:
+            generate_kwargs["max_tokens"] = speech_request.max_tokens
 
         for result in model.generate(speech_request.input, **generate_kwargs):
             if request.cancel_event.is_set():
@@ -754,10 +755,11 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             # Requests in one batch share a batch_key, so they resolve alike.
             **_resolve_sampling_params(model, first_speech_request),
             "lang_code": first_speech_request.lang_code,
-            "max_tokens": first_speech_request.max_tokens,
             "stream": False,
             "verbose": first_speech_request.verbose,
         }
+        if first_speech_request.max_tokens is not None:
+            kwargs["max_tokens"] = first_speech_request.max_tokens
         kwargs = {
             key: value for key, value in kwargs.items() if key in signature.parameters
         }

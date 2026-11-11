@@ -95,12 +95,14 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `top_p` | float | `0.95`* | Nucleus sampling threshold |
 | `top_k` | int | `40`* | Top-k sampling |
 | `repetition_penalty` | float | `1.0`* | Repetition penalty |
-| `max_tokens` | int | `1200` | Maximum generation tokens |
+| `max_tokens` | int or null | `null` | Maximum generation tokens; omitted or null uses the model's default |
 | `ref_audio` | string | `null` | Path to reference audio for voice cloning |
 | `ref_text` | string | `null` | Transcript of reference audio |
 | `instruct` | string | `null` | Style/emotion instruction |
 
 \* For models that support checkpoint sampling defaults (currently Qwen3-TTS), an omitted sampling field uses the value from the checkpoint's `generation_config.json` when it has one; otherwise the default above applies. Send the field explicitly to override it.
+
+The model's token limit applies to serial, streaming, fixed-batch, and continuous-batch requests. Depending on the model, the default may come from checkpoint metadata or be calculated from the input text. Send `max_tokens` explicitly to override it.
 
 #### Streaming TTS
 

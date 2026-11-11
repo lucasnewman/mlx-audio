@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 import mlx.core as mx
@@ -33,7 +33,14 @@ class HiggsAudioV3BatchSession:
 
     def __init__(self, model, options: TTSBatchOptions):
         self.model = model
-        self.options = options
+        self.options = replace(
+            options,
+            max_tokens=model._resolve_generation_limit(
+                max_new_tokens=None,
+                max_new_frames=None,
+                max_tokens=options.max_tokens,
+            ),
+        )
         self._pending: list[TTSBatchItem] = []
         self._active: list[_ActiveRequest] = []
         self._cache: Optional[list[BatchKVCache]] = None
