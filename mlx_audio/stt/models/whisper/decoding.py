@@ -196,7 +196,16 @@ class Inference:
         """Update the key-value cache according to the updated beams"""
         # update the key/value cache to contain the selected sequences
         if source_indices != list(range(len(source_indices))):
-            self.kv_cache = tree_map(lambda x: x[source_indices], self.kv_cache)
+            # Self-attention caches (whisper.SelfAttentionCache) reorder
+            # themselves; cross-attention keys/values are plain arrays.
+            is_cache = lambda x: hasattr(x, "update_and_fetch")
+            self.kv_cache = tree_map(
+                lambda x: (
+                    x.select(source_indices) if is_cache(x) else x[source_indices]
+                ),
+                self.kv_cache,
+                is_leaf=is_cache,
+            )
 
     def reset(self):
         self.kv_cache = None

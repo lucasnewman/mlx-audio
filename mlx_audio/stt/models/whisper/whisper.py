@@ -345,6 +345,45 @@ def sinusoids(length, channels, max_timescale=10000):
     return mx.concatenate([mx.sin(scaled_time), mx.cos(scaled_time)], axis=1)
 
 
+class SelfAttentionCache:
+    """Decoder self-attention keys/values, written in place.
+
+    Growing the cache with ``mx.concatenate`` reallocates and copies every
+    layer's keys and values on every generated token. This buffer is allocated
+    in ``step``-token chunks and stored head-major ``(batch, n_head, T, d_head)``
+    so ``mx.fast.scaled_dot_product_attention`` reads it without a transpose.
+    """
+
+    step = 256
+
+    def __init__(self):
+        self.keys = None
+        self.values = None
+        self.offset = 0
+
+    def update_and_fetch(self, k, v):
+        B, H, L, D = k.shape
+        if self.keys is None or self.offset + L > self.keys.shape[2]:
+            size = (self.offset + L + self.step - 1) // self.step * self.step
+            new_k = mx.zeros((B, H, size, D), k.dtype)
+            new_v = mx.zeros((B, H, size, D), v.dtype)
+            if self.keys is not None:
+                new_k[:, :, : self.offset] = self.keys[:, :, : self.offset]
+                new_v[:, :, : self.offset] = self.values[:, :, : self.offset]
+            self.keys, self.values = new_k, new_v
+        self.keys[:, :, self.offset : self.offset + L] = k
+        self.values[:, :, self.offset : self.offset + L] = v
+        self.offset += L
+        return self.keys[:, :, : self.offset], self.values[:, :, : self.offset]
+
+    def select(self, indices):
+        """Keep the batch rows in ``indices`` (beam search reordering)."""
+        if self.keys is not None:
+            idx = mx.array(indices)
+            self.keys, self.values = self.keys[idx], self.values[idx]
+        return self
+
+
 class MultiHeadAttention(nn.Module):
     def __init__(self, n_state: int, n_head: int):
         super().__init__()
@@ -361,6 +400,9 @@ class MultiHeadAttention(nn.Module):
         mask=None,
         kv_cache=None,
     ):
+        if xa is None and isinstance(kv_cache, SelfAttentionCache):
+            return self._cached_self_attention(x, kv_cache)
+
         q = self.query(x)
 
         if xa is None:
@@ -393,6 +435,27 @@ class MultiHeadAttention(nn.Module):
         out = (w @ v).transpose(0, 2, 1, 3)
         out = out.reshape(n_batch, n_ctx, n_state)
         return out, qk
+
+    def _cached_self_attention(self, x, cache):
+        B, L, n_state = x.shape
+        heads = lambda t: t.reshape(B, L, self.n_head, -1).transpose(0, 2, 1, 3)
+        q = heads(self.query(x))
+        offset = cache.offset
+        k, v = cache.update_and_fetch(heads(self.key(x)), heads(self.value(x)))
+        mask = None
+        if L > 1:
+            # Causal over the whole cache: query i sits at position offset + i.
+            q_pos = mx.arange(offset, offset + L)[:, None]
+            mask = mx.where(mx.arange(offset + L)[None] > q_pos, -mx.inf, 0.0).astype(
+                q.dtype
+            )
+        out = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=(n_state // self.n_head) ** -0.5, mask=mask
+        )
+        out = out.transpose(0, 2, 1, 3).reshape(B, L, n_state)
+        # The decoder only uses cross-attention weights (timing, AlignAtt);
+        # self-attention weights are not materialized.
+        return self.out(out), cache, None
 
 
 class ResidualAttentionBlock(nn.Module):
@@ -490,14 +553,18 @@ class TextDecoder(nn.Module):
         xa : mx.array, shape = (batch_size, n_audio_ctx, n_audio_state)
             the encoded audio features to be attended on
         """
-        offset = kv_cache[0][0][0].shape[1] if kv_cache else 0
+        if kv_cache is None:
+            kv_cache = [(SelfAttentionCache(), None) for _ in self.blocks]
+        self_kv = kv_cache[0][0]
+        if isinstance(self_kv, SelfAttentionCache):
+            offset = self_kv.offset
+        else:  # a (keys, values) tuple cache from an earlier call
+            offset = self_kv[0].shape[1]
         x = (
             self.token_embedding(x)
             + self.positional_embedding[offset : offset + x.shape[-1]]
         )
 
-        if kv_cache is None:
-            kv_cache = [None] * len(self.blocks)
         cross_qk = [None] * len(self.blocks)
         for e, block in enumerate(self.blocks):
             x, kv_cache[e], cross_qk[e] = block(
