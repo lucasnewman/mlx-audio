@@ -9,6 +9,11 @@ from mlx_audio.stt.models.whisper.whisper import (
     SelfAttentionCache,
 )
 
+# Allow float32 rounding differences between full-sequence and incremental
+# attention kernels on Apple GPUs.
+LOGIT_ATOL = 3e-3
+LOGIT_RTOL = 1e-3
+
 DIMS = ModelDimensions(
     n_mels=8,
     n_audio_ctx=6,
@@ -61,7 +66,7 @@ def test_incremental_decoding_matches_full_forward(model, audio_features):
         steps.append(np.array(inf.logits(tokens[:, t : t + 1], audio_features)))
     incremental = np.concatenate(steps, axis=1)
 
-    np.testing.assert_allclose(incremental, full, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(incremental, full, atol=LOGIT_ATOL, rtol=LOGIT_RTOL)
 
 
 def test_multi_token_chunk_after_prefix_is_causal(model, audio_features):
@@ -74,7 +79,7 @@ def test_multi_token_chunk_after_prefix_is_causal(model, audio_features):
     rest = np.array(inf.logits(tokens[:, 5:], audio_features))
 
     np.testing.assert_allclose(
-        np.concatenate([first, rest], axis=1), full, atol=1e-4, rtol=1e-4
+        np.concatenate([first, rest], axis=1), full, atol=LOGIT_ATOL, rtol=LOGIT_RTOL
     )
 
 
@@ -92,7 +97,7 @@ def test_cache_grows_past_step_boundary(model, audio_features, monkeypatch):
     assert cache.offset == 15
     assert cache.keys.shape[2] == 16  # four 4-token steps
     np.testing.assert_allclose(
-        np.concatenate(steps, axis=1), full, atol=1e-4, rtol=1e-4
+        np.concatenate(steps, axis=1), full, atol=LOGIT_ATOL, rtol=LOGIT_RTOL
     )
 
 
@@ -106,7 +111,9 @@ def test_rearrange_kv_cache_reorders_rows(model, audio_features):
     got = np.array(inf.logits(reordered[:, 7:8], audio_features))
 
     full = _full_logits(model, reordered, audio_features[mx.array(order)])
-    np.testing.assert_allclose(got[:, -1], full[:, -1], atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(
+        got[:, -1], full[:, -1], atol=LOGIT_ATOL, rtol=LOGIT_RTOL
+    )
 
 
 def test_reset_starts_a_fresh_cache(model, audio_features):
