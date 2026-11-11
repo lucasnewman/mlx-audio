@@ -777,3 +777,28 @@ def test_split_still_ends_sentences_at_periods():
         CharTokenizer(),
         "I counted to 3. 14 people were there. They all stayed until the end.",
     ) == ["I counted to 3. 14 people were there.", "They all stayed until the end."]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "He said “Stop.” Then he left.",
+        "He said 'Stop.' Then he left.",
+        "(quietly.) Okay then.",
+        "He said (“Stop.”) Then he left.",
+        "He left. “Hi.” Bye.",
+    ],
+)
+def test_split_keeps_closing_quotes_and_brackets_with_their_sentence(text):
+    assert split_into_best_sentences(CharTokenizer(), text) == [text]
+
+
+def test_closing_quote_does_not_start_the_next_chunk():
+    assert split_into_best_sentences(
+        CharTokenizer(),
+        "“We should leave before the storm reaches the valley.” "
+        "She looked at the dark clouds.",
+    ) == [
+        "“We should leave before the storm reaches the valley.”",
+        "She looked at the dark clouds.",
+    ]

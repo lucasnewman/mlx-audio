@@ -643,7 +643,9 @@ class ArkttsModel(nn.Module):
         sorted_scores = mx.take_along_axis(scores, sorted_indices, axis=-1)
         cumulative = mx.cumsum(mx.softmax(sorted_scores, axis=-1), axis=-1)
         positions = mx.arange(scores.shape[-1])
-        remove_sorted = mx.logical_or(cumulative > top_p, positions[None, :] >= top_k)
+        remove_sorted = cumulative > top_p
+        if top_k > 0:
+            remove_sorted = remove_sorted | (positions[None, :] >= top_k)
         remove_sorted[:, 0] = False
         remove = mx.zeros_like(remove_sorted)
         remove = mx.put_along_axis(remove, sorted_indices, remove_sorted, axis=-1)

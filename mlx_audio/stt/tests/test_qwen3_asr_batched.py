@@ -89,20 +89,27 @@ class TestBatchedGeneration(unittest.TestCase):
     def make_minimal_model(self):
         return _make_minimal_model()
 
-    def test_batched_generation_respects_global_token_budget(self):
+    def test_batched_generation_caps_each_sequence_and_chunk(self):
         model = self.make_minimal_model()
-        sampler_outputs = iter(
-            [
-                mx.array([10, 20]),
-                mx.array([11, 21]),
-                mx.array([12, 22]),
-            ]
+        model._forward_with_embeds = lambda embeds, cache: mx.zeros(
+            (embeds.shape[0], 1, 128)
         )
+        steps = []
+
+        def sample(logits):
+            steps.append(len(steps))
+            step = steps[-1]
+            return mx.array(
+                [
+                    99 if row == 1 and step == 1 else 10 * (row + 1) + step
+                    for row in range(logits.shape[0])
+                ]
+            )
 
         texts, gen_tokens, prompt_tokens, processed = model._generate_chunks_batched(
-            [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
+            [(np.zeros(4), 0.0), (np.zeros(4), 1.0), (np.zeros(4), 2.0)],
             max_tokens=3,
-            sampler=lambda logits: next(sampler_outputs),
+            sampler=sample,
             logits_processors=None,
             language="en",
             system_prompt=None,
@@ -110,10 +117,10 @@ class TestBatchedGeneration(unittest.TestCase):
             verbose=False,
         )
 
-        self.assertEqual(sum(gen_tokens), 3)
-        self.assertEqual(texts, ["10 11", "20"])
-        self.assertEqual(prompt_tokens, [1, 1])
-        self.assertEqual(processed, [True, True])
+        self.assertEqual(texts, ["10 11 12", "20", "14 15 16"])
+        self.assertEqual(gen_tokens, [3, 1, 3])
+        self.assertEqual(prompt_tokens, [1, 1, 1])
+        self.assertEqual(processed, [True, True, True])
 
     def test_batched_generation_applies_logits_processors_per_row(self):
         model = self.make_minimal_model()
@@ -139,7 +146,7 @@ class TestBatchedGeneration(unittest.TestCase):
 
         model._generate_chunks_batched(
             [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
-            max_tokens=3,
+            max_tokens=2,
             sampler=sample,
             logits_processors=[record_history],
             language="en",
@@ -173,7 +180,7 @@ class TestBatchedGeneration(unittest.TestCase):
 
                 texts, gen_tokens, _, _ = model._generate_chunks_batched(
                     [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
-                    max_tokens=4,
+                    max_tokens=2,
                     sampler=make_sampler(temp=0),
                     logits_processors=None,
                     language="en",
@@ -214,7 +221,7 @@ class TestBatchedGeneration(unittest.TestCase):
 
                 texts, gen_tokens, _, _ = model._generate_chunks_batched(
                     [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
-                    max_tokens=4,
+                    max_tokens=2,
                     sampler=sample,
                     logits_processors=None,
                     language="en",
@@ -252,7 +259,7 @@ class TestBatchedGeneration(unittest.TestCase):
         ]
         texts, gen_tokens, _, _ = model._generate_chunks_batched(
             [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
-            max_tokens=2,
+            max_tokens=1,
             sampler=lambda values: mx.argmax(values, axis=-1),
             logits_processors=processors,
             language="en",
@@ -458,6 +465,57 @@ class TestChunkDurations(unittest.TestCase):
     def test_unprocessed_batch_chunks_keep_their_own_bounds(self):
         bounds, _ = self._run(np.zeros(32160), "batched", processed=[True, False, True])
         self.assertEqual(bounds, [(0.0, 1.0), (2.0, 2.01)])
+
+
+class TestPerChunkTokenBudget(unittest.TestCase):
+    def test_sequential_chunks_each_get_max_tokens(self):
+        model = _make_minimal_model()
+        budgets = []
+
+        def single(chunk_audio, **kwargs):
+            budgets.append(kwargs["max_tokens"])
+            return "text", 1, kwargs["max_tokens"]
+
+        model._generate_single_chunk = single
+
+        out = model.generate(
+            np.zeros(48000),
+            max_tokens=2,
+            chunk_duration=1,
+            min_chunk_duration=1,
+            language="English",
+        )
+
+        self.assertEqual(budgets, [2, 2, 2])
+        self.assertEqual(out.text, "text text text")
+        self.assertEqual(out.generation_tokens, 6)
+
+    def test_streaming_chunks_each_get_max_tokens(self):
+        model = _make_minimal_model()
+
+        def stream_generate(chunk_audio, **kwargs):
+            for _ in range(kwargs["max_tokens"]):
+                yield mx.array(10), None
+
+        model.stream_generate = stream_generate
+
+        results = list(
+            model.stream_transcribe(
+                np.zeros(48000),
+                max_tokens=2,
+                chunk_duration=1,
+                min_chunk_duration=1,
+                language="English",
+            )
+        )
+
+        chunk_ends = [result for result in results if not result.text]
+        self.assertEqual(
+            [(result.start_time, result.is_final) for result in chunk_ends],
+            [(0.0, False), (1.0, False), (2.0, True)],
+        )
+        self.assertEqual(chunk_ends[-1].generation_tokens, 6)
+        self.assertEqual(sum(result.text.count("10") for result in results), 6)
 
 
 class TestPerChunkLanguage(unittest.TestCase):

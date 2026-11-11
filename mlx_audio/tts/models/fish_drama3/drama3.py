@@ -63,7 +63,7 @@ def sample_top_k_top_p(
     """One id per row of logits [B, V], as the reference samples.
 
     Temperature applies before top-p; the cumulative probability runs over the
-    full vocabulary; top_k None keeps every candidate. The token that crosses
+    full vocabulary; top_k None or <= 0 keeps every candidate. The token that crosses
     top_p is dropped unless it ranks first; keep_crossing keeps it, as the main
     token's draws do so that EOS stays reachable. Only the top_k candidates are
     sorted, since all others are dropped.
@@ -72,7 +72,7 @@ def sample_top_k_top_p(
     # At low temperature the logits share a huge offset that would swamp the
     # log-sum-exp in float32 and push every probability to 1.
     x = x - x.max(axis=-1, keepdims=True)
-    k = x.shape[-1] if top_k is None else min(top_k, x.shape[-1])
+    k = x.shape[-1] if top_k is None or top_k <= 0 else min(top_k, x.shape[-1])
     ids = mx.argpartition(-x, kth=k - 1, axis=-1)[..., :k]
     values = mx.take_along_axis(x, ids, axis=-1)
     order = mx.argsort(-values, axis=-1)
@@ -386,7 +386,11 @@ class Model(nn.Module):
         main = mx.where(repeated & self.tower.is_semantic(first), retry, first)
         c0 = mx.clip(main - self.semantic_begin, 0, self.tower.vocab_size - 1)
         semantic = self.tower.is_semantic(main)[:, None]
-        head_top_k = CODEBOOK_TOP_K if top_k is None else min(top_k, CODEBOOK_TOP_K)
+        head_top_k = (
+            CODEBOOK_TOP_K
+            if top_k is None or top_k <= 0
+            else min(top_k, CODEBOOK_TOP_K)
+        )
 
         def sample(head_logits: mx.array) -> mx.array:
             ids = sample_top_k_top_p(head_logits[:, 0], temperature, head_top_k, top_p)
