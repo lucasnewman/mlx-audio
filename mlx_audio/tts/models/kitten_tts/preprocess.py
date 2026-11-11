@@ -273,7 +273,10 @@ def _ordinal_suffix(n: int) -> str:
             break
     else:
         # General rule
-        if last.endswith("t"):
+        if last.endswith("y"):
+            # twenty -> twentieth, thirty -> thirtieth, ...
+            last_ord = last[:-1] + "ieth"
+        elif last.endswith("t"):
             last_ord = last + "h"
         elif last.endswith("e"):
             last_ord = last[:-1] + "th"
