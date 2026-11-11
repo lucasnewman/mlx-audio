@@ -61,7 +61,7 @@ from mlx_audio.server_inference import (
 )
 from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
-from mlx_audio.utils import load_model
+from mlx_audio.utils import load_model, resample_audio
 
 
 def sanitize_for_json(obj: Any) -> Any:
@@ -1233,9 +1233,9 @@ async def _stream_transcription(
     """Handle both streaming and non-streaming model inference over WebSocket.
 
     Streaming models (whose generate() accepts a ``stream`` parameter) receive
-    the audio as an ``mx.array`` and yield token deltas sent as
-    ``{"type": "delta", "delta": "..."}`` messages, followed by a
-    ``{"type": "complete", ...}`` message.
+    the audio resampled to the model's input rate as an ``mx.array`` and yield
+    token deltas sent as ``{"type": "delta", "delta": "..."}`` messages,
+    followed by a ``{"type": "complete", ...}`` message.
 
     Non-streaming models fall back to temp-file + batch generate, sending the
     legacy ``{"text": ..., "is_partial": ...}`` format.
@@ -1243,6 +1243,23 @@ async def _stream_transcription(
     supports_stream = "stream" in inspect.signature(stt_model.generate).parameters
 
     if supports_stream and streaming:
+        try:
+            model_sample_rate = int(
+                getattr(stt_model, "sample_rate", None)
+                or getattr(
+                    getattr(stt_model, "preprocessor_config", None),
+                    "sample_rate",
+                    None,
+                )
+                or 16000
+            )
+        except (TypeError, ValueError):
+            model_sample_rate = 16000
+        if model_sample_rate <= 0:
+            model_sample_rate = 16000
+        declared_rate = int(sample_rate)
+        if declared_rate != model_sample_rate:
+            audio_array = resample_audio(audio_array, declared_rate, model_sample_rate)
         result_iter = stt_model.generate(
             mx.array(audio_array), stream=True, language=language, verbose=False
         )

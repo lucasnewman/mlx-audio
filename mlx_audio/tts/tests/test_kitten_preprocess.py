@@ -1,6 +1,11 @@
 import pytest
 
-from mlx_audio.tts.models.kitten_tts.preprocess import TextPreprocessor, expand_time
+from mlx_audio.tts.models.kitten_tts.preprocess import (
+    TextPreprocessor,
+    expand_fractions,
+    expand_ordinals,
+    expand_time,
+)
 
 
 @pytest.mark.parametrize(
@@ -36,3 +41,30 @@ def test_time_does_not_glue_onto_following_decimal_in_pipeline():
     assert pp("The value is 3:30 0.5 here") == (
         "The value is three thirty zero point five here"
     )
+
+
+@pytest.mark.parametrize(
+    ("input_text", "expected"),
+    [
+        # Tens-multiple ordinals end in "-ieth", not "-yth": the general rule
+        # used to append "th" to any word, turning "twenty" into "twentyth".
+        ("the 20th century", "the twentieth century"),
+        ("his 30th birthday", "his thirtieth birthday"),
+        ("Happy 40th", "Happy fortieth"),
+        ("the 50th anniversary", "the fiftieth anniversary"),
+        ("the 90th percentile", "the ninetieth percentile"),
+        ("the 120th customer", "the one hundred twentieth customer"),
+        # Compound ordinals whose last word is not a tens multiple are unchanged.
+        ("the 21st floor", "the twenty-first floor"),
+        ("the 42nd marathon", "the forty-second marathon"),
+        ("the 100th day", "the one hundredth day"),
+    ],
+)
+def test_tens_ordinals_use_ieth(input_text, expected):
+    assert expand_ordinals(input_text) == expected
+
+
+def test_fraction_denominator_tens_use_ieth():
+    # The denominator is verbalized with the same ordinal rule.
+    assert expand_fractions("1/20 of the pie") == "one twentieth of the pie"
+    assert expand_fractions("3/50 chance") == "three fiftieths chance"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, List, Optional, Tuple
 
 import mlx.core as mx
@@ -47,7 +47,14 @@ class Qwen3TTSBatchSession:
             raise ValueError("Speech tokenizer not loaded")
 
         self.model = model
-        self.options = options
+        generation_options = model._resolve_generation_options(
+            temperature=options.temperature,
+            max_tokens=options.max_tokens,
+            top_k=options.top_k,
+            top_p=options.top_p,
+            repetition_penalty=options.repetition_penalty,
+        )
+        self.options = replace(options, max_tokens=generation_options["max_tokens"])
         self.config = model.config.talker_config
         self.eos_token_id = self.config.codec_eos_token_id
         self.suppress_tokens = model._suppress_codec_tokens(self.eos_token_id)

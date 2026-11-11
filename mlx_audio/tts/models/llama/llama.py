@@ -1,3 +1,4 @@
+import re
 import time
 from dataclasses import dataclass
 from typing import Generator, List, Optional, Union
@@ -31,27 +32,48 @@ class ModelConfig(LlamaModelConfig):
 
 snac_model = SNAC.from_pretrained("mlx-community/snac_24khz").eval()
 
+CODES_PER_FRAME = 7  # SNAC layers give 1 + 2 + 4 codes per frame
+DECODE_WINDOW_FRAMES = 32
+DECODE_LEFT_CONTEXT_FRAMES = 2
+DECODE_RIGHT_CONTEXT_FRAMES = 2
+SEGMENT_MAX_CHARS = 300
+SEGMENT_MAX_SENTENCES = 8
+MIN_MAX_TOKENS = 1200
+MAX_TOKENS_PER_TEXT_TOKEN = 80
+DEFAULT_VOICE = "tara"
+SENTENCE_END = re.compile(r"""[.!?]["')\]]*\s+|[。！？]""")
+CLAUSE_END = re.compile(r"[,;:]\s+|[，；：、]")
+WHITESPACE = re.compile(r"\s+")
 
-def decode_audio_from_codes(code_list):
-    """Decode a flat code list to audio."""
-    layer_1 = []
-    layer_2 = []
-    layer_3 = []
-    for i in range((len(code_list) + 1) // 7):
-        layer_1.append(code_list[7 * i])
-        layer_2.append(code_list[7 * i + 1] - 4096)
-        layer_3.append(code_list[7 * i + 2] - (2 * 4096))
-        layer_3.append(code_list[7 * i + 3] - (3 * 4096))
-        layer_2.append(code_list[7 * i + 4] - (4 * 4096))
-        layer_3.append(code_list[7 * i + 5] - (5 * 4096))
-        layer_3.append(code_list[7 * i + 6] - (6 * 4096))
-    codes = [
-        mx.expand_dims(mx.array(layer_1), 0),
-        mx.expand_dims(mx.array(layer_2), 0),
-        mx.expand_dims(mx.array(layer_3), 0),
+
+def last_cut(pattern, window, max_chars, limit=None):
+    cuts = [
+        match.end()
+        for match in pattern.finditer(window)
+        if len(window[: match.end()].rstrip()) <= max_chars
     ]
-    audio_hat = snac_model.decode(codes).squeeze(-1)
-    return audio_hat
+    return cuts[:limit][-1] if cuts else 0
+
+
+def split_long_segment(
+    text, max_chars=SEGMENT_MAX_CHARS, max_sentences=SEGMENT_MAX_SENTENCES
+):
+    """Split text into pieces of at most max_chars and max_sentences, at sentence ends where it can."""
+    segments = []
+    rest = text.strip()
+    while len(rest) > max_chars or len(SENTENCE_END.findall(rest)) >= max_sentences:
+        window = rest[: max_chars + 1]
+        cut = (
+            last_cut(SENTENCE_END, window, max_chars, max_sentences)
+            or last_cut(CLAUSE_END, window, max_chars)
+            or last_cut(WHITESPACE, window, max_chars)
+            or max_chars
+        )
+        segments.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    if rest:
+        segments.append(rest)
+    return segments
 
 
 def codes_to_layers(code_list):
@@ -74,35 +96,27 @@ def codes_to_layers(code_list):
     ]
 
 
-def decode_audio_stream(code_list, prev_codes=None, context_frames=8):
-    """Streaming decode with context for smooth transitions.
+def decode_audio_stream(code_list, start_frame, end_frame):
+    """Decode frames [start_frame, end_frame) a window at a time."""
+    layers = codes_to_layers(code_list)
+    chunks = []
+    for start in range(start_frame, end_frame, DECODE_WINDOW_FRAMES):
+        audio = snac_model.decode_range(
+            layers,
+            start,
+            min(start + DECODE_WINDOW_FRAMES, end_frame),
+            DECODE_LEFT_CONTEXT_FRAMES,
+            DECODE_RIGHT_CONTEXT_FRAMES,
+        ).squeeze(-1)
+        mx.eval(audio)
+        mx.clear_cache()
+        chunks.append(audio)
+    return mx.concatenate(chunks, axis=1)
 
-    Args:
-        code_list: Flat list of NEW codes from the model (not cumulative)
-        prev_codes: Previous context codes (layered format) or None
-        context_frames: Number of context frames for smooth decoding
 
-    Returns:
-        Tuple of (audio, new_context_codes)
-    """
-    codes = codes_to_layers(code_list)
-    audio, new_context = snac_model.decode_stream(codes, prev_codes, context_frames)
-    return audio.squeeze(-1), new_context
-
-
-def get_new_codes(all_codes, prev_code_count):
-    """Extract only the new codes from the full code list.
-
-    Args:
-        all_codes: Full list of codes generated so far
-        prev_code_count: Number of codes already processed
-
-    Returns:
-        List of new codes (empty if none)
-    """
-    if len(all_codes) <= prev_code_count:
-        return []
-    return all_codes[prev_code_count:]
+def decode_audio_from_codes(code_list):
+    """Decode a flat code list to audio."""
+    return decode_audio_stream(code_list, 0, len(code_list) // CODES_PER_FRAME)
 
 
 def encode_audio_to_codes(audio):
@@ -373,7 +387,7 @@ class Model(LlamaModel):
         temperature: float = 0.6,
         top_p: float = 0.8,
         split_pattern: str = "\n",
-        max_tokens: int = 1200,
+        max_tokens: Optional[int] = None,
         verbose: bool = False,
         ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: Optional[str] = None,
@@ -381,12 +395,18 @@ class Model(LlamaModel):
         streaming_interval: float = 2.0,
         **kwargs,
     ):
+        voice = voice or DEFAULT_VOICE
         # Load reference audio if provided (handles file paths and mx.array)
         if ref_audio is not None:
             ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
 
         prompt_text = text.replace("\\n", "\n").replace("\\t", "\t")
-        prompts = [p for p in prompt_text.split(split_pattern) if p.strip()]
+        prompts = [
+            segment
+            for p in prompt_text.split(split_pattern)
+            if p.strip()
+            for segment in split_long_segment(p)
+        ]
 
         # Prepare zeroprompt once if voice cloning is requested
         zeroprompt = None
@@ -414,13 +434,18 @@ class Model(LlamaModel):
                 zeroprompt,
             )
 
+            text_tokens = len(self.tokenizer(segment_prompt).input_ids)
+            segment_max_tokens = (
+                max_tokens
+                if max_tokens is not None
+                else max(MIN_MAX_TOKENS, MAX_TOKENS_PER_TEXT_TOKEN * text_tokens)
+            )
+
             generated_token_count = 0
             yielded_token_count = 0
-            prev_code_count = 0
+            decoded_frames = 0
             yielded_final = False
-
-            # Streaming decode context
-            prev_context_codes = None
+            reached_end_of_speech = False
 
             # Generate tokens for this segment
             for i, response in enumerate(
@@ -429,11 +454,11 @@ class Model(LlamaModel):
                         self,
                         tokenizer=self.tokenizer,
                         prompt=input_ids.squeeze(0),
-                        max_tokens=max_tokens,
+                        max_tokens=segment_max_tokens,
                         sampler=sampler,
                         logits_processors=logits_processors,
                     ),
-                    total=max_tokens,
+                    total=segment_max_tokens,
                     disable=not verbose,
                     desc=f"Segment {segment_idx + 1}/{len(prompts)}",
                 )
@@ -450,22 +475,14 @@ class Model(LlamaModel):
                     code_lists = self.parse_output(input_ids)
                     if code_lists and len(code_lists[0]) > 0:
                         all_codes = code_lists[0]
-                        # Get only new codes since last decode
-                        new_codes = get_new_codes(all_codes, prev_code_count)
+                        end_frame = len(all_codes) // CODES_PER_FRAME
+                        if next_token != 128258:  # End of speech
+                            end_frame -= DECODE_RIGHT_CONTEXT_FRAMES
 
-                        # Need at least 7 codes for one frame
-                        if len(new_codes) >= 7:
-                            # Trim to complete frames (multiples of 7)
-                            num_frames = len(new_codes) // 7
-                            new_codes = new_codes[: num_frames * 7]
-
-                            # Use streaming decode with context
-                            audio, prev_context_codes = decode_audio_stream(
-                                new_codes,
-                                prev_context_codes,
-                                context_frames=8,
-                            )
-                            audio = audio[0]  # Remove batch dim
+                        if end_frame > decoded_frames:
+                            audio = decode_audio_stream(
+                                all_codes, decoded_frames, end_frame
+                            )[0]
 
                             if audio.shape[0] > 0:
                                 yield self.generate_result(
@@ -477,11 +494,22 @@ class Model(LlamaModel):
                                     is_streaming_chunk=True,
                                 )
                                 yielded_token_count = generated_token_count
-                                prev_code_count += len(new_codes)
+                                decoded_frames = end_frame
                                 time_start = time.perf_counter()
 
                 if next_token == 128258:  # End of speech
+                    reached_end_of_speech = True
                     break
+
+            if (
+                generated_token_count >= segment_max_tokens
+                and not reached_end_of_speech
+            ):
+                print(
+                    f"\033[93mWARNING: Segment {segment_idx + 1} reached max_tokens "
+                    f"({segment_max_tokens}) before the end of speech, so its audio "
+                    "is cut short.\033[0m"
+                )
 
             # Decode and yield remaining audio for this segment
             code_lists = self.parse_output(input_ids)
@@ -491,19 +519,11 @@ class Model(LlamaModel):
                     continue
 
                 if stream:
-                    # Get remaining codes not yet decoded
-                    remaining_codes = get_new_codes(code_list, prev_code_count)
-                    if len(remaining_codes) >= 7:
-                        # Trim to complete frames
-                        num_frames = len(remaining_codes) // 7
-                        remaining_codes = remaining_codes[: num_frames * 7]
-
-                        audio, _ = decode_audio_stream(
-                            remaining_codes,
-                            prev_context_codes,
-                            context_frames=8,
-                        )
-                        audio = audio[0]
+                    end_frame = len(code_list) // CODES_PER_FRAME
+                    if end_frame > decoded_frames:
+                        audio = decode_audio_stream(
+                            code_list, decoded_frames, end_frame
+                        )[0]
 
                         if audio.shape[0] > 0:
                             yield self.generate_result(
@@ -516,7 +536,6 @@ class Model(LlamaModel):
                             )
                             yielded_final = is_last_segment
                 else:
-                    # Non-streaming: decode all at once
                     audio = decode_audio_from_codes(code_list)[0]
 
                     if audio.shape[0] > 0:
@@ -548,7 +567,7 @@ class Model(LlamaModel):
         temperature: float = 0.6,
         top_p: float = 0.8,
         split_pattern: str = "\n",
-        max_tokens: int = 1200,
+        max_tokens: Optional[int] = None,
         streaming_interval: float = 2.0,
         ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: Optional[str] = None,
@@ -563,11 +582,11 @@ class Model(LlamaModel):
 
         Args:
             text: Input text to synthesize
-            voice: Voice name to use (e.g., "zoe", "tara")
+            voice: Voice name to use (default: "tara")
             temperature: Sampling temperature (default: 0.6)
             top_p: Nucleus sampling threshold (default: 0.8)
             split_pattern: Pattern to split text into segments (default: "\\n")
-            max_tokens: Maximum tokens per segment (default: 1200)
+            max_tokens: Maximum tokens per segment (default: scaled from the text length)
             streaming_interval: Time interval in seconds between audio chunk yields (default: 2.0)
             ref_audio: Optional reference audio for voice cloning
             ref_text: Optional caption for reference audio (for voice cloning)
