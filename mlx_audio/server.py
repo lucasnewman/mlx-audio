@@ -61,7 +61,7 @@ from mlx_audio.server_inference import (
 )
 from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
-from mlx_audio.utils import load_model
+from mlx_audio.utils import load_model, resample_audio
 
 
 def sanitize_for_json(obj: Any) -> Any:
@@ -280,8 +280,8 @@ async def _preflight_model_load(model_name: str) -> None:
 _STT_EXTRA_KWARGS = {"word_timestamps", "timestamp_granularities"}
 
 # Floor for max_tokens when the client does not send one. Models whose own
-# generate() default is larger (e.g. Qwen3-ASR's 8192, which is one budget for
-# every chunk of the file) keep that default, so long audio is not truncated.
+# generate() default is larger (e.g. Qwen3-ASR's 8192) keep that default, so
+# long audio is not truncated.
 _STT_MIN_DEFAULT_MAX_TOKENS = 1024
 
 
@@ -467,6 +467,17 @@ def _resolve_sampling_params(model, speech_request: SpeechRequest) -> dict[str, 
     return params
 
 
+def _resolve_max_tokens(model, speech_request: SpeechRequest) -> dict[str, int]:
+    if speech_request.max_tokens is not None:
+        return {"max_tokens": speech_request.max_tokens}
+    generate_config = getattr(model, "generate_config", None)
+    if isinstance(generate_config, dict) and isinstance(
+        generate_config.get("max_new_tokens"), int
+    ):
+        return {"max_tokens": generate_config["max_new_tokens"]}
+    return {}
+
+
 class TTSExecutionAdapter(BaseModelExecutionAdapter):
     _REQUEST_MODEL_ATTR = "_mlx_audio_loaded_model"
 
@@ -489,7 +500,7 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
         model = self._get_model_for_request(request)
         return TTSBatchOptions(
             **_resolve_sampling_params(model, speech_request),
-            max_tokens=speech_request.max_tokens,
+            **_resolve_max_tokens(model, speech_request),
             lang_code=speech_request.lang_code,
             stream=speech_request.stream,
             streaming_interval=speech_request.streaming_interval,
@@ -676,10 +687,9 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             **_resolve_sampling_params(model, speech_request),
             "stream": speech_request.stream,
             "streaming_interval": speech_request.streaming_interval,
+            **_resolve_max_tokens(model, speech_request),
             "verbose": speech_request.verbose,
         }
-        if speech_request.max_tokens is not None:
-            generate_kwargs["max_tokens"] = speech_request.max_tokens
 
         for result in model.generate(speech_request.input, **generate_kwargs):
             if request.cancel_event.is_set():
@@ -755,11 +765,10 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             # Requests in one batch share a batch_key, so they resolve alike.
             **_resolve_sampling_params(model, first_speech_request),
             "lang_code": first_speech_request.lang_code,
+            **_resolve_max_tokens(model, first_speech_request),
             "stream": False,
             "verbose": first_speech_request.verbose,
         }
-        if first_speech_request.max_tokens is not None:
-            kwargs["max_tokens"] = first_speech_request.max_tokens
         kwargs = {
             key: value for key, value in kwargs.items() if key in signature.parameters
         }
@@ -1224,9 +1233,9 @@ async def _stream_transcription(
     """Handle both streaming and non-streaming model inference over WebSocket.
 
     Streaming models (whose generate() accepts a ``stream`` parameter) receive
-    the audio as an ``mx.array`` and yield token deltas sent as
-    ``{"type": "delta", "delta": "..."}`` messages, followed by a
-    ``{"type": "complete", ...}`` message.
+    the audio resampled to the model's input rate as an ``mx.array`` and yield
+    token deltas sent as ``{"type": "delta", "delta": "..."}`` messages,
+    followed by a ``{"type": "complete", ...}`` message.
 
     Non-streaming models fall back to temp-file + batch generate, sending the
     legacy ``{"text": ..., "is_partial": ...}`` format.
@@ -1234,6 +1243,23 @@ async def _stream_transcription(
     supports_stream = "stream" in inspect.signature(stt_model.generate).parameters
 
     if supports_stream and streaming:
+        try:
+            model_sample_rate = int(
+                getattr(stt_model, "sample_rate", None)
+                or getattr(
+                    getattr(stt_model, "preprocessor_config", None),
+                    "sample_rate",
+                    None,
+                )
+                or 16000
+            )
+        except (TypeError, ValueError):
+            model_sample_rate = 16000
+        if model_sample_rate <= 0:
+            model_sample_rate = 16000
+        declared_rate = int(sample_rate)
+        if declared_rate != model_sample_rate:
+            audio_array = resample_audio(audio_array, declared_rate, model_sample_rate)
         result_iter = stt_model.generate(
             mx.array(audio_array), stream=True, language=language, verbose=False
         )

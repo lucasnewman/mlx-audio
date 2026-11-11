@@ -102,7 +102,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 \* For models that support checkpoint sampling defaults (currently Qwen3-TTS), an omitted sampling field uses the value from the checkpoint's `generation_config.json` when it has one; otherwise the default above applies. Send the field explicitly to override it.
 
-The model's token limit applies to serial, streaming, fixed-batch, and continuous-batch requests. Depending on the model, the default may come from checkpoint metadata or be calculated from the input text. Send `max_tokens` explicitly to override it.
+The model's token limit applies to serial, streaming, fixed-batch, and continuous-batch requests. Depending on the model, the default may come from checkpoint metadata (for Qwen3-TTS, `max_new_tokens` in `generation_config.json`) or be calculated from the input text. Send `max_tokens` explicitly to override it.
 
 #### Streaming TTS
 

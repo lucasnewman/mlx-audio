@@ -1,6 +1,7 @@
 import json
 import warnings
 from dataclasses import dataclass
+from itertools import takewhile
 from pathlib import Path
 from typing import Callable, Generator, List, Optional, Union
 
@@ -384,8 +385,20 @@ class Model(nn.Module):
             else:
                 all_tokens = chunk_tokens
 
+            settled_tokens = (
+                all_tokens
+                if is_last
+                else list(
+                    takewhile(
+                        lambda token: token.end
+                        <= (start + step_samples) / sample_rate - overlap_duration,
+                        all_tokens,
+                    )
+                )
+            )
+
             # Build current result
-            current_result = sentences_to_result(tokens_to_sentences(all_tokens))
+            current_result = sentences_to_result(tokens_to_sentences(settled_tokens))
             accumulated_text = current_result.text
 
             # Calculate new text since last emission
@@ -424,7 +437,7 @@ class Model(nn.Module):
     @classmethod
     def from_config(cls, config: dict):
         """Loads model from config (randomized weights)"""
-        if config.get("ternary_modules"):
+        if "encoder_config" in config and "durations" in config:
             from .redux import ParakeetRedux
 
             model = ParakeetRedux(config)

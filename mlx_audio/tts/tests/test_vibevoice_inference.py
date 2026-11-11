@@ -5,7 +5,7 @@ from unittest.mock import patch
 import mlx.core as mx
 import numpy as np
 import pytest
-from mlx.utils import tree_map
+from mlx.utils import tree_flatten, tree_map
 
 from mlx_audio.lm.models.cache import KVCache
 from mlx_audio.tts.models.vibevoice.config import (
@@ -15,11 +15,11 @@ from mlx_audio.tts.models.vibevoice.config import (
     Qwen2DecoderConfig,
     SemanticTokenizerConfig,
 )
-from mlx_audio.tts.models.vibevoice.language_model import Attention
+from mlx_audio.tts.models.vibevoice.language_model import Attention, Qwen2Model
 from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
 
-def tiny_model():
+def tiny_model(tie_word_embeddings=False):
     model = Model(
         ModelConfig(
             model_type="vibevoice",
@@ -32,6 +32,7 @@ def tiny_model():
                 num_key_value_heads=2,
                 num_hidden_layers=1,
                 vocab_size=64,
+                tie_word_embeddings=tie_word_embeddings,
             ),
             diffusion_head_config=DiffusionHeadConfig(
                 hidden_size=64,
@@ -82,6 +83,64 @@ def test_diffusion_feedback_preserves_model_dtype(dtype, cfg_scale):
     assert (
         latent.dtype == feedback.dtype == hidden.dtype == cache[0].keys.dtype == dtype
     )
+
+
+def stub_tokenizer(model):
+    ids = {"<|vision_start|>": 1, "<|vision_end|>": 2, "<|vision_pad|>": 3}
+    model.tokenizer = SimpleNamespace(
+        convert_tokens_to_ids=ids.get,
+        bos_token_id=None,
+        eos_token_id=4,
+        encode=lambda text, **kwargs: [0],
+    )
+
+
+@pytest.mark.parametrize("tied", [False, True])
+def test_lm_head_follows_tie_word_embeddings(tied):
+    model = tiny_model(tie_word_embeddings=tied)
+    checkpoint = {
+        key: value
+        for key, value in tree_flatten(model.parameters())
+        if not (tied and key == "lm_head.weight")
+    }
+    model.load_weights(list(model.sanitize(checkpoint).items()))
+
+    hidden_states = []
+    forward = Qwen2Model.__call__
+
+    def record(self, *args, **kwargs):
+        output = forward(self, *args, **kwargs)
+        hidden_states.append(output[0])
+        return output
+
+    stub_tokenizer(model)
+    with (
+        patch.object(Qwen2Model, "__call__", record),
+        patch.object(
+            model, "_select_non_streaming_next_token", side_effect=[3, 2, 1, 3, 4]
+        ) as select,
+    ):
+        next(model.generate("Hello", max_tokens=20, ddpm_steps=2))
+    hidden = hidden_states[0][:, -1, :]
+    head = model.language_model.embed_tokens.as_linear if tied else model.lm_head
+    np.testing.assert_allclose(
+        np.array(select.call_args_list[0].args[0]),
+        np.array(head(hidden)),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
+def test_non_streaming_audio_is_float32_for_bfloat16_weights():
+    model = tiny_model(tie_word_embeddings=True)
+    model.update(tree_map(lambda value: value.astype(mx.bfloat16), model.parameters()))
+    stub_tokenizer(model)
+    with patch.object(
+        model, "_select_non_streaming_next_token", side_effect=[3, 2, 1, 3, 4]
+    ):
+        result = next(model.generate("Hello", max_tokens=20, ddpm_steps=2))
+    assert result.audio.dtype == mx.float32
+    assert result.audio.size > 0
 
 
 def control_model():

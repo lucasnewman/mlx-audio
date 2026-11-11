@@ -33,6 +33,62 @@ LANGUAGE_TOKEN = {  # subset; matches Confucius LANGUAGE_TOKEN_MAP
 }
 
 
+def _segment_text(
+    text, count_tokens, lang, max_tokens=80, min_tokens=60, merge_threshold=20
+):
+    length = len if lang == "zh" else count_tokens
+    marks = "。？！；：.?!;" if lang == "zh" else ".?!;:"
+    if text and text[-1] not in marks:
+        text += "。" if lang == "zh" else "."
+
+    sentences = []
+    start = 0
+    for i, char in enumerate(text):
+        if char in marks and i > start:
+            end = i + 2 if text[i + 1 : i + 2] == '"' else i + 1
+            sentences.append(text[start:end])
+            start = end
+
+    if len(sentences) == 1 and length(sentences[0]) > max_tokens:
+        unbroken = sentences[0][:-1]
+        sentences = [
+            unbroken[i : i + max_tokens] for i in range(0, len(unbroken), max_tokens)
+        ]
+
+    segments = []
+    current = ""
+    for sentence in sentences:
+        if length(current + sentence) > max_tokens and length(current) > min_tokens:
+            segments.append(current)
+            current = ""
+        current += sentence
+
+    if current:
+        if length(current) < merge_threshold and segments:
+            segments[-1] += current
+        else:
+            segments.append(current)
+
+    if lang == "zh":
+        segments = [s[:-1] if s[-1] in "。；：.;" else s for s in segments]
+
+    return [s for s in segments if any(c.isalnum() for c in s)]
+
+
+def _cross_fade_concat(chunks, sample_rate, gap_duration=0.3):
+    fade = int(gap_duration * sample_rate) // 3
+    merged = chunks[0]
+    for chunk in chunks[1:]:
+        merged, chunk = merged.copy(), chunk.copy()
+        tail, head = min(fade, len(merged)), min(fade, len(chunk))
+        if tail:
+            merged[-tail:] *= np.linspace(1, 0, tail, dtype=merged.dtype)
+        if head:
+            chunk[:head] *= np.linspace(0, 1, head, dtype=chunk.dtype)
+        merged = np.concatenate([merged, np.zeros(fade, merged.dtype), chunk])
+    return merged
+
+
 @dataclass
 class ModelConfig(BaseModelArgs):
     model_path: str = ""
@@ -167,35 +223,49 @@ class Model(nn.Module):
         ref_mel = mx.array(_ref_mel(audio))
 
         lt = LANGUAGE_TOKEN.get(lang, LANGUAGE_TOKEN["en"])
-        ids = self._tok.encode(f"You are a helpful assistant. {lt}:{text}").ids
-        ids.append(self._tok.token_to_id("</s>"))
         cond_emb = self.prefix.cond_emb(cond_vec)
-        text_emb = self.prefix.text_emb(mx.array([ids]))
-        codes, latent = self.t2s.generate(
-            cond_emb,
-            text_emb,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            rep_pen=repetition_penalty,
-            seed=seed,
-        )
-
         T_ref = ref_mel.shape[1]
-        mu = self.s2a.build_mu(mx.array(codes[None]), mx.array(latent), T_ref)
-        mx.random.seed(seed)
-        z = mx.random.normal((1, 80, mu.shape[1]))
-        mel = self.s2a.solve_euler(
-            z,
-            mx.transpose(ref_mel, (0, 2, 1)),
-            mu,
-            style,
-            mx.linspace(0, 1, 26),
-            cfg=0.7,
-        )[:, :, T_ref:]
-        wav = self.voc(mel)
-        mx.eval(wav)
-        wav = mx.array(np.array(wav).reshape(-1))
+        segments = _segment_text(
+            text,
+            lambda t: len(self._tok.encode(t, add_special_tokens=False).ids),
+            lang,
+        )
+        if len(segments) < 2:
+            segments = [text]
+
+        chunks = []
+        token_count = 0
+        for i, segment in enumerate(segments):
+            ids = self._tok.encode(f"You are a helpful assistant. {lt}:{segment}").ids
+            ids.append(self._tok.token_to_id("</s>"))
+            text_emb = self.prefix.text_emb(mx.array([ids]))
+            codes, latent = self.t2s.generate(
+                cond_emb,
+                text_emb,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                rep_pen=repetition_penalty,
+                seed=seed + i,
+            )
+            token_count += len(codes)
+
+            mu = self.s2a.build_mu(mx.array(codes[None]), mx.array(latent), T_ref)
+            mx.random.seed(seed + i)
+            z = mx.random.normal((1, 80, mu.shape[1]))
+            mel = self.s2a.solve_euler(
+                z,
+                mx.transpose(ref_mel, (0, 2, 1)),
+                mu,
+                style,
+                mx.linspace(0, 1, 26),
+                cfg=0.7,
+            )[:, :, T_ref:]
+            wav = self.voc(mel)
+            mx.eval(wav)
+            chunks.append(np.array(wav).reshape(-1))
+
+        wav = mx.array(_cross_fade_concat(chunks, self.sample_rate))
 
         samples = wav.shape[0]
         dt = time.time() - t0
@@ -205,10 +275,10 @@ class Model(nn.Module):
             samples=samples,
             sample_rate=self.sample_rate,
             segment_idx=0,
-            token_count=len(codes),
+            token_count=token_count,
             audio_duration=f"{dur:.2f}s",
             real_time_factor=round(dt / dur, 2) if dur else 0.0,
-            prompt={"tokens": len(codes)},
+            prompt={"tokens": token_count},
             audio_samples={"samples": samples},
             processing_time_seconds=round(dt, 2),
             peak_memory_usage=0.0,

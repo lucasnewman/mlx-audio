@@ -367,6 +367,8 @@ class Model(nn.Module):
             new_scores = prev_scores * penalty
             token_logits = token_logits.at[0, prev_tokens].add(new_scores - prev_scores)
 
+        if temperature <= 0:
+            return mx.expand_dims(mx.argmax(token_logits, axis=-1), -1)
         token_logits = token_logits / temperature
 
         if top_k > 0:

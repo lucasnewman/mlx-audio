@@ -117,7 +117,9 @@ def sample(
         )
         scores = mx.put_along_axis(scores, ids, picked, axis=-1)
     if suppress:
-        scores[..., mx.array(list(suppress))] = -mx.inf
+        suppress_mask = mx.zeros((vocab,), dtype=mx.bool_)
+        suppress_mask[mx.array(list(suppress))] = True
+        scores = mx.where(suppress_mask, mx.array(-mx.inf, scores.dtype), scores)
     if temperature == 0 or (temperature is None and not top_k):
         return mx.argmax(scores, axis=-1)
     if temperature:

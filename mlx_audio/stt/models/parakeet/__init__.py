@@ -11,6 +11,11 @@ def prepare_config(config, model_path):
             "Use python -m mlx_audio.stt.models.parakeet.convert to preserve "
             "Parakeet Redux's ternary codes and scales without requantizing."
         )
+    if "encoder_config" in config and "durations" in config:
+        raise ValueError(
+            "Dense Hugging Face Parakeet checkpoints load directly with "
+            "mlx_audio.stt.load and need no conversion."
+        )
     return config
 
 

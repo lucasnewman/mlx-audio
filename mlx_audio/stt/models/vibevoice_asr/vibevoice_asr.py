@@ -816,12 +816,12 @@ class Model(nn.Module):
         }
 
         for _ in range(max_new_tokens):
-            logprobs = next_logits - mx.logsumexp(next_logits, axis=-1, keepdims=True)
             if chunk_tokens:
                 previous = mx.array(chunk_tokens, dtype=mx.int32)
                 for processor in logits_processors:
-                    logprobs = processor(previous, logprobs)
+                    next_logits = processor(previous, next_logits)
 
+            logprobs = next_logits - mx.logsumexp(next_logits, axis=-1, keepdims=True)
             token = sampler(logprobs)
             mx.eval(token)
             token_id = token.item()

@@ -185,6 +185,9 @@ def expand_abbreviations(text: str) -> str:
 _num_prefix_re = re.compile(r"#\d")
 _num_suffix_re = re.compile(r"\b\d+(K|M|B|T)\b", re.IGNORECASE)
 _comma_number_re = re.compile(r"(\d[\d,]+\d)")
+# A ten-digit phone number, as in "(415) 555-0123" or "555.123.4567", not part of
+# a longer number.
+_phone_number_re = re.compile(r"(?<!\d)(\(?\d{3}\)?[-.\s]\d{3}[-.\s]?\d{4})(?!\d)")
 _time_re = re.compile(r"(\d\d?:\d\d(?::\d\d(?:\.\d+)?)?)")
 _dollars_re = re.compile(r"\$([\d.,]*\d+)")
 _ordinal_re = re.compile(r"\d+(st|nd|rd|th)")
@@ -211,6 +214,12 @@ def _split_alphanumeric(m):
 
 def _remove_commas(m):
     return m.group(1).replace(",", "")
+
+
+def _expand_phone_number(m):
+    digits = re.sub(r"\D", "", m.group(1))
+    groups = (digits[:3], digits[3:6], digits[6:])
+    return ", ".join(" ".join(group) for group in groups)
 
 
 def _expand_time(m):
@@ -293,6 +302,7 @@ def normalize_numbers(text: str) -> str:
     text = re.sub(_num_prefix_re, _expand_num_prefix, text)
     text = re.sub(_num_suffix_re, _expand_num_suffix, text)
     text = re.sub(_comma_number_re, _remove_commas, text)
+    text = re.sub(_phone_number_re, _expand_phone_number, text)
     text = re.sub(_time_re, _expand_time, text)
     text = re.sub(_dollars_re, _expand_dollars, text)
     text = re.sub(_decimal_number_re, _expand_decimal_point, text)
