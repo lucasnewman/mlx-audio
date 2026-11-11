@@ -124,6 +124,8 @@ class _VoiceCache:
 class Model(nn.Module):
     # The CLI passes reference files unread, so _samples resamples them.
     preserve_ref_audio_path = True
+    # The CLI must still transcribe references when no transcript is supplied.
+    requires_ref_text = True
 
     def __init__(self, config: ModelConfig):
         super().__init__()

@@ -1,7 +1,7 @@
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import mlx.core as mx
 import numpy as np
@@ -453,12 +453,20 @@ class TestGenerateAudio(unittest.TestCase):
         model = MagicMock()
         model.sample_rate = 48000
         model.preserve_ref_audio_path = True
-        model.generate.return_value = [self._result([0.1, 0.2], sample_rate=48000)]
+
+        def generate(text, ref_audio=None, ref_text=None, **kwargs):
+            pass
+
+        model.generate = create_autospec(
+            generate,
+            return_value=[self._result([0.1, 0.2], sample_rate=48000)],
+        )
 
         generate_audio(
             text="hello",
             model=model,
             ref_audio="speaker.wav",
+            stt_model=None,
             verbose=False,
         )
 
