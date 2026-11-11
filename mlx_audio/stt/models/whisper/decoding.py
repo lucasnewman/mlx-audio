@@ -429,6 +429,25 @@ class ApplyTimestampRules(LogitFilter):
                 & ~penultimate_was_timestamp
                 & (token_ids < self.tokenizer.eot)
             )
+
+            # Timestamps cannot decrease. Only a new segment's start may
+            # equal the preceding segment's end; its own end must advance.
+            sampled_tokens = tokens[:, self.sample_begin :]
+            timestamp_positions = mx.where(
+                sampled_tokens >= timestamp_begin, mx.arange(n_sampled), -1
+            )
+            last_timestamp_index = timestamp_positions.max(axis=-1, keepdims=True)
+            last_timestamp = mx.take_along_axis(
+                sampled_tokens, mx.maximum(last_timestamp_index, 0), axis=-1
+            )
+            first_allowed_timestamp = last_timestamp + (
+                ~last_was_timestamp | penultimate_was_timestamp
+            ).astype(mx.int32)
+            blocked = blocked | (
+                (last_timestamp_index >= 0)
+                & is_timestamp
+                & (token_ids < first_allowed_timestamp)
+            )
         else:
             # suppress generating non-timestamp tokens at the beginning
             blocked = blocked | ~is_timestamp
@@ -439,7 +458,9 @@ class ApplyTimestampRules(LogitFilter):
                 blocked = blocked | (token_ids > last_allowed)
 
         # if sum of probability over timestamps is above any other token, sample timestamp
-        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        # float32 output: decoding has always run on promoted fp16 logits here
+        masked_logits = mx.where(blocked, -mx.inf, logits.astype(mx.float32))
+        logprobs = masked_logits - mx.logsumexp(masked_logits, axis=-1, keepdims=True)
         timestamp_logprob = logprobs[:, timestamp_begin:].logsumexp(
             axis=-1, keepdims=True
         )
@@ -449,8 +470,7 @@ class ApplyTimestampRules(LogitFilter):
         blocked = blocked | (
             (timestamp_logprob > max_text_token_logprob) & ~is_timestamp
         )
-        # float32 output: decoding has always run on promoted fp16 logits here
-        return mx.where(blocked, -mx.inf, logits.astype(mx.float32))
+        return mx.where(blocked, -mx.inf, masked_logits)
 
 
 class DecodingTask:
