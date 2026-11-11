@@ -10,7 +10,8 @@ class TTSBatchOptions:
     top_p: float = 1.0
     top_k: int = 50
     repetition_penalty: float = 1.05
-    max_tokens: int = 4096
+    # None lets the model resolve its own generation limit.
+    max_tokens: int | None = None
     lang_code: str = "auto"
     stream: bool = False
     streaming_interval: float = 2.0

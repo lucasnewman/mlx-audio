@@ -601,6 +601,30 @@ def _build_generation_result(
     )
 
 
+_TERMINAL_PUNCTUATION = ".!?\u2026"
+_WEAK_PUNCTUATION = ",;:-\u2013\u2014"
+_CLOSERS = "\"'\u201d\u2019)]\u00bb"
+
+
+def _ensure_terminal_punctuation(text: str) -> str:
+    """Make sure the prompt ends with sentence-final punctuation.
+
+    The model is trained on sentences that end with a period, a question mark
+    or an exclamation mark. Without one, the last word is often mispronounced
+    or repeated. Text that already ends with one, possibly followed by closing
+    quotes or brackets, is left alone. A trailing comma, colon or dash is
+    replaced by a period. Anything else gets a period after the closing quote
+    or bracket.
+    """
+    core = text.rstrip(_CLOSERS + " ")
+    closers = text[len(core) :].strip()
+    if not core or core[-1] in _TERMINAL_PUNCTUATION:
+        return text
+    if core[-1] in _WEAK_PUNCTUATION:
+        return core.rstrip(_WEAK_PUNCTUATION + " ") + "." + closers
+    return text + "."
+
+
 def prepare_text_prompt(text: str) -> tuple[str, int]:
     text = text.strip()
     if text == "":
@@ -615,8 +639,7 @@ def prepare_text_prompt(text: str) -> tuple[str, int]:
     if not text[0].isupper():
         text = text[0].upper() + text[1:]
 
-    if text[-1].isalnum():
-        text = text + "."
+    text = _ensure_terminal_punctuation(text)
 
     if len(text.split()) < 5:
         text = " " * 8 + text
@@ -653,7 +676,6 @@ def _is_inner_punctuation(
     )
 
 
-_CLOSERS = "\"'\u201d\u2019)]\u00bb"
 # A closing quote can span several byte tokens; bound the lookahead so the
 # check stays linear.
 _MAX_CLOSER_TOKENS = 8

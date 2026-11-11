@@ -250,6 +250,8 @@ class InferenceBroker:
                     for failed_request in requests:
                         failed_request.emit_error(exc)
                         failed_request.emit_done()
+                finally:
+                    mx.clear_cache()
         finally:
             for session in list(self._continuous_sessions.values()):
                 session.fail(RuntimeError("Inference broker stopped."))
@@ -356,3 +358,4 @@ class InferenceBroker:
 
             if session.idle:
                 self._continuous_sessions.pop(session_key, None)
+                mx.clear_cache()

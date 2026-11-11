@@ -103,63 +103,40 @@ class SNAC(nn.Module):
         audio_hat = self.decoder(z_q.moveaxis(1, 2))
         return audio_hat
 
-    def decode_stream(
+    def decode_range(
         self,
         codes: List[mx.array],
-        prev_codes: List[mx.array] = None,
-        context_frames: int = 8,
-    ) -> Tuple[mx.array, List[mx.array]]:
-        """Streaming decode that maintains context for consistent output.
+        start: int,
+        end: int,
+        left_context: int,
+        right_context: int,
+    ) -> mx.array:
+        """Decode frames [start, end) with neighbouring frames as context.
+
+        A frame is one code of the coarsest layer. The decoder needs codes on
+        both sides of a cut to match a decode of the whole sequence, so only
+        the samples of the requested range are returned.
 
         Args:
-            codes: New code frames to decode [layer1, layer2, layer3]
-            prev_codes: Previous context codes (None for first call)
-            context_frames: Number of previous frames to use as context
+            codes: All code frames so far [layer1, layer2, layer3]
+            start: First frame to return
+            end: One past the last frame to return
+            left_context: Frames decoded before start and discarded
+            right_context: Frames decoded after end and discarded
 
         Returns:
-            Tuple of (new_audio_samples, updated_context_codes)
+            Audio samples for the requested frames, shape (B, T, 1)
         """
-        if prev_codes is None:
-            # First call - decode normally and save context
-            audio = self.decode(codes)
-            # Save last context_frames as context for next call
-            new_context = [
-                c[:, -context_frames:] if c.shape[1] > context_frames else c
-                for c in codes
-            ]
-            return audio, new_context
-
-        # Concatenate context with new codes for each layer
-        # Need to handle different strides: layer0 has 1x, layer1 has 2x, layer2 has 4x the frames
-        combined_codes = []
-        for i, (prev, new) in enumerate(zip(prev_codes, codes)):
-            # Adjust context size based on VQ stride
-            stride = self.vq_strides[i]
-            layer_context = max(1, context_frames // stride)
-            if prev.shape[1] > layer_context:
-                prev = prev[:, -layer_context:]
-            combined = mx.concatenate([prev, new], axis=1)
-            combined_codes.append(combined)
-
-        # Decode the combined sequence
-        full_audio = self.decode(combined_codes)
-
-        # Calculate how many samples came from context
-        # Each code frame produces hop_length samples after all upsampling
-        context_samples = context_frames * self.hop_length
-
-        # Return only new samples (after context region)
-        if full_audio.shape[-1] > context_samples:
-            new_audio = full_audio[..., context_samples:]
-        else:
-            new_audio = full_audio
-
-        # Update context with end of current codes
-        new_context = [
-            c[:, -context_frames:] if c.shape[1] > context_frames else c for c in codes
+        first = max(0, start - left_context)
+        last = min(codes[0].shape[1], end + right_context)
+        coarsest = self.vq_strides[0]
+        window = [
+            c[:, first * (coarsest // stride) : last * (coarsest // stride)]
+            for c, stride in zip(codes, self.vq_strides)
         ]
-
-        return new_audio, new_context
+        audio = self.decode(window)
+        frame_samples = int(self.hop_length) * coarsest
+        return audio[:, (start - first) * frame_samples : (end - first) * frame_samples]
 
     def _extra_repr(self):
         return (
