@@ -1299,6 +1299,40 @@ def test_tts_speech_omitted_sampling_uses_model_generate_config(
     assert kwargs["max_tokens"] == 8192
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("model_default", [512, None])
+@pytest.mark.parametrize(
+    "sent", [{}, {"max_tokens": None}, {"max_tokens": 17}, {"max_tokens": 0}]
+)
+def test_tts_speech_uses_model_token_default(
+    client, mock_model_provider, stream, model_default, sent
+):
+    limits = []
+
+    def generate(text, *, max_tokens=model_default, **kwargs):
+        # None can select an input-dependent limit inside a model.
+        limits.append(len(text) * 80 if max_tokens is None else max_tokens)
+        yield MockAudioResult(np.zeros(160, dtype=np.float32), 16000)
+
+    model = MagicMock(spec=["generate"])
+    model.generate = MagicMock(wraps=generate)
+    mock_model_provider.load_model = MagicMock(return_value=model)
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={"model": "test_tts", "input": "Hello", "stream": stream, **sent},
+    )
+
+    assert response.status_code == 200
+    expected = sent.get("max_tokens")
+    if expected is None:
+        assert "max_tokens" not in model.generate.call_args.kwargs
+        expected = 400 if model_default is None else model_default
+    else:
+        assert model.generate.call_args.kwargs["max_tokens"] == expected
+    assert limits == [expected]
+
+
 @pytest.mark.parametrize(
     "sent, expected",
     [
@@ -1374,6 +1408,7 @@ def test_tts_continuous_batch_options_use_generate_config():
     model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
 
     options = adapter._build_batch_options(_tts_inference_request(model))
+    assert options.max_tokens == 8192
     assert (
         options.temperature,
         options.top_p,
@@ -1395,12 +1430,53 @@ def test_tts_continuous_batch_options_use_generate_config():
     ) == (0.7, 0.95, 40, 1.0)
 
 
+@pytest.mark.parametrize(
+    "model_name, generate_config, model_default",
+    [
+        ("qwen3_tts", None, 2048),
+        ("qwen3_tts", {"max_new_tokens": None}, 2048),
+        ("qwen3_tts", {"max_new_tokens": 8192}, 8192),
+        ("higgs_audio_v3", None, 2048),
+    ],
+)
+@pytest.mark.parametrize(
+    "sent", [{}, {"max_tokens": None}, {"max_tokens": 17}, {"max_tokens": 0}]
+)
+def test_tts_continuous_session_uses_model_token_default(
+    model_name, generate_config, model_default, sent
+):
+    from mlx_audio.server import TTSExecutionAdapter
+
+    if model_name == "qwen3_tts":
+        from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSTalkerConfig
+        from mlx_audio.tts.models.qwen3_tts.qwen3_tts import Model
+
+        model = Model.__new__(Model)
+        model.config = SimpleNamespace(talker_config=Qwen3TTSTalkerConfig())
+        model.speech_tokenizer = object()
+        model.generate_config = generate_config
+    else:
+        from mlx_audio.tts.models.higgs_audio_v3.model import Model
+
+        model = Model.__new__(Model)
+
+    adapter = TTSExecutionAdapter()
+    request = _tts_inference_request(model, **sent)
+    session = adapter.create_continuous_batch_session(request)
+
+    expected = sent.get("max_tokens")
+    if expected is None:
+        expected = model_default
+    assert session.model_session.options.max_tokens == expected
+
+
 class _BatchTTSModel:
     sample_rate = 16000
 
     def __init__(self, generate_config):
         self.generate_config = generate_config
         self.batch_calls = []
+        self.batch_token_limits = []
 
     def batch_generate(
         self,
@@ -1411,10 +1487,11 @@ class _BatchTTSModel:
         top_k=0,
         repetition_penalty=0.0,
         lang_code="auto",
-        max_tokens=0,
+        max_tokens=512,
         stream=False,
         verbose=False,
     ):
+        self.batch_token_limits.append(max_tokens)
         self.batch_calls.append(
             {
                 "temperature": temperature,
@@ -1501,7 +1578,7 @@ def test_tts_run_batch_max_tokens():
     adapter.run_batch([_tts_inference_request(model) for _ in range(2)])
     adapter.run_batch([_tts_inference_request(model, max_tokens=300) for _ in range(2)])
 
-    assert [call["max_tokens"] for call in model.batch_calls] == [0, 300]
+    assert [call["max_tokens"] for call in model.batch_calls] == [512, 300]
 
 
 def test_tts_batch_key_separates_omitted_from_sent_sampling():
@@ -1523,6 +1600,36 @@ def test_tts_batch_key_separates_omitted_from_sent_sampling():
     assert adapter.continuous_batch_key(
         _tts_inference_request(model)
     ) != adapter.continuous_batch_key(_tts_inference_request(model, temperature=0.7))
+
+
+@pytest.mark.parametrize(
+    "sent", [{}, {"max_tokens": None}, {"max_tokens": 17}, {"max_tokens": 0}]
+)
+def test_tts_run_batch_uses_model_token_default(sent):
+    from mlx_audio.server import TTSExecutionAdapter
+
+    adapter = TTSExecutionAdapter()
+    model = _BatchTTSModel(None)
+    requests = [_tts_inference_request(model, **sent) for _ in range(2)]
+
+    adapter.run_batch(requests)
+
+    expected = sent.get("max_tokens")
+    assert model.batch_token_limits == [512 if expected is None else expected]
+
+
+def test_tts_batch_key_separates_model_default_from_explicit_token_limit():
+    from mlx_audio.server import TTSExecutionAdapter
+
+    adapter = TTSExecutionAdapter()
+    model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
+    omitted = _tts_inference_request(model)
+    null = _tts_inference_request(model, max_tokens=None)
+    explicit = _tts_inference_request(model, max_tokens=1200)
+
+    for key in (adapter.batch_key, adapter.continuous_batch_key):
+        assert key(omitted) == key(null)
+        assert key(omitted) != key(explicit)
 
 
 def test_tts_speech_streaming_sends_nothing_for_an_empty_final_chunk(
