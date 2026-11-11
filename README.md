@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="#installation"><strong>Installation</strong></a> &middot;
-  <a href="https://blaizzy.github.io/mlx-audio/">Documentation</a> &middot;
+  <a href="https://neywa-labs.github.io/mlx-audio/">Documentation</a> &middot;
   <a href="https://github.com/Blaizzy/mlx-audio/releases">Releases</a>
 </p>
 
