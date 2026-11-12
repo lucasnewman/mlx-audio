@@ -140,11 +140,10 @@ def apply_top_k(
         top_k (int): Top k tokens to sample from.
     """
     vocab_size = logprobs.shape[-1]
-    if not isinstance(top_k, int) or not (0 < top_k < vocab_size):
-        raise ValueError(
-            f"`top_k` has to be an integer in the (0, {vocab_size}] interval,"
-            f" but is {top_k}."
-        )
+    if not isinstance(top_k, int) or not 0 < top_k:
+        raise ValueError(f"`top_k` has to be a positive integer, but is {top_k}.")
+    if top_k >= vocab_size:
+        return logprobs
     mask_idx = mx.argpartition(-logprobs, kth=top_k - 1, axis=-1)[..., top_k:]
     masked_logprobs = mx.put_along_axis(
         logprobs, mask_idx, mx.array(-float("inf"), logprobs.dtype), axis=-1

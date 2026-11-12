@@ -72,6 +72,14 @@ def test_empty_reset_cancel_and_validation():
     assert session.step() == []
 
 
+def streaming_model():
+    m = model()
+    m.model_type = "nemotron_asr_streaming"
+    m.default_att_context_size = [70, 13]
+    m.encoder_config.att_context_size = [[70, 0], [70, 1], [70, 6], [70, 13]]
+    return m
+
+
 @pytest.mark.parametrize(
     ("delay_ms", "lookahead", "first_chunk_mel", "chunk_mel"),
     [(80, 0, 1, 8), (160, 1, 9, 16), (560, 6, 49, 56), (1120, 13, 105, 112)],
@@ -79,9 +87,7 @@ def test_empty_reset_cancel_and_validation():
 def test_native_transcription_delay_modes(
     delay_ms, lookahead, first_chunk_mel, chunk_mel
 ):
-    m = model()
-    m.model_type = "nemotron_asr_streaming"
-    m.default_att_context_size = [70, 13]
+    m = streaming_model()
     session = m.create_streaming_session(transcription_delay_ms=delay_ms)
     assert session.att_context_size == [70, lookahead]
     assert session._encoder.first_chunk_mel == first_chunk_mel
@@ -89,11 +95,42 @@ def test_native_transcription_delay_modes(
 
 
 def test_rejects_untrained_transcription_delay():
-    m = model()
-    m.model_type = "nemotron_asr_streaming"
-    m.default_att_context_size = [70, 13]
+    m = streaming_model()
     with pytest.raises(ValueError, match="expected one of \\[80, 160, 560, 1120\\]"):
         m.create_streaming_session(transcription_delay_ms=240)
+
+
+def nemotron_35_model():
+    # The mlx-community Nemotron 3.5 conversions use model_type "nemotron_asr".
+    m = model()
+    m.encoder_config.att_context_size = [[56, 3], [56, 0], [56, 6], [56, 13]]
+    return m
+
+
+@pytest.mark.parametrize(
+    ("delay_ms", "lookahead"), [(80, 0), (320, 3), (560, 6), (1120, 13)]
+)
+def test_nemotron_35_transcription_delay_modes(delay_ms, lookahead):
+    session = nemotron_35_model().create_streaming_session(
+        transcription_delay_ms=delay_ms
+    )
+    assert session.att_context_size == [56, lookahead]
+    assert session._encoder.chunk_mel == 8 * (lookahead + 1)
+
+
+def test_nemotron_35_rejects_untrained_delay():
+    m = nemotron_35_model()
+    with pytest.raises(ValueError, match="expected one of \\[80, 320, 560, 1120\\]"):
+        m.create_streaming_session(transcription_delay_ms=160)
+
+
+def test_delay_uses_the_trained_left_context():
+    # Older conversions carry no default_att_context_size, so the model keeps
+    # its [56, 13] fallback while the checkpoint was trained with left 70.
+    m = model()
+    m.encoder_config.att_context_size = [[70, 13], [70, 6], [70, 1], [70, 0]]
+    session = m.create_streaming_session(transcription_delay_ms=160)
+    assert session.att_context_size == [70, 1]
 
 
 def test_cooperative_budget_and_decoder_state():

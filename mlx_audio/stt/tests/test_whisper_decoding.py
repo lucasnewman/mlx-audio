@@ -134,3 +134,127 @@ def test_timestamp_rules_logprobs_broadcast_across_batch(monkeypatch):
     filtered = logit_filter.apply(logits, tokens)
 
     assert filtered.shape == logits.shape
+
+
+def test_timestamp_rules_forbid_decreasing_timestamps(monkeypatch):
+    decoding = _load_whisper_decoding(monkeypatch)
+    # ids 0-3 text, 4 <|notimestamps|>, 5 eot, 6-11 timestamps
+    tokenizer = SimpleNamespace(timestamp_begin=6, eot=5, no_timestamps=4)
+    logit_filter = decoding.ApplyTimestampRules(
+        tokenizer, sample_begin=2, max_initial_timestamp_index=None
+    )
+    text_wins = mx.array([[10.0] + [0.0] * 11])
+
+    def allowed(tokens):
+        row = logit_filter.apply(text_wins, mx.array([tokens])).tolist()[0]
+        return [i for i, v in enumerate(row) if v != float("-inf")]
+
+    # 8-9 ends one segment and starts the next at 9: its end comes after 9
+    assert allowed([1, 2, 8, 9, 0]) == [0, 1, 2, 3, 5, 10, 11]
+    # a segment ended at 8: the next starts at 8 or later; eot is the only
+    # text left and the allowed timestamps outweigh it
+    assert allowed([1, 2, 0, 8]) == [8, 9, 10, 11]
+    # <|0.00|> counts as a timestamp too
+    assert allowed([1, 2, 6, 0]) == [0, 1, 2, 3, 5, 7, 8, 9, 10, 11]
+
+
+def test_timestamp_rules_weigh_only_allowed_timestamps(monkeypatch):
+    decoding = _load_whisper_decoding(monkeypatch)
+    tokenizer = SimpleNamespace(timestamp_begin=6, eot=5, no_timestamps=4)
+    logit_filter = decoding.ApplyTimestampRules(
+        tokenizer, sample_begin=2, max_initial_timestamp_index=None
+    )
+    # timestamps together outweigh text, but every one of them is already
+    # forbidden after the last timestamp 11, so text must stay allowed
+    timestamps_win = mx.array([[0.0] * 6 + [2.0] * 6])
+
+    row = logit_filter.apply(timestamps_win, mx.array([[1, 2, 10, 11, 0]]))
+
+    assert [i for i, v in enumerate(row.tolist()[0]) if v != float("-inf")] == [
+        0,
+        1,
+        2,
+        3,
+        5,
+    ]
+
+
+def _allowed(row):
+    return [i for i, v in enumerate(row) if v != float("-inf")]
+
+
+def test_timestamp_rules_mask(monkeypatch):
+    decoding = _load_whisper_decoding(monkeypatch)
+    # ids 0-3 text, 4 <|notimestamps|>, 5 eot, 6-9 timestamps
+    tokenizer = SimpleNamespace(timestamp_begin=6, eot=5, no_timestamps=4)
+
+    def apply(tokens, logits, max_initial_timestamp_index=None):
+        logit_filter = decoding.ApplyTimestampRules(
+            tokenizer,
+            sample_begin=2,
+            max_initial_timestamp_index=max_initial_timestamp_index,
+        )
+        return logit_filter.apply(mx.array(logits), mx.array(tokens)).tolist()
+
+    text_wins = [10.0] + [0.0] * 9
+
+    # nothing sampled yet: only timestamps up to max_initial_timestamp_index
+    assert [_allowed(r) for r in apply([[1, 2]], [text_wins], 1)] == [[6, 7]]
+
+    # a timestamp pair must be followed by text; a lone timestamp by another
+    # timestamp or eot; text by anything but <|notimestamps|>
+    filtered = apply([[1, 2, 6, 6], [1, 2, 0, 6], [1, 2, 0, 3]], [text_wins] * 3)
+    assert [_allowed(r) for r in filtered] == [
+        [0, 1, 2, 3, 5],
+        [6, 7, 8, 9],
+        [0, 1, 2, 3, 5, 6, 7, 8, 9],
+    ]
+    assert filtered[2] == [10.0, 0.0, 0.0, 0.0, float("-inf")] + [0.0] * 5
+
+    # the first sampled token counts as a pair when it is a timestamp
+    assert [_allowed(r) for r in apply([[1, 2, 7]], [text_wins])] == [[0, 1, 2, 3, 5]]
+
+    # timestamps together more likely than any text token: sample a timestamp
+    timestamps_win = [0.0] * 6 + [1.0] * 4
+    assert [_allowed(r) for r in apply([[1, 2, 0]], [timestamps_win])] == [[6, 7, 8, 9]]
+
+    # each row of a batch is judged on its own logits
+    filtered = apply([[1, 2, 0], [1, 2, 0]], [timestamps_win, text_wins])
+    assert [_allowed(r) for r in filtered] == [
+        [6, 7, 8, 9],
+        [0, 1, 2, 3, 5, 6, 7, 8, 9],
+    ]
+
+
+def test_timestamp_rules_return_float32(monkeypatch):
+    decoding = _load_whisper_decoding(monkeypatch)
+    tokenizer = SimpleNamespace(timestamp_begin=6, eot=5, no_timestamps=4)
+    logit_filter = decoding.ApplyTimestampRules(
+        tokenizer, sample_begin=2, max_initial_timestamp_index=None
+    )
+
+    filtered = logit_filter.apply(
+        mx.zeros((1, 10), dtype=mx.float16), mx.array([[1, 2, 0]])
+    )
+
+    assert filtered.dtype == mx.float32
+
+
+def test_timestamp_rules_track_each_batch_row_after_prefix(monkeypatch):
+    decoding = _load_whisper_decoding(monkeypatch)
+    tokenizer = SimpleNamespace(timestamp_begin=6, eot=5, no_timestamps=4)
+    logit_filter = decoding.ApplyTimestampRules(
+        tokenizer, sample_begin=2, max_initial_timestamp_index=None
+    )
+    text_wins = mx.array([[10.0] + [0.0] * 11] * 3)
+    # Timestamp 10 in the prefix must not affect any row. Sampled timestamps
+    # are tracked independently, including a row with no sampled timestamps.
+    tokens = mx.array([[10, 2, 6, 8, 0], [10, 2, 7, 9, 0], [10, 2, 0, 0, 0]])
+
+    filtered = logit_filter.apply(text_wins, tokens)
+
+    assert [_allowed(row) for row in filtered.tolist()] == [
+        [0, 1, 2, 3, 5, 9, 10, 11],
+        [0, 1, 2, 3, 5, 10, 11],
+        [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11],
+    ]

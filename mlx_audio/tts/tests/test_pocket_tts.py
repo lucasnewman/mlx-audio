@@ -27,7 +27,10 @@ from mlx_audio.tts.models.pocket_tts.convert import (
     load_source_weights,
 )
 from mlx_audio.tts.models.pocket_tts.flow_lm import FlowLMModel, lsd_decode
-from mlx_audio.tts.models.pocket_tts.pocket_tts import split_into_best_sentences
+from mlx_audio.tts.models.pocket_tts.pocket_tts import (
+    prepare_text_prompt,
+    split_into_best_sentences,
+)
 from mlx_audio.tts.models.pocket_tts.weights import _seanet_names
 
 
@@ -777,3 +780,52 @@ def test_split_still_ends_sentences_at_periods():
         CharTokenizer(),
         "I counted to 3. 14 people were there. They all stayed until the end.",
     ) == ["I counted to 3. 14 people were there.", "They all stayed until the end."]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "He said “Stop.” Then he left.",
+        "He said 'Stop.' Then he left.",
+        "(quietly.) Okay then.",
+        "He said (“Stop.”) Then he left.",
+        "He left. “Hi.” Bye.",
+    ],
+)
+def test_split_keeps_closing_quotes_and_brackets_with_their_sentence(text):
+    assert split_into_best_sentences(CharTokenizer(), text) == [text]
+
+
+def test_closing_quote_does_not_start_the_next_chunk():
+    assert split_into_best_sentences(
+        CharTokenizer(),
+        "“We should leave before the storm reaches the valley.” "
+        "She looked at the dark clouds.",
+    ) == [
+        "“We should leave before the storm reaches the valley.”",
+        "She looked at the dark clouds.",
+    ]
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("hello world", "Hello world."),
+        ("it costs 42", "It costs 42."),
+        ("hello world!", "Hello world!"),
+        ("wait for it...", "Wait for it..."),
+        ("hello world,", "Hello world."),
+        ("hello world:", "Hello world."),
+        ("hello world -", "Hello world."),
+        ('he said "go home"', 'He said "go home".'),
+        ("she whispered 'run'", "She whispered 'run'."),
+        ('he said "go home."', 'He said "go home."'),
+        ('he said "go home,"', 'He said "go home."'),
+        ("is it (really)?", "Is it (really)?"),
+        ("see the note (below)", "See the note (below)."),
+        ("up by 50%", "Up by 50%."),
+    ],
+)
+def test_prompt_ends_with_terminal_punctuation(text, expected):
+    prompt, _ = prepare_text_prompt(text)
+    assert prompt.strip() == expected

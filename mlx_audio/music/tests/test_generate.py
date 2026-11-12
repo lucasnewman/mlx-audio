@@ -90,6 +90,50 @@ def test_generate_music_joins_results_and_writes_audio(mock_write, tmp_path) -> 
     )
 
 
+def test_generate_music_omits_lyrics_and_steps_when_unset(tmp_path) -> None:
+    model = MagicMock()
+    model.generate.return_value = [
+        SimpleNamespace(audio=mx.zeros((4, 2)), sample_rate=44_100)
+    ]
+
+    generate_music(
+        caption="rain on a tin roof",
+        lyrics=None,
+        model=model,
+        output_path=tmp_path / "rain.wav",
+        verbose=False,
+    )
+
+    model.generate.assert_called_once_with(text="rain on a tin roof", seed=0)
+
+
+def test_main_passes_guidance_without_lyrics() -> None:
+    with (
+        patch(
+            "sys.argv",
+            [
+                "generate.py",
+                "--model",
+                "model",
+                "--caption",
+                "caption",
+                "--cfg-scale",
+                "3.5",
+                "--negative-prompt",
+                "muffled",
+            ],
+        ),
+        patch("mlx_audio.music.generate.generate_music") as mock_generate,
+    ):
+        main()
+
+    kwargs = mock_generate.call_args.kwargs
+    assert kwargs["lyrics"] is None
+    assert kwargs["steps"] is None
+    assert kwargs["cfg_scale"] == 3.5
+    assert kwargs["negative_prompt"] == "muffled"
+
+
 @pytest.mark.parametrize("verbose", [False, True])
 def test_main_reads_lyrics_file(tmp_path, verbose) -> None:
     lyrics_path = tmp_path / "lyrics.txt"
@@ -118,8 +162,10 @@ def test_main_reads_lyrics_file(tmp_path, verbose) -> None:
         lyrics="[chorus]\nSing with me",
         model="model",
         duration=None,
-        steps=30,
+        steps=None,
         seed=0,
         output_path=configure_parser().get_default("output"),
         verbose=verbose,
+        cfg_scale=1.0,
+        negative_prompt=None,
     )

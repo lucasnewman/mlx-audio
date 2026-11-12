@@ -601,6 +601,30 @@ def _build_generation_result(
     )
 
 
+_TERMINAL_PUNCTUATION = ".!?\u2026"
+_WEAK_PUNCTUATION = ",;:-\u2013\u2014"
+_CLOSERS = "\"'\u201d\u2019)]\u00bb"
+
+
+def _ensure_terminal_punctuation(text: str) -> str:
+    """Make sure the prompt ends with sentence-final punctuation.
+
+    The model is trained on sentences that end with a period, a question mark
+    or an exclamation mark. Without one, the last word is often mispronounced
+    or repeated. Text that already ends with one, possibly followed by closing
+    quotes or brackets, is left alone. A trailing comma, colon or dash is
+    replaced by a period. Anything else gets a period after the closing quote
+    or bracket.
+    """
+    core = text.rstrip(_CLOSERS + " ")
+    closers = text[len(core) :].strip()
+    if not core or core[-1] in _TERMINAL_PUNCTUATION:
+        return text
+    if core[-1] in _WEAK_PUNCTUATION:
+        return core.rstrip(_WEAK_PUNCTUATION + " ") + "." + closers
+    return text + "."
+
+
 def prepare_text_prompt(text: str) -> tuple[str, int]:
     text = text.strip()
     if text == "":
@@ -615,8 +639,7 @@ def prepare_text_prompt(text: str) -> tuple[str, int]:
     if not text[0].isupper():
         text = text[0].upper() + text[1:]
 
-    if text[-1].isalnum():
-        text = text + "."
+    text = _ensure_terminal_punctuation(text)
 
     if len(text.split()) < 5:
         text = " " * 8 + text
@@ -653,6 +676,40 @@ def _is_inner_punctuation(
     )
 
 
+# A closing quote can span several byte tokens; bound the lookahead so the
+# check stays linear.
+_MAX_CLOSER_TOKENS = 8
+# Characters allowed after the punctuation while skipping closers: U+FFFD is an
+# incomplete closer.
+_CLOSERS_OR_PARTIAL = _CLOSERS + "\ufffd"
+
+
+def _skip_closers(list_of_tokens: list[int], segment_start_idx: int, tokenizer) -> int:
+    """Return where the sentence starting at segment_start_idx should really
+    start: after the closing quotes and brackets that directly follow the
+    punctuation, as in "“Stop.”" or "(quietly.)", so that they stay with
+    their sentence instead of starting the next one, as in pocket-tts.
+
+    A closer like the curly quote is made of byte tokens that decode to U+FFFD
+    on their own, so the tokens are decoded together with the punctuation and
+    the start only moves past complete closers. A closer preceded by a space
+    opens the next sentence and is left alone.
+    """
+    punctuation = tokenizer.decode(
+        list_of_tokens[segment_start_idx - 1 : segment_start_idx]
+    )
+    start = segment_start_idx
+    stop = min(len(list_of_tokens), segment_start_idx + _MAX_CLOSER_TOKENS)
+    for end in range(segment_start_idx + 1, stop + 1):
+        window = tokenizer.decode(list_of_tokens[segment_start_idx - 1 : end])
+        after = window[len(punctuation) :]
+        if not after or any(c not in _CLOSERS_OR_PARTIAL for c in after):
+            break
+        if "\ufffd" not in after:
+            start = end
+    return start
+
+
 def split_into_best_sentences(tokenizer, text_to_generate: str) -> list[str]:
     text_to_generate, _ = prepare_text_prompt(text_to_generate)
     text_to_generate = text_to_generate.strip()
@@ -671,7 +728,9 @@ def split_into_best_sentences(tokenizer, text_to_generate: str) -> list[str]:
             if previous_was_end_of_sentence_token and not _is_inner_punctuation(
                 list_of_tokens, token_idx, tokenizer
             ):
-                end_of_sentences_indices.append(token_idx)
+                start = _skip_closers(list_of_tokens, token_idx, tokenizer)
+                if start < len(list_of_tokens):
+                    end_of_sentences_indices.append(start)
             previous_was_end_of_sentence_token = False
     end_of_sentences_indices.append(len(list_of_tokens))
 

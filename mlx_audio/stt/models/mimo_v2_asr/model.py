@@ -183,14 +183,14 @@ class MiMoSampler:
         scores = self.process(scores)
 
         # Remove forbidden tokens
-        for t in removed_tokens or []:
-            if t < scores.shape[-1]:
-                scores[:, t] = float("-inf")
+        banned = [t for t in removed_tokens or [] if 0 <= t < scores.shape[-1]]
+        if banned:
+            mask = mx.zeros((scores.shape[-1],), dtype=mx.bool_)
+            mask[mx.array(banned, dtype=mx.int32)] = True
+            scores = mx.where(mask, mx.array(-float("inf"), dtype=scores.dtype), scores)
 
         if self.do_sample:
-            probs = mx.softmax(scores, axis=-1)
-            # Sample via categorical distribution
-            return mx.random.categorical(probs, axis=-1)
+            return mx.random.categorical(scores, axis=-1)
 
         return mx.argmax(scores, axis=-1)
 

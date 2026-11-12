@@ -7,7 +7,10 @@ import mlx.nn as nn
 
 from mlx_audio.utils import base_load_model
 
-MODEL_REMAPPING = {"minimax_music3": "minimax_music3"}
+MODEL_REMAPPING = {
+    "minimax_music3": "minimax_music3",
+    "stable_audio_3": "stable_audio_3",
+}
 
 
 def load_model(

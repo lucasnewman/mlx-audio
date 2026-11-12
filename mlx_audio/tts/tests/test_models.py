@@ -2409,6 +2409,30 @@ class TestSoprano(unittest.TestCase):
         self.assertEqual(clean_text("The 21st lap."), "the twenty first lap.")
         self.assertEqual(clean_text("It is 10K."), "it is ten thousand.")
 
+    def test_phone_numbers(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        # Phone numbers are read digit by digit in three groups, as in Soprano's
+        # reference normalizer, instead of as three large numbers.
+        self.assertEqual(
+            clean_text("Call 555-123-4567 now."),
+            "call five five five, one two three, four five six seven now.",
+        )
+        self.assertEqual(
+            clean_text("Call (415) 555-0123 today."),
+            "call four one five, five five five, zero one two three today.",
+        )
+        self.assertEqual(
+            clean_text("Fax 555.123.4567."),
+            "fax five five five, one two three, four five six seven.",
+        )
+        # Digits inside a longer number are not a phone number.
+        self.assertEqual(
+            clean_text("Order 12345 678 9012 shipped."),
+            "order twelve thousand three hundred forty five six hundred seventy eight"
+            " nine thousand twelve shipped.",
+        )
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations
@@ -6898,6 +6922,18 @@ class TestAudioDiTModel(unittest.TestCase):
             total *= s
         self.assertEqual(total, cfg.vae_config.downsampling_ratio)
 
+    # -- text --
+
+    def test_normalize_text_replaces_quotes(self):
+        from mlx_audio.tts.models.longcat_audiodit.longcat_audiodit import (
+            _normalize_text,
+        )
+
+        self.assertEqual(
+            _normalize_text('He said "Hi" and \u201cHello\u201d, \u2018bye\u2019.'),
+            "he said hi and hello , bye .",
+        )
+
     # -- forward --
 
     def test_vae_encode_decode_shapes(self):
@@ -8671,6 +8707,14 @@ class TestMeloTTSText(unittest.TestCase):
         self.assertEqual(text_normalize("Dr. Smith"), "doctor smith")
         self.assertIn("forty two", text_normalize("42"))
         self.assertIn("three point one four", text_normalize("3.14"))
+
+    def test_text_normalize_decimal_zeros(self):
+        from mlx_audio.tts.models.melotts.text import text_normalize
+
+        self.assertEqual(
+            text_normalize("It costs 2.50 now."), "it costs two point five zero now."
+        )
+        self.assertEqual(text_normalize("1.05"), "one point zero five")
 
     def _require_g2p(self):
         try:

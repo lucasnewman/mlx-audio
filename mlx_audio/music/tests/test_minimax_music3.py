@@ -44,6 +44,44 @@ def test_tiny_generation_returns_finite_stereo_audio() -> None:
     assert result.prompt["tokens-per-sec"] > 0
     assert result.audio_samples["samples"] == result.samples
     assert result.audio_samples["samples-per-sec"] > 0
+    with pytest.raises(ValueError, match="Lyrics are required"):
+        next(model.generate(text="Genre: acoustic pop."))
+
+
+def test_each_chunk_is_vocoded_before_the_next_is_denoised(monkeypatch) -> None:
+    from mlx_audio.music.models.minimax_music3 import minimax_music3
+    from mlx_audio.music.models.minimax_music3.vocoder import Vocoder
+
+    config = minimax_music3.ModelConfig.tiny()
+    model = minimax_music3.Model(config)
+    events = []
+    denoise, vocode, evaluate = minimax_music3.denoise_chunk, Vocoder.__call__, mx.eval
+
+    def record_denoise(*args, **kwargs):
+        events.append("denoise")
+        return denoise(*args, **kwargs)
+
+    def record_vocode(self, latents):
+        wave = vocode(self, latents)
+        events.append(id(wave))
+        return wave
+
+    def record_eval(*arrays):
+        events.extend(("evaluated", id(array)) for array in arrays)
+        return evaluate(*arrays)
+
+    monkeypatch.setattr(minimax_music3, "denoise_chunk", record_denoise)
+    monkeypatch.setattr(Vocoder, "__call__", record_vocode)
+    monkeypatch.setattr(mx, "eval", record_eval)
+    hiddens = mx.zeros((1, 301, config.num_condition_layers * config.hidden_size))
+
+    model._run_flow(hiddens, num_inference_steps=1, seed=0)
+
+    waves = [event for event in events if isinstance(event, int)]
+    assert events.count("denoise") == len(waves) == 3
+    for wave in waves[:-1]:
+        next_denoise = events.index("denoise", events.index(wave))
+        assert ("evaluated", wave) in events[events.index(wave) : next_denoise]
 
 
 @pytest.mark.parametrize(

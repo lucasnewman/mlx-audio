@@ -52,17 +52,18 @@ class NemotronStreamingSession:
             self.att_context_size = self._context.as_list()
         elif att_context_size is not None:
             raise ValueError("att_context_size needs a buffered (Unified) checkpoint")
-        elif (
-            transcription_delay_ms is not None
-            and model.model_type == "nemotron_asr_streaming"
-        ):
-            lookahead = {80: 0, 160: 1, 560: 6, 1120: 13}.get(transcription_delay_ms)
-            if lookahead is None:
+        elif transcription_delay_ms is not None:
+            # One encoder frame is 80 ms; a chunk waits for lookahead + 1 frames.
+            contexts = {
+                (right + 1) * 80: [left, right]
+                for left, right in model.encoder_config.att_context_size
+            }
+            if transcription_delay_ms not in contexts:
                 raise ValueError(
                     f"Unsupported transcription_delay_ms={transcription_delay_ms}; "
-                    "expected one of [80, 160, 560, 1120]"
+                    f"expected one of {sorted(contexts)}"
                 )
-            self.att_context_size = [model.default_att_context_size[0], lookahead]
+            self.att_context_size = contexts[transcription_delay_ms]
         self.input_sample_rate = model.preprocessor_config.sample_rate
         self._lock = Lock()
         self.reset()

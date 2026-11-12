@@ -80,6 +80,7 @@ nav:
     - Music Generation:
       - models/music/index.md
       - MiniMax Music 3: models/music/minimax-music3.md
+      - Stable Audio 3: models/music/stable-audio-3.md
     - Text-to-Speech:
       - models/tts/index.md
       - Ming-3.0 TTS Tiny: models/tts/ming3-tiny.md

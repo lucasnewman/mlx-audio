@@ -182,6 +182,7 @@ class Model(nn.Module):
             previous_latent = latents[..., carry_start:carry_end]
             previous_condition = condition[:, carry_start:carry_end]
             waves.append(self.vocoder(latents))
+            mx.eval(waves[-1])
         return mx.concatenate(
             [
                 _crop_waveform(wave, index, len(waves))
@@ -194,7 +195,7 @@ class Model(nn.Module):
         self,
         text: str,
         *,
-        lyrics: str,
+        lyrics: str = "",
         duration: float | None = None,
         gen_duration: float | None = None,
         steps: int = 30,

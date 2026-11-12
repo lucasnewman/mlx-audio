@@ -169,6 +169,8 @@ class T2SMLX:
             logits[g] = np.where(
                 logits[g] > 0, logits[g] / rep_pen, logits[g] * rep_pen
             )
+        if temperature <= 0:
+            return int(np.argmax(logits))
         logits = logits / temperature
         if top_k and top_k < logits.shape[0]:
             kth = np.partition(logits, -top_k)[-top_k]
@@ -190,7 +192,7 @@ class T2SMLX:
         self,
         cond_emb,
         text_emb,
-        max_new=512,
+        max_length=1520,
         temperature=0.8,
         top_k=30,
         top_p=0.8,
@@ -210,7 +212,7 @@ class T2SMLX:
         mx.eval(logits)
         cur = [BOS]
         pos = 1
-        for _ in range(max_new):
+        for _ in range(max_length - Tt - 2):
             tok = self._sample(logits, cur[1:], temperature, top_k, top_p, rep_pen, rng)
             cur.append(tok)
             if tok == EOS:

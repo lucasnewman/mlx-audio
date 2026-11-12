@@ -335,7 +335,9 @@ class T3(nn.Module):
             )
 
         # Apply temperature
-        if temperature > 0 and temperature != 1.0:
+        if temperature <= 0:
+            return mx.argmax(logits, axis=-1)[:, None]
+        if temperature != 1.0:
             logits = logits / temperature
 
         # Apply top-k

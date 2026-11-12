@@ -3,6 +3,8 @@ import inspect
 import io
 import json
 import queue
+import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx2
@@ -19,8 +21,9 @@ pytest.importorskip("multipart", reason="python-multipart is required for server
 
 from fastapi.testclient import TestClient
 
-from mlx_audio.server import _stream_inference_results, app
+from mlx_audio.server import _stream_inference_results, _stream_transcription, app
 from mlx_audio.server_inference import InferenceResultChunk
+from mlx_audio.utils import resample_audio
 
 
 @pytest.fixture
@@ -140,6 +143,33 @@ def test_tts_speech(client, mock_model_provider):
         assert len(audio_data) > 0
     except Exception as e:
         pytest.fail(f"Failed to read or validate MP3 content: {e}")
+
+
+def test_tts_speech_releases_buffer_cache_after_request(
+    client, mock_model_provider, monkeypatch
+):
+    generated = threading.Event()
+    cleared = threading.Event()
+
+    def generate(input_text: str, **kwargs):
+        generated.set()
+        yield from sync_mock_audio_stream_generator(input_text, **kwargs)
+
+    def clear_cache():
+        if generated.is_set():
+            cleared.set()
+
+    mock_tts_model = MagicMock()
+    mock_tts_model.generate = generate
+    mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
+    monkeypatch.setattr(mx, "clear_cache", clear_cache)
+
+    response = client.post(
+        "/v1/audio/speech", json={"model": "test_tts_model", "input": "Hello world"}
+    )
+
+    assert response.status_code == 200
+    assert cleared.wait(timeout=5)
 
 
 def _hf_repo_not_found(model_name: str) -> RepositoryNotFoundError:
@@ -448,15 +478,16 @@ def _trackable(fn):
 
 
 def _ws_send_audio_and_collect(
-    client, mock_model_provider, generate_fn, config_extra=None
+    client, mock_model_provider, generate_fn, config_extra=None, sample_rate=16000
 ):
     """Connect WS, send config + 6s speech, stop, and return all messages."""
     mock_stt_model = MagicMock()
     mock_stt_model.generate = _trackable(generate_fn)
+    mock_stt_model.sample_rate = 16000
     mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
 
     messages = []
-    config = {"model": "test-model", "sample_rate": 16000}
+    config = {"model": "test-model", "sample_rate": sample_rate}
     if config_extra:
         config.update(config_extra)
     with client.websocket_connect("/v1/audio/transcriptions/realtime") as ws:
@@ -464,8 +495,8 @@ def _ws_send_audio_and_collect(
         assert ws.receive_json()["status"] == "ready"
 
         # 6s of speech exceeds initial_chunk_size (1.5s) and max_chunk_size (5s)
-        speech = make_speech_audio(6.0)
-        chunk_size = 4800  # 300ms chunks
+        speech = make_speech_audio(6.0, sample_rate=sample_rate)
+        chunk_size = int(sample_rate * 0.3)  # 300ms chunks
         for i in range(0, len(speech), chunk_size):
             ws.send_bytes(speech[i : i + chunk_size].tobytes())
 
@@ -586,6 +617,162 @@ def test_realtime_ws_streaming_disabled_fallback(client, mock_model_provider):
     # Should have at least one legacy text message
     text_msgs = [m for m in messages if "text" in m and "type" not in m]
     assert len(text_msgs) >= 1, f"Expected legacy text message, got: {messages}"
+
+
+def test_realtime_ws_declared_48k_reaches_model_at_16k(client, mock_model_provider):
+    """48 kHz client audio reaches the model resampled to 16 kHz.
+
+    First commit carries the 1.5 s initial buffer (72000 -> 24000 samples);
+    the second flushes after the 5 s cap crossing on a 300 ms boundary
+    (244800 -> 81600).
+    """
+    gen_fn = _make_streaming_generate(["ok"])
+    _, mock_stt_model = _ws_send_audio_and_collect(
+        client, mock_model_provider, gen_fn, sample_rate=48000
+    )
+
+    tracked = mock_stt_model.generate
+    assert len(tracked.call_args_list) == 2
+    first_audio = tracked.call_args_list[0][0][0]
+    second_audio = tracked.call_args_list[1][0][0]
+    assert isinstance(first_audio, mx.array)
+    assert len(first_audio) == 24000
+    assert len(second_audio) == 81600
+
+
+class _RecordingWebSocket:
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+
+class _RecordingStreamingModel:
+    def __init__(self, sample_rate=None, preprocessor_sample_rate=None):
+        if sample_rate is not None:
+            self.sample_rate = sample_rate
+        if preprocessor_sample_rate is not None:
+            self.preprocessor_config = SimpleNamespace(
+                sample_rate=preprocessor_sample_rate
+            )
+        self.received = []
+
+    def generate(self, audio, *, stream=False, language=None, verbose=False):
+        self.received.append(audio)
+        if stream:
+            return iter(["ok"])
+        return SimpleNamespace(text="ok", segments=None, language="en")
+
+
+@pytest.mark.parametrize("declared_rate", [8000, 16000, 32000, 48000])
+async def test_stream_transcription_resamples_to_default_rate(declared_rate):
+    model = _RecordingStreamingModel()
+    ws = _RecordingWebSocket()
+    audio = np.full(declared_rate, 0.1, dtype=np.float32)
+
+    await _stream_transcription(
+        ws, model, audio, declared_rate, "en", is_partial=False, streaming=True
+    )
+
+    assert len(model.received) == 1
+    assert isinstance(model.received[0], mx.array)
+    assert len(model.received[0]) == 16000
+
+
+async def test_stream_transcription_accepts_float_declared_rate():
+    model = _RecordingStreamingModel()
+    ws = _RecordingWebSocket()
+    audio = np.full(48000, 0.1, dtype=np.float32)
+
+    await _stream_transcription(
+        ws, model, audio, 48000.0, "en", is_partial=False, streaming=True
+    )
+
+    assert len(model.received) == 1
+    assert len(model.received[0]) == 16000
+
+
+async def test_stream_transcription_bad_model_rate_falls_back():
+    model = _RecordingStreamingModel(sample_rate="bogus")
+    ws = _RecordingWebSocket()
+
+    await _stream_transcription(
+        ws, model, np.zeros(16000, dtype=np.float32), 16000, "en", False
+    )
+
+    assert len(model.received[0]) == 16000
+
+
+async def test_stream_transcription_prefers_model_sample_rate():
+    model = _RecordingStreamingModel(sample_rate=24000, preprocessor_sample_rate=22050)
+    ws = _RecordingWebSocket()
+
+    await _stream_transcription(
+        ws, model, np.zeros(16000, dtype=np.float32), 16000, "en", False
+    )
+
+    assert len(model.received[0]) == 24000
+
+
+async def test_stream_transcription_uses_preprocessor_config_rate():
+    model = _RecordingStreamingModel(preprocessor_sample_rate=22050)
+    ws = _RecordingWebSocket()
+
+    await _stream_transcription(
+        ws, model, np.zeros(16000, dtype=np.float32), 16000, "en", False
+    )
+
+    assert len(model.received[0]) == 22050
+
+
+async def test_stream_transcription_equal_rate_no_resample(monkeypatch):
+    spy = MagicMock(wraps=resample_audio)
+    monkeypatch.setattr("mlx_audio.server.resample_audio", spy)
+    model = _RecordingStreamingModel(sample_rate=16000)
+    ws = _RecordingWebSocket()
+    audio = np.linspace(-0.5, 0.5, 16000, dtype=np.float32)
+
+    await _stream_transcription(
+        ws, model, audio, 16000, "en", is_partial=False, streaming=True
+    )
+
+    spy.assert_not_called()
+    assert np.array_equal(np.asarray(model.received[0]), audio)
+
+
+async def test_stream_transcription_non_streaming_keeps_declared_rate(
+    monkeypatch,
+):
+    written = {}
+
+    def fake_write(path, array, rate, **kwargs):
+        written["path"] = path
+        written["rate"] = rate
+        written["samples"] = len(array)
+
+    monkeypatch.setattr("mlx_audio.server.audio_write", fake_write)
+
+    model = _RecordingStreamingModel(sample_rate=16000)
+    ws = _RecordingWebSocket()
+
+    await _stream_transcription(
+        ws,
+        model,
+        np.zeros(48000, dtype=np.float32),
+        48000,
+        "en",
+        is_partial=False,
+        streaming=False,
+    )
+
+    assert written["rate"] == 48000
+    assert written["samples"] == 48000
+    assert isinstance(model.received[0], str)
+    message = ws.sent[0]
+    assert "type" not in message
+    assert message["text"] == "ok"
+    assert message["is_partial"] is False
 
 
 # --- /v1/realtime server-side VAD turn detection --------------------------
@@ -1137,8 +1324,41 @@ def test_tts_speech_omitted_sampling_uses_model_generate_config(
         "top_k": 50,
         "repetition_penalty": 1.05,
     }
-    # Only the four sampling fields are resolved from the config.
-    assert kwargs["max_tokens"] == 1200
+    assert kwargs["max_tokens"] == 8192
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("model_default", [512, None])
+@pytest.mark.parametrize(
+    "sent", [{}, {"max_tokens": None}, {"max_tokens": 17}, {"max_tokens": 0}]
+)
+def test_tts_speech_uses_model_token_default(
+    client, mock_model_provider, stream, model_default, sent
+):
+    limits = []
+
+    def generate(text, *, max_tokens=model_default, **kwargs):
+        # None can select an input-dependent limit inside a model.
+        limits.append(len(text) * 80 if max_tokens is None else max_tokens)
+        yield MockAudioResult(np.zeros(160, dtype=np.float32), 16000)
+
+    model = MagicMock(spec=["generate"])
+    model.generate = MagicMock(wraps=generate)
+    mock_model_provider.load_model = MagicMock(return_value=model)
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={"model": "test_tts", "input": "Hello", "stream": stream, **sent},
+    )
+
+    assert response.status_code == 200
+    expected = sent.get("max_tokens")
+    if expected is None:
+        assert "max_tokens" not in model.generate.call_args.kwargs
+        expected = 400 if model_default is None else model_default
+    else:
+        assert model.generate.call_args.kwargs["max_tokens"] == expected
+    assert limits == [expected]
 
 
 @pytest.mark.parametrize(
@@ -1216,6 +1436,7 @@ def test_tts_continuous_batch_options_use_generate_config():
     model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
 
     options = adapter._build_batch_options(_tts_inference_request(model))
+    assert options.max_tokens == 8192
     assert (
         options.temperature,
         options.top_p,
@@ -1237,12 +1458,53 @@ def test_tts_continuous_batch_options_use_generate_config():
     ) == (0.7, 0.95, 40, 1.0)
 
 
+@pytest.mark.parametrize(
+    "model_name, generate_config, model_default",
+    [
+        ("qwen3_tts", None, 2048),
+        ("qwen3_tts", {"max_new_tokens": None}, 2048),
+        ("qwen3_tts", {"max_new_tokens": 8192}, 8192),
+        ("higgs_audio_v3", None, 2048),
+    ],
+)
+@pytest.mark.parametrize(
+    "sent", [{}, {"max_tokens": None}, {"max_tokens": 17}, {"max_tokens": 0}]
+)
+def test_tts_continuous_session_uses_model_token_default(
+    model_name, generate_config, model_default, sent
+):
+    from mlx_audio.server import TTSExecutionAdapter
+
+    if model_name == "qwen3_tts":
+        from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSTalkerConfig
+        from mlx_audio.tts.models.qwen3_tts.qwen3_tts import Model
+
+        model = Model.__new__(Model)
+        model.config = SimpleNamespace(talker_config=Qwen3TTSTalkerConfig())
+        model.speech_tokenizer = object()
+        model.generate_config = generate_config
+    else:
+        from mlx_audio.tts.models.higgs_audio_v3.model import Model
+
+        model = Model.__new__(Model)
+
+    adapter = TTSExecutionAdapter()
+    request = _tts_inference_request(model, **sent)
+    session = adapter.create_continuous_batch_session(request)
+
+    expected = sent.get("max_tokens")
+    if expected is None:
+        expected = model_default
+    assert session.model_session.options.max_tokens == expected
+
+
 class _BatchTTSModel:
     sample_rate = 16000
 
     def __init__(self, generate_config):
         self.generate_config = generate_config
         self.batch_calls = []
+        self.batch_token_limits = []
 
     def batch_generate(
         self,
@@ -1253,16 +1515,18 @@ class _BatchTTSModel:
         top_k=0,
         repetition_penalty=0.0,
         lang_code="auto",
-        max_tokens=0,
+        max_tokens=512,
         stream=False,
         verbose=False,
     ):
+        self.batch_token_limits.append(max_tokens)
         self.batch_calls.append(
             {
                 "temperature": temperature,
                 "top_p": top_p,
                 "top_k": top_k,
                 "repetition_penalty": repetition_penalty,
+                "max_tokens": max_tokens,
             }
         )
         for idx, _ in enumerate(texts):
@@ -1281,11 +1545,68 @@ def test_tts_run_batch_uses_generate_config():
     adapter.run_batch(requests)
 
     assert model.batch_calls == [
-        {"temperature": 0.9, "top_p": 1.0, "top_k": 50, "repetition_penalty": 1.05}
+        {
+            "temperature": 0.9,
+            "top_p": 1.0,
+            "top_k": 50,
+            "repetition_penalty": 1.05,
+            "max_tokens": 8192,
+        }
     ]
     for request in requests:
         kinds = [request.result_queue.get_nowait().kind for _ in range(2)]
         assert kinds == ["data", "done"]
+
+
+@pytest.mark.parametrize(
+    "generate_config, sent, expected",
+    [
+        (None, {}, None),
+        ({"temperature": 0.9}, {}, None),
+        (None, {"max_tokens": 300}, 300),
+        (dict(QWEN_GENERATE_CONFIG), {"max_tokens": 300}, 300),
+    ],
+)
+def test_tts_speech_max_tokens_defaults_to_the_model(
+    client, mock_model_provider, generate_config, sent, expected
+):
+    model = _tts_model_with_config(generate_config)
+    mock_model_provider.load_model = MagicMock(return_value=model)
+
+    payload = {"model": "other_tts", "input": "Hello", **sent}
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 200
+    _, kwargs = model.generate.call_args
+    assert kwargs.get("max_tokens") == expected
+
+
+def test_tts_continuous_batch_options_max_tokens():
+    from mlx_audio.server import TTSExecutionAdapter
+    from mlx_audio.tts.continuous import TTSBatchOptions
+
+    adapter = TTSExecutionAdapter()
+    qwen = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
+
+    options = adapter._build_batch_options(_tts_inference_request(qwen))
+    assert options.max_tokens == 8192
+    options = adapter._build_batch_options(_tts_inference_request(qwen, max_tokens=300))
+    assert options.max_tokens == 300
+
+    plain = adapter._build_batch_options(_tts_inference_request(MagicMock()))
+    assert plain.max_tokens == TTSBatchOptions().max_tokens
+
+
+def test_tts_run_batch_max_tokens():
+    from mlx_audio.server import TTSExecutionAdapter
+
+    adapter = TTSExecutionAdapter()
+
+    model = _BatchTTSModel(None)
+    adapter.run_batch([_tts_inference_request(model) for _ in range(2)])
+    adapter.run_batch([_tts_inference_request(model, max_tokens=300) for _ in range(2)])
+
+    assert [call["max_tokens"] for call in model.batch_calls] == [512, 300]
 
 
 def test_tts_batch_key_separates_omitted_from_sent_sampling():
@@ -1307,6 +1628,36 @@ def test_tts_batch_key_separates_omitted_from_sent_sampling():
     assert adapter.continuous_batch_key(
         _tts_inference_request(model)
     ) != adapter.continuous_batch_key(_tts_inference_request(model, temperature=0.7))
+
+
+@pytest.mark.parametrize(
+    "sent", [{}, {"max_tokens": None}, {"max_tokens": 17}, {"max_tokens": 0}]
+)
+def test_tts_run_batch_uses_model_token_default(sent):
+    from mlx_audio.server import TTSExecutionAdapter
+
+    adapter = TTSExecutionAdapter()
+    model = _BatchTTSModel(None)
+    requests = [_tts_inference_request(model, **sent) for _ in range(2)]
+
+    adapter.run_batch(requests)
+
+    expected = sent.get("max_tokens")
+    assert model.batch_token_limits == [512 if expected is None else expected]
+
+
+def test_tts_batch_key_separates_model_default_from_explicit_token_limit():
+    from mlx_audio.server import TTSExecutionAdapter
+
+    adapter = TTSExecutionAdapter()
+    model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
+    omitted = _tts_inference_request(model)
+    null = _tts_inference_request(model, max_tokens=None)
+    explicit = _tts_inference_request(model, max_tokens=1200)
+
+    for key in (adapter.batch_key, adapter.continuous_batch_key):
+        assert key(omitted) == key(null)
+        assert key(omitted) != key(explicit)
 
 
 def test_tts_speech_streaming_sends_nothing_for_an_empty_final_chunk(

@@ -2,8 +2,9 @@ import gc
 import json
 import tempfile
 import unittest
+import wave
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -12,6 +13,9 @@ from mlx.utils import tree_flatten
 
 from mlx_audio.codec.models.fish_s1_dac import fish_s1_dac
 from mlx_audio.codec.tests.test_fish_s1_dac import _tiny_streaming_dac
+from mlx_audio.stt.models.base import STTOutput
+from mlx_audio.stt.utils import load_audio as load_stt_audio
+from mlx_audio.tts.generate import generate_audio
 from mlx_audio.tts.models.fish_drama3 import Model, ModelConfig
 from mlx_audio.tts.models.fish_drama3.chunking import (
     flatten_lines,
@@ -387,6 +391,93 @@ class TestGeneration(unittest.TestCase):
         a = mx.concatenate([r.audio for r in first])
         b = mx.concatenate([r.audio for r in second])
         self.assertFalse(mx.array_equal(a, b).item())
+
+    def test_cli_reference_file_reaches_the_codec_resampled_like_fish_speech(self):
+        # torchaudio 2.8.0, as fish-speech reads a reference:
+        # resample(torchaudio.load(path)[0].mean(0), 24000, 44100).
+        expected = {
+            0: [-0.312454, -0.262896, 0.057014, 0.332676]
+            + [0.210196, -0.214585, -0.457674, -0.236253],
+            2201: [-0.205651, -0.356892, -0.066902, 0.30886]
+            + [0.309266, -0.074227, -0.41743, -0.341591],
+            4402: [-0.066733, -0.353242, -0.193205, 0.231608]
+            + [0.382118, 0.040398, -0.346013, -0.299508],
+        }
+        # Broadband and exact on every platform. Kernels differ most near Nyquist.
+        n = np.arange(2400, dtype=np.int64)
+        pcm = ((20077 * n + 12345) % 65536 - 32768) // 2
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(Path(folder, "reference.wav"))
+            with wave.open(path, "wb") as file:
+                file.setnchannels(1)
+                file.setsampwidth(2)
+                file.setframerate(24000)
+                file.writeframes(pcm.astype("<i2").tobytes())
+            encode = self.model._encode_audio
+            with (
+                patch.object(self.model, "_encode_audio", wraps=encode) as encoded,
+                patch("builtins.print"),
+            ):
+                generate_audio(
+                    text="Hallo du.",
+                    model=self.model,
+                    ref_audio=path,
+                    ref_text="Guten Tag.",
+                    max_tokens=4,
+                    output_path=folder,
+                    verbose=False,
+                )
+        samples = encoded.call_args.args[0]
+        self.assertEqual(len(samples), 4410)
+        for start, values in expected.items():
+            np.testing.assert_allclose(samples[start : start + 8], values, atol=1e-5)
+
+    def test_cli_transcribes_reference_without_changing_codec_preprocessing(self):
+        transcript = "Automatically transcribed reference."
+        stt = Mock()
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(Path(folder, "reference.wav"))
+            pcm = (np.sin(np.arange(2400) * 0.1) * 10000).astype("<i2")
+            with wave.open(path, "wb") as file:
+                file.setnchannels(1)
+                file.setsampwidth(2)
+                file.setframerate(24000)
+                file.writeframes(pcm.tobytes())
+
+            def transcribe(audio):
+                # Whisper loads paths at 16 kHz; a codec-rate array would be
+                # misinterpreted as 16 kHz and change the duration.
+                self.assertEqual(audio, path)
+                self.assertEqual(load_stt_audio(audio).shape, (1600,))
+                return STTOutput(text=transcript)
+
+            stt.generate.side_effect = transcribe
+            with (
+                patch("mlx_audio.stt.load", return_value=stt) as load_stt,
+                patch.object(self.model, "_voice", wraps=self.model._voice) as voice,
+                patch.object(
+                    self.model, "_encode_audio", wraps=self.model._encode_audio
+                ) as encoded,
+                patch("mlx_audio.tts.generate.audio_write") as write_audio,
+                patch("builtins.print"),
+            ):
+                generate_audio(
+                    text="Hallo du.",
+                    model=self.model,
+                    ref_audio=path,
+                    max_tokens=4,
+                    verbose=False,
+                )
+
+        load_stt.assert_called_once_with(
+            "mlx-community/whisper-large-v3-turbo-asr-fp16"
+        )
+        stt.generate.assert_called_once_with(path)
+        voice.assert_called_once_with(path, transcript)
+        encoded.assert_called_once()
+        self.assertEqual(encoded.call_args.args[0].shape, (4410,))
+        write_audio.assert_called()
 
     def test_stream_closes_after_an_empty_last_chunk(self):
         frames = iter([[mx.zeros((3,), dtype=mx.int32)] * 5, []])
