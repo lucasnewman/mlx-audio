@@ -8,7 +8,7 @@ import pytest
 from mlx import nn
 from mlx.utils import tree_flatten
 
-from mlx_audio.convert import Domain, detect_model_domain
+from mlx_audio.convert import Domain, detect_model_domain, get_model_type
 from mlx_audio.registry import classify_model
 from mlx_audio.stt.models.qwen2_audio.config import EncoderConfig
 from mlx_audio.stt.models.sovereignai_transcribe import Model, ModelConfig
@@ -16,6 +16,7 @@ from mlx_audio.stt.models.sovereignai_transcribe.config import TextConfig
 from mlx_audio.stt.models.sovereignai_transcribe.sovereignai_transcribe import (
     Float32Router,
     RoutedExperts,
+    TranscriptionOutput,
     copy_supporting_files,
     write_model_card,
 )
@@ -60,10 +61,30 @@ def test_config_and_registration(tmp_path):
     config = tiny_config()
     assert ModelConfig.from_dict({**asdict(config), "irrelevant": True}) == config
     assert classify_model("sovereignai_transcribe") == "stt"
+    assert classify_model("sov_transcribe") is None
     assert detect_model_domain(asdict(config), tmp_path) == Domain.STT
     module, family = get_model_class("sovereignai_transcribe", [], "stt", {})
     assert family == "sovereignai_transcribe"
     assert module.Model is Model
+    checkpoint = tmp_path / "SOV-Transcribe-1-4bit"
+    assert detect_model_domain({}, checkpoint) == Domain.STT
+    assert get_model_type({}, checkpoint, Domain.STT) == "sovereignai_transcribe"
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"model_type": "qwen2"},
+        {"num_kv_shared_layers": 1},
+        {"hidden_size_per_layer_input": 8},
+        {"layer_types": ["full_attention"]},
+        {"layer_types": ["unsupported"] * 30},
+        {"top_k_experts": 129},
+    ],
+)
+def test_invalid_decoder_config(settings):
+    with pytest.raises(ValueError):
+        TextConfig(**settings)
 
 
 def test_sanitize_original_and_converted_weights():
@@ -138,6 +159,18 @@ def test_audio_encoder_and_projector():
         model.model.audio_tower(mx.zeros((1, 4, 15)))
 
 
+def test_audio_batches_preserve_window_order():
+    with mx.stream(mx.cpu):
+        model = Model(tiny_config())
+        model.eval()
+        features = mx.random.normal((3, 4, 16))
+        expected = model.get_audio_features(features)
+        actual = model.get_audio_features(features, batch_size=2)
+        np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-5)
+    with pytest.raises(ValueError, match="audio_batch_size"):
+        model.get_audio_features(features, batch_size=0)
+
+
 def test_fp32_router_preserves_bf16_expert_output():
     config = tiny_config().text_config
     router = Float32Router(config)
@@ -150,6 +183,9 @@ def test_fp32_router_preserves_bf16_expert_output():
 
 
 class TinyTokenizer:
+    def convert_tokens_to_ids(self, token):
+        return 10
+
     def apply_chat_template(self, messages, **kwargs):
         self.prompt = messages[0]["content"][0]["text"]
         return "<bos>prompt<|audio|><model>"
@@ -176,14 +212,18 @@ def test_projected_audio_replaces_only_audio_embeddings():
 
 
 @pytest.mark.parametrize(
-    ("limit", "reason", "count"), [(1, "length", 1), (3, "stop", 2)]
+    ("limit", "reason", "count", "eos"),
+    [(1, "length", 1, 106)] + [(3, "stop", 2, eos) for eos in (1, 106, 50)],
 )
-def test_generate_stopping_and_prompt_options(limit, reason, count, tmp_path):
+@pytest.mark.parametrize("stream", [False, True])
+def test_generate_stopping_and_prompt_options(
+    limit, reason, count, eos, stream, tmp_path
+):
     from mlx_audio.stt.generate import generate_transcription
 
     model = Model(tiny_config())
     model._tokenizer = TinyTokenizer()
-    next_tokens = iter([7, 106])
+    next_tokens = iter([7, eos])
 
     def forward(self, *args, **kwargs):
         token = next(next_tokens)
@@ -201,13 +241,114 @@ def test_generate_stopping_and_prompt_options(limit, reason, count, tmp_path):
             max_tokens=limit,
             language="French",
             hotwords=["MLX"],
+            stream=stream,
+            format="json",
         )
     assert result.text == "hello"
-    assert result.finish_reason == reason
+    if not stream:
+        assert result.finish_reason == reason
     assert result.generation_tokens == count
     assert result.total_tokens == result.prompt_tokens + count
     assert "French" in model._tokenizer.prompt
     assert "MLX" in model._tokenizer.prompt
+    saved = json.loads((tmp_path / "transcript.json").read_text())
+    assert saved["text"] == "hello"
+    assert saved["segments"][0]["text"] == "hello"
+
+
+@pytest.mark.parametrize("audio", [[], [[0.0]], [float("nan")], [float("inf")]])
+def test_invalid_audio_is_rejected(audio):
+    model = Model(tiny_config())
+    model._tokenizer = TinyTokenizer()
+    with pytest.raises(ValueError, match="mono waveform|non-finite"):
+        model.generate(audio)
+
+
+def test_stream_deltas_and_final_statistics():
+    model = Model(tiny_config())
+    model._tokenizer = TinyTokenizer()
+    tokens = iter([7, 106])
+
+    def forward(self, *args, **kwargs):
+        token = next(tokens)
+        return mx.full((1, 1, 128), -100.0).at[:, :, token].add(200.0)
+
+    with (
+        patch.object(model, "get_audio_features", return_value=mx.ones((2, 16))),
+        patch.object(model, "make_cache", return_value=[]),
+        patch.object(Model, "__call__", forward),
+    ):
+        results = list(model.generate(mx.zeros((100,)), stream=True, max_tokens=3))
+    assert "".join(r.text for r in results) == "hello"
+    assert results[0].is_final is False
+    assert results[-1].is_final is True
+    assert results[-1].finish_reason == "stop"
+    assert results[-1].generation_tokens == 2
+    assert results[-1].total_tokens == 7
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("output_format", ["srt", "vtt"])
+def test_cli_rejects_untimed_subtitles(stream, output_format, tmp_path):
+    from mlx_audio.stt.generate import generate_transcription
+
+    model = Model(tiny_config())
+    model._tokenizer = TinyTokenizer()
+    with (
+        patch.object(
+            model,
+            "_generate_stream",
+            return_value=iter(
+                [
+                    TranscriptionOutput(
+                        text="hello", generation_tokens=1, finish_reason="stop"
+                    )
+                ]
+            ),
+        ),
+        pytest.raises(ValueError, match="untimed|timestamps"),
+    ):
+        generate_transcription(
+            model=model,
+            audio=mx.zeros((100,)),
+            stream=stream,
+            output_path=str(tmp_path / "transcript"),
+            format=output_format,
+        )
+
+
+def test_context_limits_and_invalid_batch_sizes():
+    model = Model(tiny_config())
+    model._tokenizer = TinyTokenizer()
+    with pytest.raises(ValueError, match="batch sizes"):
+        model.generate(mx.zeros((100,)), audio_batch_size=0)
+    model.args.max_position_embeddings = 5
+    with (
+        patch.object(model, "get_audio_features") as encode,
+        pytest.raises(ValueError, match="context window"),
+    ):
+        model._prepare_inputs(mx.zeros((100,)), "Transcribe.")
+    encode.assert_not_called()
+    model.args.max_position_embeddings = 6
+    with (
+        patch.object(model, "get_audio_features", return_value=mx.ones((2, 16))),
+        pytest.raises(ValueError, match="generation exceeds"),
+    ):
+        model.generate(mx.zeros((100,)), max_tokens=2)
+
+
+def test_end_tokens_include_processor_and_generation_config(tmp_path):
+    model = Model(tiny_config())
+    (tmp_path / "generation_config.json").write_text(json.dumps({"eos_token_id": 1}))
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps({"generation_eos_token_ids": [77]})
+    )
+    with patch(
+        "transformers.PreTrainedTokenizerFast.from_pretrained",
+        return_value=TinyTokenizer(),
+    ):
+        Model.post_load_hook(model, tmp_path)
+    assert model._eos_token_ids == {1, 50, 77, 106}
 
 
 def test_quantization_and_reload(tmp_path):
@@ -238,6 +379,20 @@ def test_quantization_and_reload(tmp_path):
         loaded = load(dest, strict=True)
     ids = mx.array([[2, 3, 4]])
     np.testing.assert_allclose(loaded(ids), model(ids), atol=1e-6)
+
+    # PR #1186 exports the same layers without the outer model/switch_glu names.
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    alternate_weights = {
+        key.removeprefix("model.").replace(".experts.switch_glu.", ".experts."): value
+        for key, value in weights.items()
+    }
+    mx.save_safetensors(str(alternate / "model.safetensors"), alternate_weights)
+    alternate_config = json.loads((dest / "config.json").read_text())
+    (alternate / "config.json").write_text(json.dumps(alternate_config))
+    with patch.object(Model, "post_load_hook", side_effect=lambda model, _: model):
+        restored = load(alternate, strict=True)
+    np.testing.assert_array_equal(restored(ids), loaded(ids))
 
 
 def test_conversion_sidecars_and_card(tmp_path):

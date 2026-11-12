@@ -24,6 +24,25 @@ class TextConfig(ModelArgs):
     top_k_experts: int = 8
     moe_intermediate_size: int = 704
 
+    def __post_init__(self):
+        super().__post_init__()
+        if self.model_type != "gemma4_text":
+            raise ValueError("SOV-Transcribe requires a Gemma 4 text decoder")
+        if self.num_kv_shared_layers or self.hidden_size_per_layer_input:
+            raise ValueError(
+                "SOV-Transcribe does not use shared KV or per-layer inputs"
+            )
+        if len(self.layer_types) != self.num_hidden_layers or not set(
+            self.layer_types
+        ).issubset({"sliding_attention", "full_attention"}):
+            raise ValueError("Expected one supported attention type per decoder layer")
+        if self.enable_moe_block and not (
+            self.num_experts
+            and self.top_k_experts
+            and 0 < self.top_k_experts <= self.num_experts
+        ):
+            raise ValueError("top_k_experts must be in [1, num_experts]")
+
 
 @dataclass
 class ModelConfig:
@@ -34,6 +53,7 @@ class ModelConfig:
     downsample_factor: int = 4
     projector_hidden_act: str = "gelu"
     tie_word_embeddings: bool = True
+    eos_token_id: int | list[int] = 1
 
     def __post_init__(self):
         if isinstance(self.audio_config, dict):

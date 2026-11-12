@@ -17,6 +17,7 @@ Supported languages: English, French, German, Spanish, Italian, Portuguese, and
 Dutch. Input can be a file or a mono waveform sampled at 16 kHz, up to 30 minutes.
 File inputs are automatically resampled. Transcription runs on the full recording,
 using 30-second encoder windows and a shared decoder context.
+Set `audio_batch_size` to encode multiple windows together (default 1).
 
 ```python
 from mlx_audio.stt import load
@@ -32,6 +33,13 @@ result = model.generate(
     max_tokens=8192,
 )
 print(result.text)
+```
+
+Text can be returned incrementally after audio encoding:
+
+```python
+for chunk in model.generate("audio.wav", stream=True):
+    print(chunk.text, end="", flush=True)
 ```
 
 ```bash

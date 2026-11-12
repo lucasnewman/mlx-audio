@@ -4,13 +4,14 @@ import json
 import math
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
 from mlx import nn
 
+from mlx_audio.lm.generate import StreamingDetokenizer
 from mlx_audio.lm.models import gemma4_text
 from mlx_audio.lm.sample_utils import make_sampler
 from mlx_audio.stt.models.base import STTOutput
@@ -97,7 +98,10 @@ class TranscribeModel(nn.Module):
 
 @dataclass
 class TranscriptionOutput(STTOutput):
-    finish_reason: str = "stop"
+    finish_reason: str | None = None
+    is_final: bool = True
+    start_time: float | None = None
+    end_time: float | None = None
 
 
 class Model(nn.Module):
@@ -112,7 +116,8 @@ class Model(nn.Module):
                 bias=False,
             )
         self._tokenizer = None
-        self._eos_token_ids = {1, 106, 50}
+        eos = config.eos_token_id
+        self._eos_token_ids = {106, 50} | set(eos if isinstance(eos, list) else [eos])
 
     @property
     def sample_rate(self):
@@ -155,6 +160,13 @@ class Model(nn.Module):
         language = {}
         sanitized = {}
         for key, value in weights.items():
+            # Also accept checkpoints exported by the alternate SOV port.
+            if key.startswith(("audio_tower.", "embed_audio.", "language_model.")):
+                key = "model." + key
+            for projection in ("gate_proj", "up_proj", "down_proj"):
+                key = key.replace(
+                    f".experts.{projection}.", f".experts.switch_glu.{projection}."
+                )
             if key == "lm_head.weight" and self.config.tie_word_embeddings:
                 continue
             if key.startswith("model.language_model."):
@@ -196,11 +208,15 @@ class Model(nn.Module):
         template = model_path / "chat_template.jinja"
         if template.exists():
             model._tokenizer.chat_template = template.read_text()
-        generation_config = model_path / "generation_config.json"
-        if generation_config.exists():
-            eos = json.loads(generation_config.read_text()).get("eos_token_id")
-            if eos is not None:
-                model._eos_token_ids = set(eos if isinstance(eos, list) else [eos])
+        for filename, key in (
+            ("processor_config.json", "generation_eos_token_ids"),
+            ("generation_config.json", "eos_token_id"),
+        ):
+            config_path = model_path / filename
+            if config_path.exists():
+                eos = json.loads(config_path.read_text()).get(key)
+                if eos is not None:
+                    model._eos_token_ids.update(eos if isinstance(eos, list) else [eos])
         if (
             model._tokenizer.convert_tokens_to_ids("<|audio|>")
             != model.config.audio_token_id
@@ -216,10 +232,12 @@ class Model(nn.Module):
         mel = log_mel_spectrogram(audio, n_mels=self.config.audio_config.num_mel_bins)
         return mel.reshape(windows, 3000, -1).transpose(0, 2, 1)
 
-    def get_audio_features(self, input_features):
+    def get_audio_features(self, input_features, batch_size=1):
+        if batch_size < 1:
+            raise ValueError("audio_batch_size must be positive")
         outputs = []
-        for window in input_features:
-            h = self.model.audio_tower(window[None])
+        for start in range(0, input_features.shape[0], batch_size):
+            h = self.model.audio_tower(input_features[start : start + batch_size])
             h = h.reshape(
                 -1, self.config.audio_config.d_model * self.config.downsample_factor
             )
@@ -228,8 +246,13 @@ class Model(nn.Module):
             outputs.append(h)
         return mx.concatenate(outputs, axis=0)
 
-    def _prepare_inputs(self, audio, prompt):
-        features = self.get_audio_features(self._extract_features(audio))
+    def _prepare_inputs(self, audio, prompt, audio_batch_size=1):
+        windows = max(1, math.ceil(audio.shape[0] / WINDOW_SAMPLES))
+        feature_count = (
+            windows
+            * self.config.audio_config.max_source_positions
+            // self.config.downsample_factor
+        )
         messages = [
             {
                 "role": "user",
@@ -239,7 +262,7 @@ class Model(nn.Module):
         text = self._tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        replacement = "<|audio>" + "<|audio|>" * features.shape[0] + "<audio|>"
+        replacement = "<|audio>" + "<|audio|>" * feature_count + "<audio|>"
         if text.count("<|audio|>") != 1:
             raise ValueError(
                 "Transcription prompt must contain exactly one audio input"
@@ -247,10 +270,17 @@ class Model(nn.Module):
         ids = self._tokenizer.encode(
             text.replace("<|audio|>", replacement), add_special_tokens=False
         )
+        if len(ids) >= self.args.max_position_embeddings:
+            raise ValueError("Audio and prompt exceed the model context window")
         positions = [
             i for i, token in enumerate(ids) if token == self.config.audio_token_id
         ]
-        if len(positions) != features.shape[0]:
+        if len(positions) != feature_count:
+            raise ValueError("Audio placeholder count does not match encoded audio")
+        features = self.get_audio_features(
+            self._extract_features(audio), batch_size=audio_batch_size
+        )
+        if features.shape[0] != feature_count:
             raise ValueError("Audio placeholder count does not match encoded audio")
         embeddings = self._embed_text(mx.array([ids]))
         embeddings[:, mx.array(positions), :] = features.astype(embeddings.dtype)
@@ -268,9 +298,12 @@ class Model(nn.Module):
         prefill_step_size: int = 512,
         verbose: bool = False,
         generation_stream=None,
-    ) -> TranscriptionOutput:
-        if max_tokens <= 0 or prefill_step_size <= 0:
-            raise ValueError("max_tokens and prefill_step_size must be positive")
+        audio_batch_size: int = 1,
+        stream: bool = False,
+    ):
+        """Transcribe audio, optionally yielding text as it is decoded."""
+        if max_tokens <= 0 or prefill_step_size <= 0 or audio_batch_size <= 0:
+            raise ValueError("Token and batch sizes must be positive")
         if self._tokenizer is None:
             raise RuntimeError(
                 "Load the model with mlx_audio.stt.load before transcribing"
@@ -282,6 +315,8 @@ class Model(nn.Module):
             audio = mx.array(audio, dtype=mx.float32)
         if audio.ndim != 1 or audio.size == 0:
             raise ValueError("Expected a nonempty mono waveform sampled at 16 kHz")
+        if not mx.all(mx.isfinite(audio)).item():
+            raise ValueError("Audio contains non-finite samples")
         if audio.size > 1800 * self.sample_rate:
             raise ValueError("SOV-Transcribe-1 supports recordings up to 30 minutes")
         instruction = prompt or DEFAULT_PROMPT
@@ -291,7 +326,45 @@ class Model(nn.Module):
             terms = merge_hotwords(None, hotwords)
             if terms:
                 instruction += f"\nContextual vocabulary: {terms}"
-        embeddings, prompt_tokens = self._prepare_inputs(audio, instruction)
+        results = self._generate_stream(
+            audio,
+            instruction=instruction,
+            language=language,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            prefill_step_size=prefill_step_size,
+            audio_batch_size=audio_batch_size,
+            start=start,
+        )
+        if stream:
+            return results
+        pieces = []
+        for result in results:
+            pieces.append(result.text)
+        text = "".join(pieces).strip()
+        if verbose:
+            print(text)
+        return replace(result, text=text, segments=[{"text": text}] if text else [])
+
+    def _generate_stream(
+        self,
+        audio,
+        *,
+        instruction,
+        language,
+        max_tokens,
+        temperature,
+        top_p,
+        prefill_step_size,
+        audio_batch_size,
+        start,
+    ):
+        embeddings, prompt_tokens = self._prepare_inputs(
+            audio, instruction, audio_batch_size=audio_batch_size
+        )
+        if prompt_tokens + max_tokens > self.args.max_position_embeddings:
+            raise ValueError("Requested generation exceeds the model context window")
         cache = self.make_cache()
         for offset in range(0, prompt_tokens, prefill_step_size):
             logits = self(
@@ -302,6 +375,7 @@ class Model(nn.Module):
         prefill_time = time.perf_counter() - start
         sampler = make_sampler(temperature, top_p=top_p)
         tokens = []
+        decoder = StreamingDetokenizer(self._tokenizer, skip_special_tokens=True)
         finish_reason = "length"
         for _ in range(max_tokens):
             scores = logits[:, -1, :].astype(mx.float32)
@@ -311,14 +385,21 @@ class Model(nn.Module):
             if token in self._eos_token_ids:
                 finish_reason = "stop"
                 break
+            decoder.add_token(token)
+            if delta := decoder.last_segment:
+                yield TranscriptionOutput(
+                    text=delta,
+                    is_final=False,
+                    language=language,
+                    prompt_tokens=prompt_tokens,
+                    generation_tokens=len(tokens),
+                )
             if len(tokens) < max_tokens:
                 logits = self(mx.array([[token]]), cache=cache)
-        text = self._tokenizer.decode(tokens, skip_special_tokens=True).strip()
+        decoder.finalize()
         elapsed = time.perf_counter() - start
-        if verbose:
-            print(text)
-        return TranscriptionOutput(
-            text=text,
+        yield TranscriptionOutput(
+            text=decoder.last_segment,
             language=language,
             prompt_tokens=prompt_tokens,
             generation_tokens=len(tokens),

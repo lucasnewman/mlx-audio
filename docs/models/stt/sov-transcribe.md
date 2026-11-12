@@ -30,6 +30,16 @@ result = model.generate(
 print(result.text)
 ```
 
+For incremental text after audio encoding, pass `stream=True`:
+
+```python
+for chunk in model.generate("audio.wav", stream=True):
+    print(chunk.text, end="", flush=True)
+```
+
+`audio_batch_size` controls how many 30-second windows are encoded together
+(default 1); `prefill_step_size` controls decoder prefill (default 512).
+
 ```bash
 mlx_audio.stt.generate \
   --model nativ-community/SOV-Transcribe-1-4bit \

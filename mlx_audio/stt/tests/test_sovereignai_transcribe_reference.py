@@ -63,25 +63,27 @@ def test_moe_decoder_matches_transformers():
         np.testing.assert_allclose(actual, expected, atol=2e-6, rtol=2e-6)
 
 
-def test_multiwindow_mel_matches_transformers():
+@pytest.mark.parametrize("samples", [1, 16000, 480000, 480321])
+def test_multiwindow_mel_matches_transformers(samples):
     from transformers import WhisperFeatureExtractor
 
     config = tiny_config()
     config.audio_config.num_mel_bins = 128
     model = Model(config)
-    audio = np.random.default_rng(6).normal(0, 0.1, 480321).astype(np.float32)
+    audio = np.random.default_rng(6).normal(0, 0.1, samples).astype(np.float32)
     audio[480000:] *= 1e-4
     extractor = WhisperFeatureExtractor(feature_size=128)
+    windows = (samples + 479999) // 480000
     expected = (
         extractor(
             [audio],
             sampling_rate=16000,
             padding="max_length",
-            max_length=960000,
+            max_length=windows * 480000,
             truncation=False,
             return_tensors="np",
         )["input_features"][0]
-        .reshape(128, 2, 3000)
+        .reshape(128, windows, 3000)
         .transpose(1, 0, 2)
     )
     actual = model._extract_features(mx.array(audio))
