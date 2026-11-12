@@ -173,6 +173,7 @@ for result in model.generate(
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
+| **SOV-Transcribe-1** | Salesforce's Whisper + Gemma 4 MoE with transcription instructions and contextual vocabulary | EN, FR, DE, ES, IT, PT, NL | [4-bit](https://huggingface.co/nativ-community/SOV-Transcribe-1-4bit) · [8-bit](https://huggingface.co/nativ-community/SOV-Transcribe-1-8bit) · [README](mlx_audio/stt/models/sovereignai_transcribe/README.md) |
 | **Distil-Whisper** | Distilled fast Whisper variants | EN | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | **Qwen3-ASR** | Alibaba's multilingual ASR | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
 | **Ming-3.0 ASR Tiny** | Hybrid MoE speech recognition with language hints and hotwords ([README](mlx_audio/stt/models/ming_v3_asr/README.md)) | EN, ZH | [BF16](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-4bit) |

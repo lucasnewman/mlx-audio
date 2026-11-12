@@ -12,6 +12,7 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 |-------|----------|-----------|-----------|-----------|------------|------|
 | [**Ming-3.0 ASR Tiny**](ming3-tiny.md) | inclusionAI | Hybrid MoE | EN, ZH | -- | -- | [BF16](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-4bit) |
 | [**Whisper**](whisper.md) | OpenAI | Various | 99+ | -- | Segment + Word | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
+| [**SOV-Transcribe-1**](sov-transcribe.md) | Salesforce | 26.6B (4.6B active) | EN, FR, DE, ES, IT, PT, NL | -- | -- | [4-bit](https://huggingface.co/nativ-community/SOV-Transcribe-1-4bit) · [8-bit](https://huggingface.co/nativ-community/SOV-Transcribe-1-8bit) |
 | **Distil-Whisper** | HuggingFace | Various | EN | -- | Segment | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | [**Parakeet**](parakeet.md) | NVIDIA | 0.6B | EN (v2), 25 EU (v3) | Yes | Sentence + Word | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
 | [**Nemotron ASR Streaming**](nemotron-asr.md) | NVIDIA | 0.6B | 40 locales (3.5), 25 EU (Unified) | Yes | -- | [3.5 8-bit](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit), [Unified 8-bit](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-8bit) |

@@ -102,6 +102,7 @@ nav:
       - models/stt/index.md
       - Ming-3.0 ASR Tiny: models/stt/ming3-tiny.md
       - Whisper: models/stt/whisper.md
+      - SOV-Transcribe-1: models/stt/sov-transcribe.md
       - Parakeet: models/stt/parakeet.md
       - Nemotron ASR Streaming: models/stt/nemotron-asr.md
       - Phonon-1: models/stt/phonon.md
