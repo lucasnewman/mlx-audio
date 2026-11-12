@@ -630,6 +630,9 @@ def prepare_text_prompt(text: str) -> tuple[str, int]:
     if text == "":
         raise ValueError("Text prompt cannot be empty")
     text = text.replace("\n", " ").replace("\r", " ").replace("  ", " ")
+    # Curly apostrophes never appear in the model's training data, so
+    # "wouldn\u2019t" is misread. Use plain ones, as pocket-tts does.
+    text = text.replace("\u2019", "'").replace("\u2018", "'")
     number_of_words = len(text.split())
     if number_of_words <= 4:
         frames_after_eos_guess = 3
