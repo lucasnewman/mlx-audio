@@ -320,12 +320,17 @@ def _replace_time(match: re.Match[str]) -> str:
     if suffix:
         spoken_hour = hour % 12 or 12
     parts = [_int_to_words(spoken_hour)]
+    has_seconds = bool(second and int(second))
     if minute:
         minute_words = (
             f"oh {_int_to_words(minute)}" if minute < 10 else _int_to_words(minute)
         )
         parts.append(minute_words)
-    if second and int(second):
+    elif has_seconds:
+        # A zero minute must still be spoken when seconds follow; otherwise the
+        # "and ... seconds" clause dangles off the hour ("twelve and thirty seconds").
+        parts.append("oh oh")
+    if has_seconds:
         parts.extend(["and", _int_to_words(int(second)), "seconds"])
     if suffix:
         suffix_letter = "a" if suffix.lower().startswith("a") else "p"
