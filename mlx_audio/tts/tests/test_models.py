@@ -2433,6 +2433,18 @@ class TestSoprano(unittest.TestCase):
             " nine thousand twelve shipped.",
         )
 
+    def test_ascii_punctuation(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        # Dashes and curly quotes have no NFKD form; they become ASCII punctuation
+        # instead of being dropped, as with the reference's unidecode.
+        self.assertEqual(clean_text("Wait\u2014what?"), "wait - what?")
+        self.assertEqual(clean_text("I don\u2019t know."), "i don't know.")
+        self.assertEqual(
+            clean_text("It\u2018s pages 10\u201320."), "it's pages ten-twenty."
+        )
+        self.assertEqual(clean_text("He said \u201chi\u201d."), "he said hi.")
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations
