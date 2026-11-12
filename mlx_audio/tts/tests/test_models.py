@@ -8777,6 +8777,17 @@ class TestMeloTTSText(unittest.TestCase):
         self.assertEqual(text_normalize("€2.5"), "two euros fifty cents")
         self.assertEqual(text_normalize("¥100"), "one hundred yen")
 
+    def test_text_normalize_millions(self):
+        from mlx_audio.tts.models.melotts.text import text_normalize
+
+        self.assertEqual(text_normalize("2,000,000 people"), "two million people")
+        self.assertEqual(
+            text_normalize("1,500,000"), "one million five hundred thousand"
+        )
+        self.assertEqual(text_normalize("1000001"), "one million one")
+        self.assertEqual(text_normalize("3,000,000,000"), "three billion")
+        self.assertEqual(text_normalize("42,000"), "forty two thousand")
+
     def _require_g2p(self):
         try:
             import g2p_en  # noqa: F401
