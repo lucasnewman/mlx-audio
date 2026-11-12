@@ -8716,6 +8716,19 @@ class TestMeloTTSText(unittest.TestCase):
         )
         self.assertEqual(text_normalize("1.05"), "one point zero five")
 
+    def test_text_normalize_ordinals(self):
+        from mlx_audio.tts.models.melotts.text import text_normalize
+
+        self.assertEqual(
+            text_normalize("The 21st century, my 3rd try."),
+            "the twenty first century, my third try.",
+        )
+        self.assertEqual(text_normalize("2nd place"), "second place")
+        self.assertEqual(text_normalize("the 12th"), "the twelfth")
+        self.assertEqual(text_normalize("the 40th"), "the fortieth")
+        self.assertEqual(text_normalize("the 100th"), "the one hundredth")
+        self.assertEqual(text_normalize("5 stars"), "five stars")
+
     def _require_g2p(self):
         try:
             import g2p_en  # noqa: F401
