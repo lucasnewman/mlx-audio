@@ -8788,6 +8788,18 @@ class TestMeloTTSText(unittest.TestCase):
         self.assertEqual(text_normalize("3,000,000,000"), "three billion")
         self.assertEqual(text_normalize("42,000"), "forty two thousand")
 
+    def test_text_normalize_times(self):
+        from mlx_audio.tts.models.melotts.text import text_normalize
+
+        self.assertEqual(
+            text_normalize("Meet at 3:30 pm today."), "meet at three thirty p m today."
+        )
+        self.assertEqual(text_normalize("9:05 A.M."), "nine oh five a m.")
+        self.assertEqual(text_normalize("at 12:00am"), "at twelve a m")
+        self.assertEqual(text_normalize("15:45"), "fifteen forty five")
+        self.assertEqual(text_normalize("at 7:00"), "at seven")
+        self.assertEqual(text_normalize("3:30 amazing"), "three thirty amazing")
+
     def _require_g2p(self):
         try:
             import g2p_en  # noqa: F401
