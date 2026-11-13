@@ -216,6 +216,7 @@ See the model READMEs for API details, streaming examples, and conversion steps.
 |-------|-------------|----------|------|
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
 | [**DialogueSidon**](mlx_audio/sts/models/dialogue_sidon/README.md) | Two-speaker separation and restoration | Separate dialogue into speaker tracks | [mlx-community/DialogueSidon](https://huggingface.co/mlx-community/DialogueSidon) (FP32), [mlx-community/DialogueSidon-bf16](https://huggingface.co/mlx-community/DialogueSidon-bf16) (BF16) |
+| [**FastDialogueSidon**](mlx_audio/sts/models/fast_dialogue_sidon/README.md) | One-step two-speaker separation and restoration | Separate dialogue into speaker tracks | [higurashi-ai/FastDialogueSidon](https://huggingface.co/higurashi-ai/FastDialogueSidon) |
 | **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit) |
 | **LFM3-Audio** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Multilingual speech and audio questions | [LiquidAI/LFM3-Audio-2B-MLX-8bit](https://huggingface.co/LiquidAI/LFM3-Audio-2B-MLX-8bit) |
 | [**Haru-4B**](mlx_audio/sts/models/haru/README.md) | Full-duplex Speech-to-Speech | Streaming dialogue with character and voice conditioning | [higurashi-ai/Haru-4B](https://huggingface.co/higurashi-ai/Haru-4B) |

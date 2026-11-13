@@ -118,6 +118,7 @@ nav:
       - Ming-3.0 Audio Tiny: models/sts/ming3-tiny.md
       - MiMo-Audio: models/sts/mimo-audio.md
       - DialogueSidon: models/sts/dialogue-sidon.md
+      - FastDialogueSidon: models/sts/fast-dialogue-sidon.md
     - Voice Activity Detection: models/vad/index.md
   - Guides:
     - guides/index.md

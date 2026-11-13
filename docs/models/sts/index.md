@@ -10,6 +10,7 @@ MLX Audio provides speech-to-speech models for audio source separation, speech e
 |-------|----------|----------|------|
 | [**SAM-Audio**](#sam-audio) | Meta | Text-guided source separation | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
 | [**DialogueSidon**](dialogue-sidon.md) | SaruLab | Two-speaker dialogue separation and restoration | [mlx-community/DialogueSidon](https://huggingface.co/mlx-community/DialogueSidon) (FP32), [mlx-community/DialogueSidon-bf16](https://huggingface.co/mlx-community/DialogueSidon-bf16) (BF16) |
+| [**FastDialogueSidon**](fast-dialogue-sidon.md) | higurashi-ai | One-step two-speaker dialogue separation and restoration | [higurashi-ai/FastDialogueSidon](https://huggingface.co/higurashi-ai/FastDialogueSidon) |
 | [**Liquid2.5-Audio**](#liquid25-audio) | LiquidAI | Speech-to-Speech, TTS, ASR | [mlx-community/LFM2.5-Audio-1.5B-4bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-4bit) |
 | [**LFM3-Audio**](#lfm3-audio) | LiquidAI | Speech-to-Speech, TTS, ASR, audio questions | [LiquidAI/LFM3-Audio-2B-MLX-8bit](https://huggingface.co/LiquidAI/LFM3-Audio-2B-MLX-8bit) |
 | [**Ming-3.0 Audio Tiny**](ming3-tiny.md) | inclusionAI | Audio understanding, ASR, reasoning and spoken dialogue | [BF16](https://huggingface.co/mlx-community/Ming-3.0-audio-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-audio-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-audio-tiny-4bit) |
@@ -49,7 +50,7 @@ python -m mlx_audio.sts.generate \
 ```
 
 This interface supports Ming Audio, MiMo-Audio, Nemotron VoiceChat,
-DeepFilterNet, MossFormer2 SE, and DialogueSidon. Options you omit use each
+DeepFilterNet, MossFormer2 SE, DialogueSidon, and FastDialogueSidon. Options you omit use each
 model's defaults. Pass additional generation options through `--gen-kwargs`
 (a JSON object) or Python keyword arguments, and loader options through
 `--model-kwargs` or `model_kwargs`.
