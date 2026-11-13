@@ -429,7 +429,8 @@ def base_load_model(
     model = model_class.Model(model_config)
 
     # Load weights
-    weights = load_weights(model_path)
+    runtime_weight_loader = getattr(model_class, "load_runtime_weights", load_weights)
+    weights = runtime_weight_loader(model_path)
     from mlx_audio.quantization.modelopt import prepare_modelopt_weights
 
     weights = prepare_modelopt_weights(weights, config, model_path)

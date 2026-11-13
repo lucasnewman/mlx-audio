@@ -29,6 +29,10 @@ _AMBIGUOUS_FAMILIES = frozenset({"llama", "qwen3", "dense"})
 def model_type_from_config(config: dict) -> Optional[str]:
     """Resolve audio architectures from explicit types or distinctive config fields."""
     model_type = config.get("model_type") or config.get("architecture")
+    if model_type in {None, "parakeet"} and isinstance(
+        config.get("fluid_speech"), dict
+    ):
+        return "fluid_speech"
     if (
         model_type is None
         and isinstance(config.get("model_cfg"), dict)

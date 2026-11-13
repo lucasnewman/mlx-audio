@@ -19,6 +19,7 @@ checkpoints in Hugging Face format, such as Parakeet Ultra and Orukeet.
 | [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) | 25 European languages | Ternary encoder; approximately 217 MB of MLX weights |
 | [moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) | 25 European languages | Dense Hugging Face `ParakeetForTDT` export |
 | [oruk/orukeet](https://huggingface.co/oruk/orukeet) | 25 European languages | Dense Hugging Face `ParakeetForTDT` export; CC-BY-SA-4.0 |
+| [FluidVoice-Labs/fluid-speech-pro](https://huggingface.co/FluidVoice-Labs/fluid-speech-pro) | 25 European languages | Dense Transformers export; see [Fluid Speech Pro](../fluid_speech/README.md) for the full model with frame cleaning and clean mode |
 
 All listed repositories load directly with `mlx_audio.stt.load`. A local
 checkpoint directory can also be passed to `load`.
