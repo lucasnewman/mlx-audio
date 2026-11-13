@@ -212,12 +212,6 @@ See the model READMEs for API details, streaming examples, and conversion steps.
 
 ### Speech-to-Speech (STS)
 
-For a live Haru microphone conversation, run `python -m mlx_audio.sts.live
---model higurashi-ai/Haru-4B --ref-audio voice.wav`. Use `--list-devices` to
-choose audio devices and Ctrl-C to stop. See the
-[Haru guide](mlx_audio/sts/models/haru/README.md#live-sessions) for character
-cards and session options.
-
 | Model | Description | Use Case | Repo |
 |-------|-------------|----------|------|
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
