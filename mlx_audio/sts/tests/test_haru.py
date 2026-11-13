@@ -224,7 +224,9 @@ def test_decay_precision_over_long_recurrence(model):
         q, k, v, a, mx.full(a.shape, -mx.inf, dtype=a.dtype), log_rate, bias, state
     )
     decay = np.exp(-np.exp(0.34375) * np.logaddexp(0, -4.8125 - 1.171875))
-    np.testing.assert_allclose(final, decay**steps, rtol=3e-5)
+    # Allow accumulated FP32 rounding across 512 updates on different GPUs.
+    # The BF16 decay regression produces about 3% error for these inputs.
+    np.testing.assert_allclose(final, decay**steps, rtol=1e-4)
 
 
 def test_codec_whole_and_arbitrary_stream_chunks_agree(model):
