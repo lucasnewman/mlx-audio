@@ -112,6 +112,7 @@ docs = [
 "mlx_audio.music.generate" = "mlx_audio.music.generate:main"
 "mlx_audio.server" = "mlx_audio.server:main"
 "mlx_audio.sts.generate" = "mlx_audio.sts.generate:main"
+"mlx_audio.sts.live" = "mlx_audio.sts.live:main"
 
 [project.urls]
 Homepage = "https://www.neywalabs.ai"
