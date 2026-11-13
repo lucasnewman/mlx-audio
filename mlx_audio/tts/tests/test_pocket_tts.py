@@ -14,7 +14,7 @@ import pytest
 from mlx.utils import tree_flatten
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from mlx_audio.tts.models.pocket_tts import Model, ModelConfig
+from mlx_audio.tts.models.pocket_tts import Model, ModelConfig, pocket_tts
 from mlx_audio.tts.models.pocket_tts.conditioners import (
     ContinuousConditioner,
     SpeakerCountConditioner,
@@ -137,6 +137,18 @@ def test_new_config_fields(config):
     ) == (0.8, 4, 4.0)
     assert model.flow_lm.num_speakers.embed.weight.shape == (32, 4)
     assert ModelConfig.from_dict(asdict(model.config)) == model.config
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("I wouldn\u2019t go.", "I wouldn't go."),
+        ("It\u2019s \u2018done\u2019 now, really.", "It's 'done' now, really."),
+        ("I can't stay here tonight.", "I can't stay here tonight."),
+    ],
+)
+def test_prepare_text_prompt_replaces_curly_apostrophes(text, expected):
+    assert pocket_tts.prepare_text_prompt(text)[0].strip() == expected
 
 
 class CountingBackbone:

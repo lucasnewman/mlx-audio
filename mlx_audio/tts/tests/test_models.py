@@ -2433,6 +2433,18 @@ class TestSoprano(unittest.TestCase):
             " nine thousand twelve shipped.",
         )
 
+    def test_ascii_punctuation(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        # Dashes and curly quotes have no NFKD form; they become ASCII punctuation
+        # instead of being dropped, as with the reference's unidecode.
+        self.assertEqual(clean_text("Wait\u2014what?"), "wait - what?")
+        self.assertEqual(clean_text("I don\u2019t know."), "i don't know.")
+        self.assertEqual(
+            clean_text("It\u2018s pages 10\u201320."), "it's pages ten-twenty."
+        )
+        self.assertEqual(clean_text("He said \u201chi\u201d."), "he said hi.")
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations
@@ -8715,6 +8727,19 @@ class TestMeloTTSText(unittest.TestCase):
             text_normalize("It costs 2.50 now."), "it costs two point five zero now."
         )
         self.assertEqual(text_normalize("1.05"), "one point zero five")
+
+    def test_text_normalize_ordinals(self):
+        from mlx_audio.tts.models.melotts.text import text_normalize
+
+        self.assertEqual(
+            text_normalize("The 21st century, my 3rd try."),
+            "the twenty first century, my third try.",
+        )
+        self.assertEqual(text_normalize("2nd place"), "second place")
+        self.assertEqual(text_normalize("the 12th"), "the twelfth")
+        self.assertEqual(text_normalize("the 40th"), "the fortieth")
+        self.assertEqual(text_normalize("the 100th"), "the one hundredth")
+        self.assertEqual(text_normalize("5 stars"), "five stars")
 
     def _require_g2p(self):
         try:

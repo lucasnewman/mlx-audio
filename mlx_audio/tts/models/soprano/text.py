@@ -346,8 +346,25 @@ def lowercase(text: str) -> str:
     return text.lower()
 
 
+# Punctuation that NFKD has no ASCII form for, so encoding would drop it and run
+# the words around a dash together ("wait\u2014what" -> "waitwhat"). The
+# reference turns the em dash into " - " before unidecode, which maps the rest
+# to these.
+_ascii_punctuation = str.maketrans(
+    {
+        "\u2014": " - ",
+        "\u2013": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+    }
+)
+
+
 def convert_to_ascii(text: str) -> str:
     """Convert unicode to ASCII using NFKD normalization."""
+    text = text.translate(_ascii_punctuation)
     # Normalize unicode characters and encode to ASCII
     normalized = unicodedata.normalize("NFKD", text)
     return normalized.encode("ascii", "ignore").decode("ascii")

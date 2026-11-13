@@ -233,7 +233,18 @@ def _number_to_words(n: int) -> str:
 
 _comma_number_re = re.compile(r"(\d{1,3}(,\d{3})+)")
 _decimal_number_re = re.compile(r"(\d+\.\d+)")
+_ordinal_re = re.compile(r"(\d+)(st|nd|rd|th)\b")
 _number_re = re.compile(r"\d+")
+
+_ordinal_words = {
+    "one": "first",
+    "two": "second",
+    "three": "third",
+    "five": "fifth",
+    "eight": "eighth",
+    "nine": "ninth",
+    "twelve": "twelfth",
+}
 
 
 def _remove_commas(m):
@@ -247,6 +258,17 @@ def _expand_decimal(m):
     # _ones has no word for zero, so read each digit with _number_to_words.
     decimal = " ".join(_number_to_words(int(d)) for d in parts[1])
     return integer + " point " + decimal
+
+
+def _expand_ordinal(m):
+    head, _, last = _number_to_words(int(m.group(1))).rpartition(" ")
+    if last in _ordinal_words:
+        last = _ordinal_words[last]
+    elif last.endswith("y"):
+        last = last[:-1] + "ieth"
+    else:
+        last += "th"
+    return f"{head} {last}" if head else last
 
 
 def _expand_number(m):
@@ -285,6 +307,7 @@ def text_normalize(text: str) -> str:
         text = re.sub(regex, replacement, text)
     text = re.sub(_comma_number_re, _remove_commas, text)
     text = re.sub(_decimal_number_re, _expand_decimal, text)
+    text = re.sub(_ordinal_re, _expand_ordinal, text)
     text = re.sub(_number_re, _expand_number, text)
     return text
 
