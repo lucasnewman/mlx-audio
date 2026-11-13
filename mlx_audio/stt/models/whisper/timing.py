@@ -35,13 +35,10 @@ def median_filter(x: mx.array, filter_width: int) -> mx.array:
     )
 
     # Sliding window median using numpy (no scipy dependency)
-    result = np.empty(
-        x_np.shape[:-1] + (x_np.shape[-1] - 2 * pad_width,), dtype=np.float32
+    windows = np.lib.stride_tricks.sliding_window_view(
+        x_np.astype(np.float32), filter_width, axis=-1
     )
-    for i in range(result.shape[-1]):
-        result[..., i] = np.median(
-            x_np[..., i : i + filter_width].astype(np.float32), axis=-1
-        )
+    result = np.median(windows, axis=-1)
 
     if ndim <= 2:
         result = result[0, 0]
