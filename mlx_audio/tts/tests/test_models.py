@@ -2461,6 +2461,14 @@ class TestSoprano(unittest.TestCase):
         self.assertIn("and", expand_special_characters("&"))
         self.assertIn("percent", expand_special_characters("%"))
 
+    def test_comparison_operators(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        self.assertEqual(clean_text("x <= 5"), "x less than or equal to five")
+        self.assertEqual(clean_text("y>=10."), "y greater than or equal to ten.")
+        self.assertEqual(clean_text("a < b"), "a less than b")
+        self.assertEqual(clean_text("1 = 1"), "one equals one")
+
     def test_collapse_whitespace(self):
         """Test whitespace collapsing."""
         from mlx_audio.tts.models.soprano.text import collapse_whitespace
