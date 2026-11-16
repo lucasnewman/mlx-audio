@@ -257,7 +257,9 @@ def _expand_dollars(m):
     if len(parts) > 2:
         return match + " dollars"
     dollars = int(parts[0]) if parts[0] else 0
-    cents = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+    # The fractional part denotes cents by position, so pad to two digits
+    # ("$5.5" is five dollars and fifty cents, not five cents).
+    cents = int((parts[1] + "00")[:2]) if len(parts) > 1 and parts[1] else 0
     if dollars and cents:
         dollar_unit = "dollar" if dollars == 1 else "dollars"
         cent_unit = "cent" if cents == 1 else "cents"
