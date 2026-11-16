@@ -22,11 +22,11 @@ class VocabTokenizer:
             **extra_tokens,
         }
 
-    def get_vocab(self):
-        return dict(self.vocab)
-
     def convert_tokens_to_ids(self, token):
         return self.vocab.get(token, EOT)
+
+    def convert_ids_to_tokens(self, token_id):
+        return {i: t for t, i in self.vocab.items()}[token_id]
 
 
 class TestHFTokenizerWrapper(unittest.TestCase):
@@ -67,6 +67,15 @@ class TestHFTokenizerWrapper(unittest.TestCase):
         tokenizer = HFTokenizerWrapper(VocabTokenizer({"<|nospeech|>": 50363}))
 
         self.assertEqual(tokenizer.no_speech, 50363)
+
+    def test_missing_no_speech_token_without_unk_is_none(self):
+        class NoUnkTokenizer(VocabTokenizer):
+            def convert_tokens_to_ids(self, token):
+                return self.vocab.get(token)
+
+        tokenizer = HFTokenizerWrapper(NoUnkTokenizer({}))
+
+        self.assertIsNone(tokenizer.no_speech)
 
     def test_missing_no_speech_token_does_not_suppress_eot(self):
         tokenizer = HFTokenizerWrapper(VocabTokenizer({}))

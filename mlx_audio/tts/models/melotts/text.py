@@ -234,6 +234,7 @@ def _number_to_words(n: int) -> str:
 _comma_number_re = re.compile(r"(\d{1,3}(,\d{3})+)")
 _decimal_number_re = re.compile(r"(\d+\.\d+)")
 _ordinal_re = re.compile(r"(\d+)(st|nd|rd|th)\b")
+_currency_re = re.compile(r"([$£€¥])(\d+(?:\.\d+)?)")
 _number_re = re.compile(r"\d+")
 
 _ordinal_words = {
@@ -244,6 +245,14 @@ _ordinal_words = {
     "eight": "eighth",
     "nine": "ninth",
     "twelve": "twelfth",
+}
+
+# Singular and plural names of each currency and of its hundredth.
+_currencies = {
+    "$": ("dollar", "dollars", "cent", "cents"),
+    "€": ("euro", "euros", "cent", "cents"),
+    "£": ("pound sterling", "pounds sterling", "penny", "pence"),
+    "¥": ("yen", "yen", "sen", "sen"),
 }
 
 
@@ -269,6 +278,23 @@ def _expand_ordinal(m):
     else:
         last += "th"
     return f"{head} {last}" if head else last
+
+
+def _expand_currency(m):
+    unit, units, subunit, subunits = _currencies[m.group(1)]
+    integer, _, fraction = m.group(2).partition(".")
+    if len(fraction) > 2:
+        return re.sub(_decimal_number_re, _expand_decimal, m.group(2)) + " " + units
+    whole = int(integer)
+    cents = int(fraction.ljust(2, "0")) if fraction else 0
+    parts = []
+    if whole:
+        parts.append(_number_to_words(whole) + " " + (unit if whole == 1 else units))
+    if cents:
+        parts.append(
+            _number_to_words(cents) + " " + (subunit if cents == 1 else subunits)
+        )
+    return " ".join(parts) or "zero " + units
 
 
 def _expand_number(m):
@@ -306,6 +332,7 @@ def text_normalize(text: str) -> str:
     for regex, replacement in _abbreviations:
         text = re.sub(regex, replacement, text)
     text = re.sub(_comma_number_re, _remove_commas, text)
+    text = re.sub(_currency_re, _expand_currency, text)
     text = re.sub(_decimal_number_re, _expand_decimal, text)
     text = re.sub(_ordinal_re, _expand_ordinal, text)
     text = re.sub(_number_re, _expand_number, text)

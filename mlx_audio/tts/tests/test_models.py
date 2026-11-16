@@ -8741,6 +8741,22 @@ class TestMeloTTSText(unittest.TestCase):
         self.assertEqual(text_normalize("the 100th"), "the one hundredth")
         self.assertEqual(text_normalize("5 stars"), "five stars")
 
+    def test_text_normalize_currency(self):
+        from mlx_audio.tts.models.melotts.text import text_normalize
+
+        self.assertEqual(text_normalize("$5 each."), "five dollars each.")
+        self.assertEqual(
+            text_normalize("It costs $2.50."), "it costs two dollars fifty cents."
+        )
+        self.assertEqual(text_normalize("$1"), "one dollar")
+        self.assertEqual(text_normalize("$0.01"), "one cent")
+        self.assertEqual(
+            text_normalize("$1,250"), "one thousand two hundred fifty dollars"
+        )
+        self.assertEqual(text_normalize("£3"), "three pounds sterling")
+        self.assertEqual(text_normalize("€2.5"), "two euros fifty cents")
+        self.assertEqual(text_normalize("¥100"), "one hundred yen")
+
     def _require_g2p(self):
         try:
             import g2p_en  # noqa: F401

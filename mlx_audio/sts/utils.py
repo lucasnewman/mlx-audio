@@ -16,6 +16,9 @@ MODEL_REMAPPING = {
     "ming_v3_audio": "ming_v3_audio",
     "dialogue_sidon": "dialogue_sidon",
     "dialoguesidon": "dialogue_sidon",
+    "fast-dialogue-sidon": "fast_dialogue_sidon",
+    "fast_dialogue_sidon": "fast_dialogue_sidon",
+    "fastdialoguesidon": "fast_dialogue_sidon",
     "deepfilter": "deepfilternet",
     "deepfilternet": "deepfilternet",
     "deepfilternet3": "deepfilternet",
@@ -161,6 +164,7 @@ def load_model(
     if model_type in {
         "ming_v3_audio",
         "dialogue_sidon",
+        "fast_dialogue_sidon",
         "lfm_audio",
         "lfm3_audio",
         "haru",

@@ -181,7 +181,9 @@ def test_cli_writes_two_stems_via_standard_generate(tmp_path, monkeypatch):
         "load_model",
         lambda *a, **kw: SimpleNamespace(
             generate=lambda audio, **options: Model.generate(
-                SimpleNamespace(separate=separate), audio, **options
+                SimpleNamespace(separate=separate, default_num_steps=30),
+                audio,
+                **options,
             )
         ),
     )

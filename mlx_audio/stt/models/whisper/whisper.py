@@ -115,12 +115,15 @@ class HFTokenizerWrapper:
     @property
     def no_speech(self) -> Optional[int]:
         """No speech token (named <|nocaptions|> in pre-large-v3 vocabularies)."""
-        # convert_tokens_to_ids returns unk (== eot) for a missing token, which
-        # would put eot into the suppress list and decoding would never stop.
-        vocab = self.hf_tokenizer.get_vocab()
+        # A missing name maps to unk (== eot) and would suppress eot; the id round
+        # trip rejects it without get_vocab(), which copies the whole vocabulary.
         for name in ("<|nospeech|>", "<|nocaptions|>"):
-            if name in vocab:
-                return vocab[name]
+            token_id = self.hf_tokenizer.convert_tokens_to_ids(name)
+            if (
+                token_id is not None
+                and self.hf_tokenizer.convert_ids_to_tokens(token_id) == name
+            ):
+                return token_id
         return None
 
     @property

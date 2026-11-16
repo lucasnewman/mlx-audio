@@ -3,6 +3,15 @@ import importlib
 from .utils import load, load_model
 
 _LAZY_EXPORTS = {
+    "FastDialogueSidon": ("mlx_audio.sts.models.fast_dialogue_sidon", "Model"),
+    "FastDialogueSidonConfig": (
+        "mlx_audio.sts.models.fast_dialogue_sidon",
+        "ModelConfig",
+    ),
+    "FastDialogueSidonResult": (
+        "mlx_audio.sts.models.fast_dialogue_sidon",
+        "SeparationResult",
+    ),
     "DialogueSidon": ("mlx_audio.sts.models.dialogue_sidon", "Model"),
     "DialogueSidonConfig": ("mlx_audio.sts.models.dialogue_sidon", "ModelConfig"),
     "DialogueSidonResult": ("mlx_audio.sts.models.dialogue_sidon", "SeparationResult"),
@@ -55,6 +64,9 @@ __all__ = [
     "DialogueSidon",
     "DialogueSidonConfig",
     "DialogueSidonResult",
+    "FastDialogueSidon",
+    "FastDialogueSidonConfig",
+    "FastDialogueSidonResult",
     "MossFormer2SE",
     "MossFormer2SEConfig",
     "MossFormer2SEModel",
