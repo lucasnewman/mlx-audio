@@ -1,4 +1,4 @@
-"""Native MLX Stable Audio 3 small pipeline."""
+"""Native MLX Stable Audio 3 pipeline."""
 
 from __future__ import annotations
 
@@ -16,8 +16,15 @@ import sentencepiece as spm
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 
 from . import t5gemma
-from .dit import COND_DIM, FOURIER_DIM, IO_CHANNELS, DiT, expo_fourier_features
-from .same import SAMEDecoder
+from .dit import (
+    COND_DIM,
+    FOURIER_DIM,
+    IO_CHANNELS,
+    DiT,
+    DiTConfig,
+    expo_fourier_features,
+)
+from .same import SAMEConfig, SAMEDecoder
 
 TEXT_ENCODER_DIR = "t5gemma-b-b-ul2"
 TEXT_MAX_LENGTH = 256
@@ -46,6 +53,32 @@ _UNUSED_KEYS = (
 class ModelConfig(BaseModelArgs):
     sample_rate: int = 44100
     sample_size: int = 5292032
+    model: Optional[dict] = None
+
+
+def dit_config(model: Optional[dict]) -> DiTConfig:
+    if model is None:
+        return DiTConfig()
+    config = model["diffusion"]["config"]
+    return DiTConfig(
+        embed_dim=config["embed_dim"],
+        depth=config["depth"],
+        ff_mult=config["ff_kwargs"]["mult"],
+        differential=config["attn_kwargs"].get("differential", False),
+    )
+
+
+def decoder_config(model: Optional[dict]) -> SAMEConfig:
+    if model is None:
+        return SAMEConfig()
+    config = model["pretransform"]["config"]["decoder"]["config"]
+    return SAMEConfig(
+        dim=config["channels"] * config["c_mults"][0],
+        depth=config["transformer_depths"][0],
+        sinusoidal_blocks=config["sinusoidal_blocks"][0],
+        conv_mapping=config.get("conv_mapping", False),
+        sliding_window="sliding_window" in config,
+    )
 
 
 class TextEncoder(nn.Module):
@@ -80,25 +113,29 @@ def guided_velocity(
     uncond_v: mx.array,
     cfg_scale: float,
 ) -> mx.array:
+    dtype = x.dtype
+    x, sigma = x.astype(mx.float32), sigma.astype(mx.float32)
+    cond_v, uncond_v = cond_v.astype(mx.float32), uncond_v.astype(mx.float32)
     cond = x - sigma * cond_v
     diff = sigma * (uncond_v - cond_v)
     norm = mx.sqrt((cond * cond).sum(axis=(-2, -1), keepdims=True))
     unit = cond / mx.maximum(norm, 1e-8)
     orthogonal = diff - (diff * unit).sum(axis=(-2, -1), keepdims=True) * unit
-    return (x - (cond + (cfg_scale - 1.0) * orthogonal)) / sigma
+    return ((x - (cond + (cfg_scale - 1.0) * orthogonal)) / sigma).astype(dtype)
 
 
 def sample_pingpong(model_fn, x: mx.array, sigmas: mx.array, key: mx.array) -> mx.array:
     last = sigmas.shape[0] - 2
     for step in range(last + 1):
         sigma, next_sigma = sigmas[step], sigmas[step + 1]
-        denoised = x - sigma * model_fn(x, sigma[None])
+        denoised = x - sigma.astype(x.dtype) * model_fn(x, sigma[None])
         if step == last:
             x = denoised
         else:
             key, noise_key = mx.random.split(key)
             noise = mx.random.normal(x.shape, dtype=x.dtype, key=noise_key)
-            x = (1.0 - next_sigma) * denoised + next_sigma * noise
+            keep = (1.0 - next_sigma).astype(x.dtype)
+            x = keep * denoised + next_sigma.astype(x.dtype) * noise
         mx.eval(x)
     return x
 
@@ -107,8 +144,9 @@ class Model(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-        self.dit = DiT()
-        self.decoder = SAMEDecoder()
+        self.dtype = mx.float32
+        self.dit = DiT(dit_config(config.model))
+        self.decoder = SAMEDecoder(decoder_config(config.model))
         self.padding_embedding = mx.zeros((COND_DIM,))
         self.seconds_proj = nn.Linear(FOURIER_DIM, COND_DIM)
 
@@ -134,6 +172,7 @@ class Model(nn.Module):
 
     @staticmethod
     def post_load_hook(model: "Model", model_path: Path) -> "Model":
+        model.dtype = model.dit.postprocess_conv.weight.dtype
         directory = Path(model_path) / TEXT_ENCODER_DIR
         weights = []
         for key, value in mx.load(str(directory / "model.safetensors")).items():
@@ -156,16 +195,17 @@ class Model(nn.Module):
         ids = np.zeros((1, TEXT_MAX_LENGTH), dtype=np.int32)
         ids[0, : len(tokens)] = tokens
         mask = mx.arange(TEXT_MAX_LENGTH)[None] < len(tokens)
-        hidden = self.text_encoder(mx.array(ids), mask).astype(mx.float32)
-        keep = mask[..., None].astype(mx.float32)
-        return hidden * keep + self.padding_embedding[None, None] * (1 - keep)
+        hidden = self.text_encoder(mx.array(ids), mask).astype(self.dtype)
+        keep = mask[..., None].astype(self.dtype)
+        padding = self.padding_embedding[None, None].astype(self.dtype)
+        return hidden * keep + padding * (1 - keep)
 
     def _seconds_embedding(self, seconds: float) -> mx.array:
         # The seconds conditioner was only trained on whole seconds.
         whole_seconds = math.ceil(seconds)
         return self.seconds_proj(
             expo_fourier_features(mx.array([whole_seconds / SECONDS_MAX]))
-        )
+        ).astype(self.dtype)
 
     def _sample(
         self,
@@ -207,6 +247,7 @@ class Model(nn.Module):
 
         key, noise_key = mx.random.split(mx.random.key(seed))
         noise = mx.random.normal((1, length, IO_CHANNELS), key=noise_key)
+        noise = noise.astype(self.dtype)
         return sample_pingpong(model_fn, noise, sampling_schedule(steps), key)
 
     def generate(
@@ -233,7 +274,8 @@ class Model(nn.Module):
 
         started = time.perf_counter()
         latents = self._sample(text, duration, steps, seed, cfg_scale, negative_prompt)
-        audio = self.decoder.decode(latents)[0, : round(duration * self.sample_rate)]
+        audio = self.decoder.decode(latents.astype(mx.float32))
+        audio = audio[0, : round(duration * self.sample_rate)]
         waveform = mx.clip(audio, -1.0, 1.0)
         mx.eval(waveform)
         if not np.isfinite(np.asarray(waveform)).all():

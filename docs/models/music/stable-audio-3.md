@@ -1,13 +1,16 @@
 # Stable Audio 3
 
-Stable Audio 3 small generates stereo 44.1 kHz audio from a text prompt: a
-T5Gemma text encoder, a 20-layer diffusion transformer sampled with ping-pong
-in 8 steps, and the SAME-S decoder. It generates up to 120 seconds.
+Stable Audio 3 generates stereo 44.1 kHz audio from a text prompt: a T5Gemma
+text encoder, a diffusion transformer sampled with ping-pong in 8 steps, and a
+SAME decoder. Small uses a 20-layer transformer and SAME-S and generates up to
+120 seconds. Medium uses a 24-layer transformer with differential attention and
+SAME-L and generates up to 380 seconds.
 
 | Model | Purpose |
 |---|---|
 | [`mlx-community/stable-audio-3-small-sfx`](https://huggingface.co/mlx-community/stable-audio-3-small-sfx) | Sound effects |
 | [`mlx-community/stable-audio-3-small-music`](https://huggingface.co/mlx-community/stable-audio-3-small-music) | Music |
+| [`mlx-community/stable-audio-3-medium`](https://huggingface.co/mlx-community/stable-audio-3-medium) | Music and sound effects, up to 380 seconds |
 
 ## Generate
 
@@ -40,6 +43,18 @@ in 8 steps, and the SAME-S decoder. It generates up to 120 seconds.
 
 `--cfg-scale` defaults to 1, which turns guidance off. A larger scale doubles
 the model calls per step and enables `--negative-prompt`.
+
+## Convert
+
+The medium weights are converted from the MLX export in
+[`stabilityai/stable-audio-3-optimized`](https://huggingface.co/stabilityai/stable-audio-3-optimized)
+(revision `30cb2644da54bfa63275d1bc7f1fa67fc718680f`), with the config and text
+encoder from `stabilityai/stable-audio-3-medium-base`:
+
+```bash
+python -m mlx_audio.music.models.stable_audio_3.convert \
+    --mlx-path ./stable-audio-3-medium
+```
 
 ## License
 

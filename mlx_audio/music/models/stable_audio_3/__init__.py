@@ -1,4 +1,4 @@
-"""Native MLX implementation of Stable Audio 3 small."""
+"""Native MLX implementation of Stable Audio 3."""
 
 from .stable_audio_3 import Model, ModelConfig
 
