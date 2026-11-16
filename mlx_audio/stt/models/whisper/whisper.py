@@ -405,29 +405,42 @@ class MultiHeadAttention(nn.Module):
     ):
         if xa is None and isinstance(kv_cache, SelfAttentionCache):
             return self._cached_self_attention(x, kv_cache)
+        if xa is not None:
+            return self._cross_attention(x, xa, mask, kv_cache)
 
         q = self.query(x)
-
-        if xa is None:
-            k = self.key(x)
-            v = self.value(x)
-            if kv_cache is not None:
-                k = mx.concatenate([kv_cache[0], k], axis=1)
-                v = mx.concatenate([kv_cache[1], v], axis=1)
-        elif kv_cache is None:
-            k = self.key(xa)
-            v = self.value(xa)
-        else:
-            k, v = kv_cache
+        k = self.key(x)
+        v = self.value(x)
+        if kv_cache is not None:
+            k = mx.concatenate([kv_cache[0], k], axis=1)
+            v = mx.concatenate([kv_cache[1], v], axis=1)
 
         wv, qk = self.qkv_attention(q, k, v, mask)
         return self.out(wv), (k, v), qk
 
     def qkv_attention(self, q, k, v, mask=None):
+        return self._attend(q, k * self._qk_scale(k.shape[-1]), v, mask)
+
+    def _qk_scale(self, n_state):
+        # Applied to both q and k, so q @ k carries d_head ** -0.5.
+        return (n_state // self.n_head) ** -0.25
+
+    def _cross_attention(self, x, xa, mask, kv_cache):
+        # The audio keys do not change between decoding steps, so the cache
+        # keeps them already scaled instead of rescaling all n_audio_ctx
+        # positions in every layer for every generated token.
+        if kv_cache is None:
+            k = self.key(xa)
+            kv_cache = (k * self._qk_scale(k.shape[-1]), self.value(xa))
+        wv, qk = self._attend(self.query(x), *kv_cache, mask)
+        return self.out(wv), kv_cache, qk
+
+    def _attend(self, q, k, v, mask=None):
+        """Attention with ``k`` already multiplied by ``_qk_scale``."""
         n_batch, n_ctx, n_state = q.shape
-        scale = (n_state // self.n_head) ** -0.25
+        scale = self._qk_scale(n_state)
         q = q.reshape(*q.shape[:2], self.n_head, -1).transpose(0, 2, 1, 3) * scale
-        k = k.reshape(*k.shape[:2], self.n_head, -1).transpose(0, 2, 3, 1) * scale
+        k = k.reshape(*k.shape[:2], self.n_head, -1).transpose(0, 2, 3, 1)
         v = v.reshape(*v.shape[:2], self.n_head, -1).transpose(0, 2, 1, 3)
 
         qk = q @ k
