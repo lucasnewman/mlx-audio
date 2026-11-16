@@ -192,6 +192,7 @@ _time_re = re.compile(r"(\d\d?:\d\d(?::\d\d(?:\.\d+)?)?)")
 _dollars_re = re.compile(r"\$([\d.,]*\d+)")
 _ordinal_re = re.compile(r"\d+(st|nd|rd|th)")
 _decimal_number_re = re.compile(r"\d+\.\d+")
+_multiply_re = re.compile(r"(?<=\d)\s?\*\s?(?=\d)")
 _num_letter_split_re = re.compile(r"(\d[a-z]|[a-z]\d)", re.IGNORECASE)
 _number_re = re.compile(r"\d+")
 
@@ -306,6 +307,7 @@ def normalize_numbers(text: str) -> str:
     text = re.sub(_time_re, _expand_time, text)
     text = re.sub(_dollars_re, _expand_dollars, text)
     text = re.sub(_decimal_number_re, _expand_decimal_point, text)
+    text = re.sub(_multiply_re, " times ", text)
     text = re.sub(_ordinal_re, _expand_ordinal, text)
     for _ in range(2):  # a second pass splits overlapping matches, like "a1b"
         text = re.sub(_num_letter_split_re, _split_alphanumeric, text)
@@ -333,6 +335,8 @@ _special_characters = [
         ("=", " equals "),
         ("/", " slash "),
         ("_", " "),
+        # Any "*" left after the numbers is emphasis or a list bullet, not speech.
+        (r"\*", " "),
     ]
 ]
 

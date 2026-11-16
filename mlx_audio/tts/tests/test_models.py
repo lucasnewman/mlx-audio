@@ -2485,6 +2485,18 @@ class TestSoprano(unittest.TestCase):
         self.assertEqual(dedup_punctuation("hello,,,,"), "hello,")
         self.assertEqual(dedup_punctuation("hello??!!"), "hello?")
 
+    def test_asterisks(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        self.assertEqual(clean_text("2*3 is 6."), "two times three is six.")
+        self.assertEqual(clean_text("5 * 4 = 20"), "five times four equals twenty")
+        self.assertEqual(
+            clean_text("2*3*4 and 2.5*2"),
+            "two times three times four and two point five times two",
+        )
+        self.assertEqual(clean_text("This is **important**."), "this is important.")
+        self.assertEqual(clean_text("* first item"), "first item")
+
     def test_convert_to_ascii(self):
         """Test unicode to ASCII conversion."""
         from mlx_audio.tts.models.soprano.text import convert_to_ascii
