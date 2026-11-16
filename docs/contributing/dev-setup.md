@@ -4,7 +4,7 @@ This page walks you through setting up a local development environment for MLX A
 
 ## Prerequisites
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **Apple Silicon Mac** (M1 / M2 / M3 / M4)
 - **Git**
 - **ffmpeg** (optional; required for non-WAV audio formats)

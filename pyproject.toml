@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=84.1.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -15,20 +15,27 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 # Core dependencies
 dependencies = [
+    # Security floors for the shared HTTP and Hugging Face dependency stack.
+    "anyio>=4.14.2",
+    "certifi>=2026.10.18",
+    "filelock>=4.2.1",
+    "fsspec>=2026.6.0",
     "huggingface_hub>=1.0",
     "jinja2>=3.1.6",
     "miniaudio>=1.71",
     "mlx>=0.32.4",
     "numpy>=1.26.4",
+    "requests>=2.33.0",
     "scipy>=1.10.0",
     "sentencepiece>=0.2.0",
     "sounddevice>=0.5.3",
     "tqdm>=4.67.1",
     "transformers[chat-template]>=5.14.0",
+    "urllib3>=2.8.0",
 ]
 
 [project.optional-dependencies]
@@ -40,15 +47,16 @@ stt = [
 # TTS dependencies
 tts = [
     "mistral-common[audio]",
+    "pillow>=13.0.0",
 ]
 
 # Server dependencies
 server = [
     "fastapi>=0.95.0",
     "uvicorn[standard]>=0.22.0",
-    "python-multipart>=0.0.22",
-    "webrtcvad>=2.0.10",
-    "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
+    "python-multipart>=0.0.31",
+    # Provides the same webrtcvad import without depending on pkg_resources.
+    "webrtcvad-wheels>=2.0.14.post1",
 ]
 
 # STS (Speech-to-Speech) dependencies
@@ -57,23 +65,22 @@ sts = [
     # model, which is mlx-lm's job; every other use is vendored in mlx_audio/lm.
     "mlx-lm>=0.31.1",
 
-    "webrtcvad>=2.0.10",
-    "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
+    "webrtcvad-wheels>=2.0.14.post1",
 ]
 
 # Full installation (all features)
 all = [
     "mistral-common[audio]",
+    "pillow>=13.0.0",
     "zstandard>=0.23.0",
 
     "mlx-lm>=0.31.1",
 
     "fastapi>=0.95.0",
-    "python-multipart>=0.0.22",
+    "python-multipart>=0.0.31",
     "uvicorn[standard]>=0.22.0",
 
-    "webrtcvad>=2.0.10",
-    "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
+    "webrtcvad-wheels>=2.0.14.post1",
 ]
 
 # Optional in-process LLM responder for the speech-to-speech pipeline. Every
@@ -90,19 +97,21 @@ parity = [
 # Development dependencies
 dev = [
     "httpx2>=2.0.0,<3",
-    "pytest>=7.0.0",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.0.0",
-    "black>=24.2.0",
+    "black>=26.10.1",
     "isort>=5.13.2",
     "pre-commit>=3.7.0",
+    "pygments>=2.20.0",
+    "virtualenv>=21.15.6",
 ]
 
 # Documentation dependencies
 docs = [
-    "mkdocs-material>=9.6",
-    "mkdocstrings[python]>=0.29",
-    # mkdocstrings supports pymdown-extensions 12.2 from 1.0.7, which needs Python 3.11
-    "pymdown-extensions<12.2; python_version < '3.11'",
+    "mkdocs-material>=9.7.7",
+    "mkdocstrings[python]>=1.0.7",
+    "pygments>=2.20.0",
+    "pymdown-extensions>=11.0.1",
 ]
 
 [project.scripts]
@@ -143,7 +152,7 @@ mlx_audio = [
 
 [tool.black]
 line-length = 88
-target-version = ["py310"]
+target-version = ["py311"]
 
 [tool.isort]
 profile = "black"
