@@ -23,7 +23,7 @@
 <p align="center">
   <a href="https://github.com/Blaizzy/mlx-audio/actions/workflows/python-publish.yml"><img src="https://github.com/Blaizzy/mlx-audio/actions/workflows/python-publish.yml/badge.svg" alt="Upload Python Package"></a>
   <a href="https://pypi.org/project/mlx-audio/"><img src="https://img.shields.io/pypi/v/mlx-audio" alt="PyPI version"></a>
-  <a href="https://pypi.org/project/mlx-audio/"><img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+"></a>
+  <a href="https://pypi.org/project/mlx-audio/"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+"></a>
   <a href="https://github.com/Blaizzy/mlx-audio/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Blaizzy/mlx-audio" alt="MIT license"></a>
 </p>
 
@@ -769,7 +769,7 @@ Looking for Swift/iOS support? Check out [mlx-audio-swift](https://github.com/Bl
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - Apple Silicon Mac (M1/M2/M3/M4)
 - MLX framework
 - **ffmpeg** (required for MP3/FLAC/OGG/Opus/Vorbis audio encoding)

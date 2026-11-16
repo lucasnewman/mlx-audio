@@ -4,7 +4,7 @@ Welcome to MLX Audio! This section will help you install the library and run you
 
 ## Requirements
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **Apple Silicon Mac** (M1 / M2 / M3 / M4)
 - **ffmpeg** (required for MP3, FLAC, OGG, Opus, or Vorbis encoding; WAV works without it)
 
