@@ -208,16 +208,25 @@ _tens = [
 ]
 
 
+_scales = [
+    (10**12, "trillion"),
+    (10**9, "billion"),
+    (10**6, "million"),
+    (10**3, "thousand"),
+]
+
+
 def _number_to_words(n: int) -> str:
-    """Convert integer to English words (simplified, up to 999,999)."""
+    """Convert integer to English words."""
     if n == 0:
         return "zero"
     if n < 0:
         return "minus " + _number_to_words(-n)
     parts = []
-    if n >= 1000:
-        parts.append(_number_to_words(n // 1000) + " thousand")
-        n %= 1000
+    for value, name in _scales:
+        if n >= value:
+            parts.append(_number_to_words(n // value) + " " + name)
+            n %= value
     if n >= 100:
         parts.append(_ones[n // 100] + " hundred")
         n %= 100
