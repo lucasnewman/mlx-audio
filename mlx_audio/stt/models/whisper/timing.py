@@ -71,29 +71,41 @@ def _backtrace(trace: np.ndarray):
 
 
 def dtw(x: np.ndarray) -> np.ndarray:
-    """Dynamic Time Warping using numpy (sequential DP)."""
+    """Dynamic Time Warping using numpy.
+
+    Cell (i, j) depends only on cells of the two previous anti-diagonals
+    (i + j - 1 and i + j - 2), so each anti-diagonal is computed at once.
+    The tables are stored skewed, with row k holding the anti-diagonal
+    i + j == k indexed by i, so every step reads contiguous slices.
+    """
     N, M = x.shape
-    cost = np.full((N + 1, M + 1), np.inf, dtype=np.float32)
-    trace = np.full((N + 1, M + 1), -1.0, dtype=np.float32)
-
+    num_diagonals = N + M + 1
+    cost = np.full((num_diagonals, N + 1), np.inf, dtype=np.float32)
+    trace = np.full((num_diagonals, N + 1), -1.0, dtype=np.float32)
     cost[0, 0] = 0
-    for j in range(1, M + 1):
-        for i in range(1, N + 1):
-            c0 = cost[i - 1, j - 1]
-            c1 = cost[i - 1, j]
-            c2 = cost[i, j - 1]
 
-            if c0 < c1 and c0 < c2:
-                c, t = c0, 0
-            elif c1 < c0 and c1 < c2:
-                c, t = c1, 1
-            else:
-                c, t = c2, 2
+    rows = np.arange(N + 1)[:, None]
+    cols = np.arange(M + 1)[None, :]
+    skewed_x = np.zeros((num_diagonals, N + 1), dtype=x.dtype)
+    skewed_x[rows[1:] + cols[:, 1:], rows[1:]] = x
 
-            cost[i, j] = x[i - 1, j - 1] + c
-            trace[i, j] = t
+    for k in range(2, num_diagonals):
+        first_row, end_row = max(1, k - M), min(N, k - 1) + 1
+        diagonal_cost = cost[k - 2, first_row - 1 : end_row - 1]
+        up_cost = cost[k - 1, first_row - 1 : end_row - 1]
+        left_cost = cost[k - 1, first_row:end_row]
 
-    return _backtrace(trace)
+        take_diagonal = (diagonal_cost < up_cost) & (diagonal_cost < left_cost)
+        take_up = (up_cost < diagonal_cost) & (up_cost < left_cost)
+        best = np.where(
+            take_diagonal, diagonal_cost, np.where(take_up, up_cost, left_cost)
+        )
+        cost[k, first_row:end_row] = skewed_x[k, first_row:end_row] + best
+        trace[k, first_row:end_row] = np.where(
+            take_diagonal, 0, np.where(take_up, 1, 2)
+        )
+
+    return _backtrace(trace[rows + cols, rows])
 
 
 @dataclass
