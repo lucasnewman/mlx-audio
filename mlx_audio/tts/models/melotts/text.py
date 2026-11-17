@@ -245,6 +245,11 @@ _decimal_number_re = re.compile(r"(\d+\.\d+)")
 _ordinal_re = re.compile(r"(\d+)(st|nd|rd|th)\b")
 _currency_re = re.compile(r"([$£€¥])(\d+(?:\.\d+)?)")
 _number_re = re.compile(r"\d+")
+# A clock time, "3:30" or "15:05", with an optional "am", "p.m." and so on. Not
+# part of a longer time or ratio such as "1:30:45".
+_time_re = re.compile(
+    r"(?<![\d:])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])(?:\s*([ap])\.?\s?m\b)?"
+)
 
 _ordinal_words = {
     "one": "first",
@@ -306,6 +311,20 @@ def _expand_currency(m):
     return " ".join(parts) or "zero " + units
 
 
+def _expand_time(m):
+    hour, minute, am_pm = int(m.group(1)), int(m.group(2)), m.group(3)
+    if am_pm:
+        hour = hour - 12 if hour > 12 else hour or 12
+    words = [_number_to_words(hour)]
+    if minute:
+        if minute < 10:
+            words.append("oh")
+        words.append(_number_to_words(minute))
+    if am_pm:
+        words.append(am_pm + " m")
+    return " ".join(words)
+
+
 def _expand_number(m):
     return _number_to_words(int(m.group(0)))
 
@@ -340,6 +359,7 @@ def text_normalize(text: str) -> str:
     text = text.lower()
     for regex, replacement in _abbreviations:
         text = re.sub(regex, replacement, text)
+    text = re.sub(_time_re, _expand_time, text)
     text = re.sub(_comma_number_re, _remove_commas, text)
     text = re.sub(_currency_re, _expand_currency, text)
     text = re.sub(_decimal_number_re, _expand_decimal, text)
