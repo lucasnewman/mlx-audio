@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { ChevronDown, Download, ThumbsUp, ThumbsDown, Play, Pause, RefreshCw } from "lucide-react"
 import { LayoutWrapper } from "@/components/layout-wrapper"
 import { VoiceSelection } from "@/components/voice-selection"
@@ -60,7 +60,34 @@ export default function SpeechSynthesis() {
   const [activeTab, setActiveTab] = useState<"settings" | "history">("settings")
   const [baseModel, setBaseModel] = useState("Marvis-AI/marvis-tts-100m-v0.2")
   const [quantization, setQuantization] = useState("6bit")
-  const [language, setLanguage] = useState("English-detected")
+  const LANGUAGES = [
+    { code: "a", label: "English-US" },
+    { code: "b", label: "English-GB" },
+    { code: "z", label: "中文 (Mandarin)" },
+  ]
+  const [langCode, setLangCode] = useState("a")
+  const ZH_VOICES = [
+    { code: "zf_xiaobei", label: "小贝 (女)" },
+    { code: "zf_xiaoni", label: "小妮 (女)" },
+    { code: "zf_xiaoxiao", label: "小肖 (女)" },
+    { code: "zf_xiaoyi", label: "小依 (女)" },
+    { code: "zm_yunjian", label: "云健 (男)" },
+    { code: "zm_yunxi", label: "云希 (男)" },
+    { code: "zm_yunxia", label: "云夏 (男)" },
+    { code: "zm_yunyang", label: "云阳 (男)" },
+  ]
+  const AM_VOICES = [
+    { code: "af_heart", label: "af_heart (Female)" },
+    { code: "af_bella", label: "af_bella (Female)" },
+    { code: "am_adam", label: "am_adam (Male)" },
+    { code: "am_michael", label: "am_michael (Male)" },
+  ]
+  const GB_VOICES = [
+    { code: "bf_emma", label: "bf_emma (Female)" },
+    { code: "bf_isabella", label: "bf_isabella (Female)" },
+    { code: "bm_george", label: "bm_george (Male)" },
+    { code: "bm_lewis", label: "bm_lewis (Male)" },
+  ]
   const [liked, setLiked] = useState<boolean | null>(null)
   const [selectedVoice, setSelectedVoice] = useState("conversational_a")
 
@@ -93,6 +120,16 @@ export default function SpeechSynthesis() {
 
   // Get the current full model name
   const model = getFullModelName()
+
+  // Keep the selected voice in sync with model / language changes
+  useEffect(() => {
+    const m = model.toLowerCase()
+    if (m.includes("kokoro")) {
+      setSelectedVoice(langCode === "z" ? "zf_xiaobei" : langCode === "b" ? "bf_emma" : "af_heart")
+    } else if (m.includes("marvis")) {
+      setSelectedVoice("conversational_a")
+    }
+  }, [langCode, model])
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setText(e.target.value)
@@ -134,8 +171,6 @@ export default function SpeechSynthesis() {
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost';
     const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
 
-    const voice = (model.includes("marvis") ? "conversational_a" : "af_heart");
-
     try {
       const response = await fetch(`${API_BASE_URL}:${API_PORT}/v1/audio/speech`, {
         method: "POST",
@@ -145,9 +180,9 @@ export default function SpeechSynthesis() {
         body: JSON.stringify({
           model: model, // Or the specific model identifier if different
           input: text,
-          voice: voice,
+          voice: selectedVoice,
           speed: speed,
-          // pitch and other parameters can be added here if supported by the backend
+          ...(model.toLowerCase().includes("kokoro") ? { lang_code: langCode } : {}),
         }),
       })
 
@@ -232,11 +267,35 @@ export default function SpeechSynthesis() {
           <div className="mt-4 flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <div className="relative">
-                <button className="flex items-center space-x-1 rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs hover:bg-gray-50 dark:hover:bg-gray-800">
-                  <span>{language}</span>
-                  <ChevronDown className="h-3 w-3" />
-                </button>
+                <select
+                  className="flex appearance-none items-center rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 pr-6 text-xs bg-white dark:bg-gray-800"
+                  value={langCode}
+                  onChange={(e) => setLangCode(e.target.value)}
+                >
+                  {LANGUAGES.map((l) => (
+                    <option key={l.code} value={l.code}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-1.5 top-1.5 h-3 w-3 pointer-events-none" />
               </div>
+              {model.toLowerCase().includes("kokoro") && (
+                <div className="relative">
+                  <select
+                    className="flex appearance-none items-center rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 pr-6 text-xs bg-white dark:bg-gray-800"
+                    value={selectedVoice}
+                    onChange={(e) => setSelectedVoice(e.target.value)}
+                  >
+                    {({ a: AM_VOICES, b: GB_VOICES, z: ZH_VOICES }[langCode] || AM_VOICES).map((v) => (
+                      <option key={v.code} value={v.code}>
+                        {v.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-1.5 top-1.5 h-3 w-3 pointer-events-none" />
+                </div>
+              )}
               <button
                 className="rounded-md border border-gray-200 dark:border-gray-700 p-1 hover:bg-gray-50 dark:hover:bg-gray-800"
                 onClick={handleDownload}
