@@ -582,6 +582,99 @@ def _mp4_top_level_atoms(data):
     return atoms
 
 
+def _dominant_frequency(samples, rate):
+    center = samples[len(samples) // 4 : -len(samples) // 4].astype(np.float64)
+    spectrum = np.abs(np.fft.rfft(center)) ** 2
+    return np.fft.rfftfreq(len(center), 1 / rate)[np.argmax(spectrum)]
+
+
+@pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+class TestAudioIOMultiTrack:
+    """ffmpeg decodes the stream ffprobe described: the first audio track."""
+
+    @pytest.fixture
+    def two_track_mp4(self, tmp_path):
+        """Track a:0 is 400 Hz at 16 kHz mono; a:1, the default, is 800 Hz stereo."""
+        import json
+
+        path = tmp_path / "two_tracks.mp4"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=400:sample_rate=16000:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=sin(800*2*PI*t)|sin(800*2*PI*t):s=48000:d=1",
+                "-map",
+                "0:a",
+                "-map",
+                "1:a",
+                "-c:a",
+                "aac",
+                "-disposition:a:0",
+                "0",
+                "-disposition:a:1",
+                "default",
+                str(path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_streams",
+                "-select_streams",
+                "a",
+                str(path),
+            ],
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+        streams = json.loads(probe.stdout)["streams"]
+        assert len(streams) == 2
+        assert (streams[0]["sample_rate"], streams[0]["channels"]) == ("16000", 1)
+        assert streams[0]["disposition"]["default"] == 0
+        assert (streams[1]["sample_rate"], streams[1]["channels"]) == ("48000", 2)
+        assert streams[1]["disposition"]["default"] == 1
+        return path
+
+    @pytest.mark.parametrize("use_buffer", [False, True])
+    def test_first_track_is_decoded(self, two_track_mp4, use_buffer):
+        """Automatic stream selection picks a:1; the probe reported a:0."""
+        source = io.BytesIO(two_track_mp4.read_bytes()) if use_buffer else two_track_mp4
+
+        data, rate = read(source, dtype="float32")
+
+        assert rate == 16000
+        assert data.ndim == 1
+        assert abs(_dominant_frequency(data, rate) - 400) < 50
+
+    def test_first_track_with_duration_and_target_rate(self, two_track_mp4):
+        """The duration and output overrides apply to the same mapped stream."""
+        data, rate = read(
+            two_track_mp4,
+            dtype="float32",
+            duration=0.5,
+            sample_rate=8000,
+            nchannels=1,
+        )
+
+        assert rate == 8000
+        assert data.shape[0] == 4000
+        assert abs(_dominant_frequency(data, rate) - 400) < 100
+
+
 @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
 class TestAudioIOBytesThroughFFmpeg:
     """Bytes that need ffmpeg are decoded from a seekable temporary file."""

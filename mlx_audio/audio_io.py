@@ -227,6 +227,8 @@ def _decode_ffmpeg(
         *input_options,
         "-i",
         str(input_data),
+        "-map",
+        "0:a:0",
         "-f",
         "s16le",  # Output: signed 16-bit little-endian PCM
         "-acodec",
