@@ -6,10 +6,46 @@ import pytest
 from mlx_audio.stt.generate import (
     format_timestamp,
     format_vtt_timestamp,
+    generate_transcription,
     save_as_json,
     save_as_srt,
     save_as_vtt,
 )
+from mlx_audio.stt.models.base import STTOutput
+
+
+class _UntimedModel:
+    def generate(self, audio, *, verbose=False, generation_stream=None):
+        return STTOutput(text="hello")
+
+
+@pytest.mark.parametrize("to_stdout", [False, True])
+def test_cli_writes_json_for_untimed_model(tmp_path, capsys, to_stdout):
+    path = tmp_path / "transcript"
+    generate_transcription(
+        model=_UntimedModel(),
+        audio="ignored.wav",
+        output_path="-" if to_stdout else str(path),
+        format="json",
+    )
+
+    saved = (
+        capsys.readouterr().out if to_stdout else path.with_suffix(".json").read_text()
+    )
+    assert json.loads(saved) == {"text": "hello", "segments": []}
+    assert not path.with_suffix(".txt").exists()
+
+
+@pytest.mark.parametrize("output_format", ["srt", "vtt"])
+def test_cli_rejects_subtitles_for_untimed_model(tmp_path, output_format):
+    with pytest.raises(ValueError, match="requires timestamps.*TXT or JSON"):
+        generate_transcription(
+            model=_UntimedModel(),
+            audio="ignored.wav",
+            output_path=str(tmp_path / "transcript"),
+            format=output_format,
+        )
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(

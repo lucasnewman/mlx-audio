@@ -131,12 +131,12 @@ def format_vtt_timestamp(seconds: float) -> str:
 
 def _get_cues(segments):
     """Extract subtitle cues, rejecting text without timestamps."""
-    if hasattr(segments, "sentences"):
-        return [
-            {"start": s.start, "end": s.end, "text": s.text} for s in segments.sentences
-        ]
+    sentences = getattr(segments, "sentences", None)
+    if sentences:
+        return [{"start": s.start, "end": s.end, "text": s.text} for s in sentences]
+
     cues = []
-    for s in segments.segments:
+    for s in getattr(segments, "segments", None) or ():
         if s.get("start") is None or s.get("end") is None:
             if s["text"].strip():
                 raise ValueError(
@@ -196,7 +196,8 @@ def save_as_vtt(segments, output_path: str):
 
 
 def save_as_json(segments, output_path: str):
-    if hasattr(segments, "sentences"):
+    sentences = getattr(segments, "sentences", None)
+    if sentences is not None:
         result = {
             "text": segments.text,
             "sentences": [
@@ -215,11 +216,11 @@ def save_as_json(segments, output_path: str):
                         for t in s.tokens
                     ],
                 }
-                for s in segments.sentences
+                for s in sentences
             ],
         }
         # Add speaker_id only if it exists
-        for i, s in enumerate(segments.sentences):
+        for i, s in enumerate(sentences):
             if hasattr(s, "speaker_id"):
                 result["sentences"][i]["speaker_id"] = s.speaker_id
     else:
@@ -227,7 +228,7 @@ def save_as_json(segments, output_path: str):
             "text": segments.text,
             "segments": [],
         }
-        for s in segments.segments:
+        for s in getattr(segments, "segments", None) or ():
             seg = {"text": s["text"]}
             if "start" in s or "end" in s:
                 seg["start"] = s.get("start")
@@ -407,13 +408,7 @@ def generate_transcription(
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    # Check for segments (Whisper) or sentences (Parakeet)
-    has_segments = hasattr(segments, "segments") and segments.segments is not None
-    has_sentences = hasattr(segments, "sentences") and segments.sentences is not None
-
-    if format == "txt" or (not has_segments and not has_sentences):
-        if not has_segments and not has_sentences:
-            print("[WARNING] No segments found, saving as plain text.")
+    if format == "txt":
         save_as_txt(segments, output_path)
     elif format == "srt":
         save_as_srt(segments, output_path)
