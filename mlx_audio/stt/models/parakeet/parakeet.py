@@ -687,24 +687,25 @@ class ParakeetRNNT(Model):
             new_symbols = 0
             decoder_hidden = None
 
+            decoder_output = None
+
             while time < max_length:
                 feature = features[:, time : time + 1]
 
-                current_token = (
-                    mx.array([[last_token]], dtype=mx.int32)
-                    if last_token != len(self.vocabulary)
-                    else None
-                )
-                decoder_output, (hidden, cell) = self.decoder(
-                    current_token, decoder_hidden
-                )
-
-                # cast
-                decoder_output = decoder_output.astype(feature.dtype)
-                proposed_decoder_hidden = (
-                    hidden.astype(feature.dtype),
-                    cell.astype(feature.dtype),
-                )
+                if decoder_output is None:
+                    current_token = (
+                        mx.array([[last_token]], dtype=mx.int32)
+                        if last_token != len(self.vocabulary)
+                        else None
+                    )
+                    decoder_output, (hidden, cell) = self.decoder(
+                        current_token, decoder_hidden
+                    )
+                    decoder_output = decoder_output.astype(feature.dtype)
+                    proposed_decoder_hidden = (
+                        hidden.astype(feature.dtype),
+                        cell.astype(feature.dtype),
+                    )
 
                 joint_output = self.joint(feature, decoder_output)
 
@@ -713,6 +714,7 @@ class ParakeetRNNT(Model):
                 if pred_token != len(self.vocabulary):
                     last_token = int(pred_token)
                     decoder_hidden = proposed_decoder_hidden
+                    decoder_output = None
                     if not tokenizer.is_special_token(last_token, self.vocabulary):
                         hypothesis.append(
                             AlignedToken(
