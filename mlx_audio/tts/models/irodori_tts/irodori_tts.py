@@ -475,6 +475,8 @@ class Model(nn.Module):
         ref_audio: str | mx.array | list[str | mx.array] | None = None,
         caption: str | None = None,
         stream: bool = False,
+        *,
+        seed: int | None = None,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         # instruct is an alias for caption (mlx-audio convention)
@@ -505,12 +507,13 @@ class Model(nn.Module):
             )
 
         # Run diffusion sampler
+        rng_seed = int(kwargs.pop("rng_seed", 0 if seed is None else seed))
         latent_out, latent_steps = self.generate_latents(
             text=text,
             ref_latent=ref_latent,
             ref_mask=ref_mask,
             caption=caption,
-            rng_seed=int(kwargs.get("rng_seed", 0)),
+            rng_seed=rng_seed,
             seconds=kwargs.get("seconds"),
             duration_scale=float(kwargs.get("duration_scale", 1.0)),
             min_seconds=float(
@@ -524,7 +527,6 @@ class Model(nn.Module):
                 for k, v in kwargs.items()
                 if k
                 not in (
-                    "rng_seed",
                     "seconds",
                     "duration_scale",
                     "min_seconds",

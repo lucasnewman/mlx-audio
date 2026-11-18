@@ -160,6 +160,8 @@ class Model(nn.Module):
         voice: str | None = None,
         ref_audio: str | mx.array | None = None,
         stream: bool = False,
+        *,
+        seed: int | None = None,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         if stream:
@@ -196,13 +198,14 @@ class Model(nn.Module):
                 divis_by_patch_size=self.config.dit.speaker_patch_size,
             )
 
+        rng_seed = int(kwargs.pop("rng_seed", 0 if seed is None else seed))
         latent_out = self.generate_latents(
             text=text,
             speaker_latent=speaker_latent,
             speaker_mask=speaker_mask,
-            rng_seed=int(kwargs.get("rng_seed", 0)),
-            block_sizes=kwargs.get("block_sizes"),
-            **{k: v for k, v in kwargs.items() if k not in {"rng_seed", "block_sizes"}},
+            rng_seed=rng_seed,
+            block_sizes=kwargs.pop("block_sizes", None),
+            **kwargs,
         )
 
         audio_out = ae_decode(self.fish_ae, self.pca_state, latent_out)
