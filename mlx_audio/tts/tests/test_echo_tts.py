@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import mlx.core as mx
 
@@ -83,7 +84,7 @@ class TestEchoTTS(unittest.TestCase):
         )
         self.assertEqual(tuple(y.shape), (1, 6, config.latent_size))
 
-    def test_sanitize_and_generate_smoke(self):
+    def _make_model(self):
         class FakeFishAE:
             def decode_zq(self, z_q):
                 b, _, t = z_q.shape
@@ -124,7 +125,10 @@ class TestEchoTTS(unittest.TestCase):
             pca_mean=mx.zeros((8,), dtype=mx.float32),
             latent_scale=1.0,
         )
+        return model
 
+    def test_sanitize_and_generate_smoke(self):
+        model = self._make_model()
         sanitized = model.sanitize(
             {
                 "cond_module.0.weight": mx.zeros((1, 1), dtype=mx.float32),
@@ -137,6 +141,17 @@ class TestEchoTTS(unittest.TestCase):
         result = next(model.generate("hi", rng_seed=0))
         self.assertEqual(result.sample_rate, 44100)
         self.assertTrue(result.samples > 0)
+
+    def test_generate_seed_alias(self):
+        model = self._make_model()
+        cases = [({}, 0), ({"seed": 7}, 7), ({"seed": 7, "rng_seed": 0}, 0)]
+        with patch.object(
+            model, "generate_latents", wraps=model.generate_latents
+        ) as sample:
+            for kwargs, expected in cases:
+                with self.subTest(kwargs=kwargs):
+                    next(model.generate("hi", **kwargs))
+                    self.assertEqual(sample.call_args.kwargs["rng_seed"], expected)
 
     def test_delete_blockwise_modules(self):
         cfg = EchoModelConfig(

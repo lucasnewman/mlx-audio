@@ -4984,6 +4984,17 @@ class TestIrodoriGenerateSmoke(unittest.TestCase):
         self.assertEqual(results[0].sample_rate, 48000)
         self.assertGreater(results[0].samples, 0)
 
+    def test_generate_seed_alias(self):
+        model = self._make_model()
+        cases = [({}, 0), ({"seed": 7}, 7), ({"seed": 7, "rng_seed": 0}, 0)]
+        with patch.object(
+            model, "generate_latents", wraps=model.generate_latents
+        ) as sample:
+            for kwargs, expected in cases:
+                with self.subTest(kwargs=kwargs):
+                    next(model.generate("こんにちは", **kwargs))
+                    self.assertEqual(sample.call_args.kwargs["rng_seed"], expected)
+
     def test_generate_with_ref_audio(self):
         from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
 
