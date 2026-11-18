@@ -43,7 +43,7 @@ class AudioVAE(BaseAudioVAE):
             frame_num = mx.ceil(frame_num / self.patch_size).astype(mx.int32)
         h = self.encoder(waveform).transpose(0, 2, 1)
         mu, scale = mx.split(h, 2, axis=1)
-        std = mx.logaddexp(scale, mx.zeros_like(scale)) + 1e-4
+        std = nn.softplus(scale) + 1e-4
         latent = mu + std * mx.random.normal(mu.shape, dtype=mu.dtype)
         return latent.transpose(0, 2, 1), frame_num
 
