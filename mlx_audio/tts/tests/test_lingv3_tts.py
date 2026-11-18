@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -227,6 +227,132 @@ class TestMingTinySampling(unittest.TestCase):
                 {str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file()},
                 {"tokenizer.json", "speaker_encoder/campplus.safetensors"},
             )
+
+
+class TestMingTinySeed(unittest.TestCase):
+    @staticmethod
+    def make_model():
+        # Exercise real generation, prompt preparation and FlowLoss sampling without
+        # loading checkpoints. Only the backbone, VAE and speaker boundary are tiny.
+        class Backbone:
+            @staticmethod
+            def word_embeddings(ids):
+                return mx.zeros((*ids.shape, 4))
+
+            def __call__(self, inputs_embeds, cache):
+                return mx.zeros((1, 1, 4))
+
+        class Audio:
+            sample_rate = 16000
+            patch_size = 1
+            config = {"enc_kwargs": {"hop_size": 1}}
+            decoder = SimpleNamespace(fc1=SimpleNamespace(weight=mx.zeros(1)))
+
+            def __init__(self):
+                self.references = []
+
+            def encode_latent(self, waveform, length):
+                latent = mx.random.normal((1, 1, 2))
+                self.references.append(np.array(latent))
+                return latent, mx.array([1])
+
+            @staticmethod
+            def decode(latents, **kwargs):
+                return latents.reshape(1, -1), None, None
+
+        model = Model.__new__(Model)
+        nn.Module.__init__(model)
+        model.config = SimpleNamespace(
+            llm_config=SimpleNamespace(hidden_size=4, max_position_embeddings=4096),
+            tts_config={**TOKENS, "maximum_decode_steps": 1, "minimum_decode_steps": 1},
+            model_path="unused-no-checkpoint",
+        )
+        model.model = SimpleNamespace(model=Backbone(), make_cache=lambda: [])
+        model.audio = Audio()
+        model.spk_head = nn.Linear(192, 4)
+        model.stop_head = lambda hidden: mx.array([[[0.0, 1.0]]])
+        model.linear_proj_audio = lambda latents: mx.zeros((1, 1, 4))
+        model.flowloss = FlowLoss(2, 4, dict(hidden_size=8, depth=1, num_heads=2))
+        model.flowloss.cfm.model = ConstantDiT()
+        model.latent_dim = 2
+        model.patch_size = model.history_size = 1
+        model.tokenizer = Tokenizer()
+        model._speaker_encoder = None
+        return model
+
+    class Encoder:
+        def __init__(self, path):
+            # MLX initializers advance the actual global stream, just as CAMPPlus
+            # does before its parameters are replaced by checkpoint weights.
+            self.layer = nn.Linear(2, 2)
+            mx.eval(self.layer.parameters())
+
+        def __call__(self, reference, sample_rate):
+            return mx.ones((1, 192))
+
+    @staticmethod
+    def generate(model, **kwargs):
+        return np.array(next(model.generate("Hello", ddpm_steps=1, **kwargs)).audio)
+
+    def test_first_clone_matches_warm_clone_including_reference_latents(self):
+        model = self.make_model()
+        with patch(
+            "mlx_audio.tts.models.lingv3_tts.lingv3_tts.SpeakerEncoder",
+            side_effect=self.Encoder,
+        ) as encoder:
+            outputs = [
+                self.generate(model, ref_audio=mx.zeros(64), ref_text="Hi", seed=42)
+                for _ in range(3)
+            ]
+        encoder.assert_called_once()
+        for output, reference in zip(outputs[1:], model.audio.references[1:]):
+            np.testing.assert_array_equal(outputs[0], output)
+            np.testing.assert_array_equal(model.audio.references[0], reference)
+
+    def test_supplied_embedding_preserves_seeded_reference_and_flow_draws(self):
+        model = self.make_model()
+        mx.random.seed(42)
+        reference = np.array(mx.random.normal((1, 1, 2)))
+        expected = np.array(mx.random.normal((1, 2, 1))).reshape(-1)
+        with patch(
+            "mlx_audio.tts.models.lingv3_tts.lingv3_tts.SpeakerEncoder",
+            side_effect=AssertionError("must not initialize speaker encoder"),
+        ):
+            actual = self.generate(
+                model,
+                ref_audio=mx.zeros(64),
+                ref_text="Hi",
+                spk_emb=mx.ones(192),
+                seed=42,
+            )
+        np.testing.assert_array_equal(model.audio.references[0], reference)
+        np.testing.assert_array_equal(actual, expected)
+
+    def test_builtin_voice_preserves_seeded_flow_draw(self):
+        model = self.make_model()
+        mx.random.seed(42)
+        expected = np.array(mx.random.normal((1, 2, 1))).reshape(-1)
+        with patch(
+            "mlx_audio.tts.models.lingv3_tts.lingv3_tts.SpeakerEncoder",
+            side_effect=AssertionError("must not initialize speaker encoder"),
+        ):
+            actual = self.generate(model, task="ip", seed=42)
+        np.testing.assert_array_equal(actual, expected)
+        self.assertEqual(model.audio.references, [])
+
+    def test_no_seed_keeps_advancing_the_global_stream(self):
+        model = self.make_model()
+        with (
+            patch(
+                "mlx_audio.tts.models.lingv3_tts.lingv3_tts.SpeakerEncoder",
+                side_effect=self.Encoder,
+            ),
+            patch.object(mx.random, "seed", wraps=mx.random.seed) as seed,
+        ):
+            first = self.generate(model, ref_audio=mx.zeros(64), ref_text="Hi")
+            second = self.generate(model, ref_audio=mx.zeros(64), ref_text="Hi")
+        seed.assert_not_called()
+        self.assertFalse(np.array_equal(first, second))
 
 
 if __name__ == "__main__":
