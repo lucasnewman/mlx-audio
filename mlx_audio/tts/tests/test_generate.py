@@ -260,7 +260,7 @@ class TestGenerateAudio(unittest.TestCase):
             self._result([], segment_idx=2),
         ]
 
-        generate_audio(
+        succeeded = generate_audio(
             text="hello",
             model=model,
             stream=True,
@@ -268,6 +268,8 @@ class TestGenerateAudio(unittest.TestCase):
             verbose=False,
         )
 
+        self.assertTrue(succeeded)
+        self.assertEqual(mock_audio_player.return_value.queue_audio.call_count, 2)
         self.assertEqual(
             [args[0] for args, _ in mock_audio_write.call_args_list],
             ["audio_000.wav", "audio_001.wav"],
@@ -605,9 +607,12 @@ class TestMain(unittest.TestCase):
         mock_load_model.return_value = model
 
         stderr = io.StringIO()
-        with patch.object(
-            sys, "argv", self._argv("--ref_audio", "/nonexistent/reference.wav")
-        ), patch.object(sys, "stderr", stderr):
+        with (
+            patch.object(
+                sys, "argv", self._argv("--ref_audio", "/nonexistent/reference.wav")
+            ),
+            patch.object(sys, "stderr", stderr),
+        ):
             with self.assertRaises(SystemExit) as exc:
                 main()
 
@@ -615,6 +620,35 @@ class TestMain(unittest.TestCase):
         self.assertIn("Reference audio file not found", stderr.getvalue())
         model.generate.assert_not_called()
         mock_audio_write.assert_not_called()
+
+    @patch("mlx_audio.tts.generate.AudioPlayer")
+    @patch("mlx_audio.tts.generate.audio_write")
+    @patch("mlx_audio.tts.generate.load_model")
+    def test_main_exits_nonzero_when_no_audio_is_generated(
+        self, mock_load_model, mock_audio_write, mock_audio_player
+    ):
+        model = MagicMock(sample_rate=24000)
+        mock_load_model.return_value = model
+        empty_chunk = TestGenerateAudio._result([])
+        for flags, chunks in (
+            ((), []),
+            ((), [empty_chunk]),
+            (("--stream", "--save"), [empty_chunk]),
+        ):
+            model.generate.return_value = iter(chunks)
+            stderr = io.StringIO()
+            with (
+                self.subTest(flags=flags, chunk_count=len(chunks)),
+                patch.object(sys, "argv", self._argv(*flags)),
+                patch.object(sys, "stderr", stderr),
+            ):
+                with self.assertRaises(SystemExit) as exc:
+                    main()
+
+                self.assertEqual(exc.exception.code, 1)
+                self.assertIn("No audio was generated", stderr.getvalue())
+                mock_audio_write.assert_not_called()
+                mock_audio_player.return_value.queue_audio.assert_not_called()
 
     @patch("builtins.print")
     @patch("mlx_audio.tts.generate.audio_write")

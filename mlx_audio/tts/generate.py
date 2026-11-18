@@ -211,7 +211,8 @@ def generate_audio(
     - model (object): A already loaded model.
     - stt_model (object): A already loaded stt model.
     Returns:
-    - bool: True when generation finishes without errors, False otherwise. The function writes the generated audio to a file when not streaming, or when streaming with saving enabled.
+    - bool: True when generation produces audio and finishes without errors, False otherwise.
+      The function writes audio to a file when not streaming, or when streaming with saving enabled.
     """
     try:
         play = play or stream
@@ -380,28 +381,33 @@ def generate_audio(
         streamed_segment_audio = {}
         streamed_segment_sample_rates = {}
         file_name = f"{file_prefix}.{audio_format}"
+        has_audio = False
         for i, result in enumerate(results):
-            if play:
-                player.queue_audio(result.audio)
+            # Streaming models can yield an empty chunk to mark the end.
+            audio = result.audio
+            if audio.size == 0:
+                continue
+            has_audio = True
 
-            # An empty final chunk only marks the end of the stream; saved per
-            # segment, it would add a file without audio.
-            if save_streamed_audio and result.audio.size > 0:
+            if play:
+                player.queue_audio(audio)
+
+            if save_streamed_audio:
                 if join_audio:
-                    streamed_audio_chunks.append(result.audio)
+                    streamed_audio_chunks.append(audio)
                 else:
                     segment_idx = result.segment_idx
                     if segment_idx not in streamed_segment_audio:
                         streamed_segment_audio[segment_idx] = []
                         streamed_segment_sample_rates[segment_idx] = result.sample_rate
-                    streamed_segment_audio[segment_idx].append(result.audio)
+                    streamed_segment_audio[segment_idx].append(audio)
             elif join_audio and not stream:
-                audio_list.append(result.audio)
+                audio_list.append(audio)
             elif not stream:
                 file_name = f"{file_prefix}_{i:03d}.{audio_format}"
                 audio_write(
                     file_name,
-                    np.array(result.audio),
+                    np.array(audio),
                     result.sample_rate,
                     format=audio_format,
                 )
@@ -423,6 +429,10 @@ def generate_audio(
                 print(f"Real-time factor:      {result.real_time_factor:.2f}x")
                 print(f"Processing time:       {result.processing_time_seconds:.2f}s")
                 print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
+
+        if not has_audio:
+            print("No audio was generated.", file=sys.stderr)
+            return False
 
         if save_streamed_audio and join_audio and streamed_audio_chunks:
             if verbose:
