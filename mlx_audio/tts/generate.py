@@ -180,7 +180,7 @@ def generate_audio(
     top_k: Optional[int] = None,
     repetition_penalty: Optional[float] = None,
     **kwargs,
-) -> None:
+) -> bool:
     """
     Generates audio from text using a specified TTS model.
 
@@ -211,7 +211,7 @@ def generate_audio(
     - model (object): A already loaded model.
     - stt_model (object): A already loaded stt model.
     Returns:
-    - None: The function writes the generated audio to a file when not streaming, or when streaming with saving enabled.
+    - bool: True when generation finishes without errors, False otherwise. The function writes the generated audio to a file when not streaming, or when streaming with saving enabled.
     """
     try:
         play = play or stream
@@ -468,16 +468,19 @@ def generate_audio(
             player.wait_for_drain()
             player.stop()
 
+        return True
     except ImportError as e:
-        print(f"Import error: {e}")
+        print(f"Import error: {e}", file=sys.stderr)
         print(
-            "This might be due to incorrect Python path. Check your project structure."
+            "This might be due to incorrect Python path. Check your project structure.",
+            file=sys.stderr,
         )
     except Exception as e:
-        print(f"Error loading model: {e}")
+        print(f"Error loading model: {e}", file=sys.stderr)
         import traceback
 
         traceback.print_exc()
+    return False
 
 
 def parse_args():
@@ -688,7 +691,8 @@ def parse_args():
 
 def main():
     args = parse_args()
-    generate_audio(**vars(args))
+    if not generate_audio(**vars(args)):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

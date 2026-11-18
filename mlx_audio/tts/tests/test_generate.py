@@ -1,3 +1,4 @@
+import io
 import sys
 import unittest
 from types import SimpleNamespace
@@ -6,7 +7,7 @@ from unittest.mock import MagicMock, create_autospec, patch
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.tts.generate import generate_audio, parse_args
+from mlx_audio.tts.generate import generate_audio, main, parse_args
 
 
 class TestGenerateArgs(unittest.TestCase):
@@ -580,3 +581,56 @@ class TestGenerateAudio(unittest.TestCase):
         generate_audio(text="hello", model=model, voice="af_heart", verbose=False)
 
         self.assertEqual(model.generate.call_args.kwargs["voice"], "af_heart")
+
+
+class TestMain(unittest.TestCase):
+    @staticmethod
+    def _argv(*extra):
+        return [
+            "generate.py",
+            "--model",
+            "fake-model",
+            "--text",
+            "hello",
+            *extra,
+        ]
+
+    @patch("mlx_audio.tts.generate.audio_write")
+    @patch("mlx_audio.tts.generate.load_model")
+    def test_main_exits_nonzero_when_reference_audio_is_missing(
+        self, mock_load_model, mock_audio_write
+    ):
+        model = MagicMock()
+        model.sample_rate = 24000
+        mock_load_model.return_value = model
+
+        stderr = io.StringIO()
+        with patch.object(
+            sys, "argv", self._argv("--ref_audio", "/nonexistent/reference.wav")
+        ), patch.object(sys, "stderr", stderr):
+            with self.assertRaises(SystemExit) as exc:
+                main()
+
+        self.assertNotEqual(exc.exception.code, 0)
+        self.assertIn("Reference audio file not found", stderr.getvalue())
+        model.generate.assert_not_called()
+        mock_audio_write.assert_not_called()
+
+    @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
+    @patch("mlx_audio.tts.generate.load_model")
+    def test_main_writes_audio_and_returns_on_success(
+        self, mock_load_model, mock_audio_write, _mock_print
+    ):
+        model = MagicMock()
+        model.sample_rate = 24000
+        model.generate.return_value = [TestGenerateAudio._result([0.1, 0.2])]
+        mock_load_model.return_value = model
+
+        with patch.object(sys, "argv", self._argv()):
+            main()
+
+        mock_audio_write.assert_called_once()
+        args, kwargs = mock_audio_write.call_args
+        self.assertEqual(args[0], "audio_000.wav")
+        self.assertEqual(kwargs["format"], "wav")
