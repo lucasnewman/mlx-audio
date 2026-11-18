@@ -341,12 +341,13 @@ class AdaIN1d(nn.Module):
 
 def adain_snake(adain: AdaIN1d, x: mx.array, s: mx.array, alpha: mx.array):
     gamma, beta = mx.split(mx.expand_dims(adain.fc(s), axis=2), 2, axis=1)
-    return _norm_affine_snake(x, gamma, beta, alpha, adain.norm.eps)
+    x = mx.fast.layer_norm(x, None, None, adain.norm.eps)
+    return _affine_snake(x, gamma, beta, alpha)
 
 
 @partial(mx.compile, shapeless=True)
-def _norm_affine_snake(x, gamma, beta, alpha, eps):
-    x = (1 + gamma) * mx.fast.layer_norm(x, None, None, eps) + beta
+def _affine_snake(x, gamma, beta, alpha):
+    x = (1 + gamma) * x + beta
     return x + (1 / alpha) * (mx.sin(alpha * x) ** 2)
 
 
