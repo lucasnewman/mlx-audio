@@ -281,6 +281,12 @@ def generate_transcription(
     Returns:
         segments: The generated transcription segments.
     """
+    segments = _transcribe(model, audio, output_path, format, verbose, text, **kwargs)
+    _save_transcription(segments, output_path, format)
+    return segments
+
+
+def _transcribe(model, audio, output_path, format, verbose, text, **kwargs):
     if model is None:
         raise ValueError("Model path or model instance must be provided.")
 
@@ -403,6 +409,10 @@ def generate_transcription(
             )
         print(f"\033[94mPeak memory:\033[0m {mx.get_peak_memory() / 1e9:.2f} GB")
 
+    return segments
+
+
+def _save_transcription(segments, output_path, format):
     # Create output directory if it doesn't exist
     output_dir = os.path.dirname(os.path.abspath(output_path))
     if not os.path.exists(output_dir):
@@ -417,12 +427,17 @@ def generate_transcription(
     elif format == "json":
         save_as_json(segments, output_path)
 
-    return segments
-
 
 def main():
     args = parse_args()
-    generate_transcription(**vars(args))
+    if args.output_path != "-":
+        generate_transcription(**vars(args))
+        return
+
+    # Keep stdout available for the transcript, including when the model prints.
+    with contextlib.redirect_stdout(sys.stderr):
+        segments = _transcribe(**vars(args))
+    _save_transcription(segments, args.output_path, args.format)
 
 
 if __name__ == "__main__":
