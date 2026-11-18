@@ -3,17 +3,20 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from mlx.utils import tree_flatten
 
 from mlx_audio.stt.tests.test_ming_v3_asr import tiny_text_config
+from mlx_audio.tts.models.bailingmm.bailingmm import AudioVAE as SharedAudioVAE
 from mlx_audio.tts.models.bailingmm.bailingmm import Decoder, DiT
 from mlx_audio.tts.models.lingv3_tts import Model
 from mlx_audio.tts.models.lingv3_tts.conversion import copy_supporting_files
 from mlx_audio.tts.models.lingv3_tts.flow import FlowLoss
+from mlx_audio.tts.models.lingv3_tts.lingv3_tts import AudioVAE as TinyAudioVAE
 from mlx_audio.tts.models.lingv3_tts.prompt import (
     build_prompt,
     control_instruction,
@@ -227,6 +230,130 @@ class TestMingTinySampling(unittest.TestCase):
                 {str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file()},
                 {"tokenizer.json", "speaker_encoder/campplus.safetensors"},
             )
+
+
+class TestMingTinyPosterior(unittest.TestCase):
+    @staticmethod
+    def encoder_output(dtype):
+        mean = mx.array([[[0.1, -0.2], [0.3, 0.4], [-0.5, 0.6]]], dtype=dtype)
+        scale = mx.array([[[-9, 0], [20, -30], [1000, -1000]]], dtype=dtype)
+        return mean, scale, mx.concatenate([mean, scale], axis=-1)
+
+    @staticmethod
+    def make_vae(cls, output, patch_size=2):
+        vae = cls.__new__(cls)
+        nn.Module.__init__(vae)
+        vae.config = {"enc_kwargs": {"input_dim": 2}}
+        vae.patch_size = patch_size
+        vae.encoder = MagicMock(return_value=output)
+        return vae
+
+    def test_tiny_softplus_posterior_preserves_noise_dtype_shape_and_rng(self):
+        for dtype, tolerance in (
+            (mx.float32, 1e-6),
+            (mx.float16, 0.002),
+            (mx.bfloat16, 0.02),
+        ):
+            with self.subTest(dtype=dtype):
+                mean, scale, output = self.encoder_output(dtype)
+                vae = self.make_vae(TinyAudioVAE, output)
+                mx.random.seed(42)
+                noise = mx.random.normal((1, 2, 3), dtype=dtype)
+                following = np.array(mx.random.normal((4,)))
+                # Independent NumPy softplus oracle, using the upstream scale
+                # parameterization and the exact same native MLX noise tensor.
+                std = (
+                    mx.array(
+                        np.logaddexp(np.array(scale.astype(mx.float32)), 0), dtype=dtype
+                    )
+                    + 1e-4
+                )
+                expected = mean + std * noise.transpose(0, 2, 1)
+                mx.random.seed(42)
+                with patch.object(mx.random, "normal", wraps=mx.random.normal) as draw:
+                    latent, frames = vae.encode_latent(mx.zeros((1, 9)), mx.array([9]))
+                draw.assert_called_once_with((1, 2, 3), dtype=dtype)
+                self.assertEqual(latent.shape, (1, 3, 2))
+                self.assertEqual(latent.dtype, dtype)
+                self.assertEqual(frames.dtype, mx.int32)
+                np.testing.assert_array_equal(np.array(frames), [3])
+                np.testing.assert_allclose(
+                    np.array(latent.astype(mx.float32)),
+                    np.array(expected.astype(mx.float32)),
+                    rtol=tolerance,
+                    atol=tolerance,
+                )
+                np.testing.assert_array_equal(
+                    np.array(mx.random.normal((4,))), following
+                )
+
+    def test_shared_vae_retains_log_variance_and_unpatched_frame_counts(self):
+        mean, scale, output = self.encoder_output(mx.float32)
+        vae = self.make_vae(SharedAudioVAE, output, patch_size=-1)
+        mx.random.seed(42)
+        noise = mx.random.normal((1, 2, 3))
+        expected = mean + mx.exp(0.5 * mx.clip(scale, -30, 20)) * noise.transpose(
+            0, 2, 1
+        )
+        mx.random.seed(42)
+        latent, frames = vae.encode_latent(mx.zeros((1, 9)), mx.array([9]))
+        np.testing.assert_array_equal(np.array(latent), np.array(expected))
+        np.testing.assert_array_equal(np.array(frames), [5])
+        tiny = self.make_vae(TinyAudioVAE, output, patch_size=-1)
+        _, frames = tiny.encode_latent(mx.zeros((1, 9)), mx.array([9]))
+        np.testing.assert_array_equal(np.array(frames), [5])
+
+    def test_tiny_model_routes_reference_latents_through_its_vae(self):
+        backbone = dict(
+            model_type="qwen2",
+            rms_norm_eps=1e-6,
+            hidden_size=8,
+            intermediate_size=16,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            vocab_size=32,
+        )
+        audio_config = dict(
+            sample_rate=16000,
+            patch_size=2,
+            enc_kwargs=dict(backbone=backbone, input_dim=2, hop_size=2, latent_dim=2),
+            dec_kwargs=dict(backbone=backbone, output_dim=2, latent_dim=2),
+        )
+        config = SimpleNamespace(
+            llm_config=tiny_text_config(),
+            audio_config=audio_config,
+            tts_config={**TOKENS, "latent_dim": 2},
+            aggregator_config=dict(hidden_size=8, depth=1, num_heads=2),
+            flow_config=dict(hidden_size=8, depth=1, num_heads=2),
+        )
+        model = Model(config)
+        self.assertIsInstance(model.audio, TinyAudioVAE)
+        shared = SharedAudioVAE(audio_config)
+        shapes = lambda vae: [
+            (name, value.shape) for name, value in tree_flatten(vae.parameters())
+        ]
+        self.assertEqual(shapes(model.audio), shapes(shared))
+        model.tokenizer = Tokenizer()
+        mean, scale, output = self.encoder_output(mx.float32)
+        model.audio.encoder = MagicMock(return_value=output)
+        mx.random.seed(42)
+        noise = mx.random.normal((1, 2, 3))
+        expected = mean + (
+            mx.logaddexp(scale, mx.zeros_like(scale)) + 1e-4
+        ) * noise.transpose(0, 2, 1)
+        mx.random.seed(42)
+        _, _, latent = model.prepare_inputs(
+            "Hello",
+            task="seed",
+            instruction="test",
+            ref_audio=mx.zeros(8),
+            ref_text="Hi",
+            spk_emb=mx.ones(192),
+        )
+        np.testing.assert_allclose(
+            np.array(latent), np.array(expected), rtol=1e-6, atol=1e-6
+        )
 
 
 if __name__ == "__main__":

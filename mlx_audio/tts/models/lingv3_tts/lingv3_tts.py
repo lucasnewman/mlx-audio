@@ -10,11 +10,9 @@ import numpy as np
 
 from mlx_audio.lm.models.bailing_moe_v3 import Model as LanguageModel
 from mlx_audio.lm.models.bailing_moe_v3 import sanitize_backbone
-from mlx_audio.tts.models.bailingmm.bailingmm import (
-    Aggregator,
-    AudioVAE,
-    format_duration,
-)
+from mlx_audio.tts.models.bailingmm.bailingmm import Aggregator
+from mlx_audio.tts.models.bailingmm.bailingmm import AudioVAE as BaseAudioVAE
+from mlx_audio.tts.models.bailingmm.bailingmm import format_duration
 from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.utils import load_audio
 
@@ -32,6 +30,22 @@ from .prompt import (
     validate_podcast,
 )
 from .speaker import SPEAKER_SUBPATH, SpeakerEncoder
+
+
+class AudioVAE(BaseAudioVAE):
+    """Ming Tiny's posterior encodes a softplus scale, not a log variance."""
+
+    def encode_latent(self, waveform, waveform_length):
+        frame_num = mx.ceil(
+            waveform_length / self.config["enc_kwargs"]["input_dim"]
+        ).astype(mx.int32)
+        if self.patch_size != -1:
+            frame_num = mx.ceil(frame_num / self.patch_size).astype(mx.int32)
+        h = self.encoder(waveform).transpose(0, 2, 1)
+        mu, scale = mx.split(h, 2, axis=1)
+        std = nn.softplus(scale) + 1e-4
+        latent = mu + std * mx.random.normal(mu.shape, dtype=mu.dtype)
+        return latent.transpose(0, 2, 1), frame_num
 
 
 class Model(nn.Module):
