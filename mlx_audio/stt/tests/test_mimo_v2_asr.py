@@ -1,4 +1,5 @@
 import json
+import random
 from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from mlx_audio.stt.models.mimo_v2_asr.audio_encoder import (
     AudioEncoderConfig,
 )
 from mlx_audio.stt.models.mimo_v2_asr.config import MiMoAudioConfig
+from mlx_audio.stt.models.mimo_v2_asr.prompt import ASR_EN_TEMPLATES
 
 
 @pytest.fixture
@@ -145,6 +147,41 @@ def test_audio_encoder_sanitize_preserves_bias_free_keys():
     }
     assert weights["layers.0.self_attn.k_proj.weight"] is projection
     assert mx.array_equal(weights["conv1.weight"], conv.transpose(0, 2, 1))
+
+
+def test_generate_seed_controls_prompt_and_sampling(checkpoint):
+    main, _, _, _ = checkpoint
+    config = MiMoAudioConfig.from_dict(json.loads((main / "config.json").read_text()))
+    model = Model(config)
+
+    def encode(text):
+        return [ASR_EN_TEMPLATES.index(text) + 1] if text in ASR_EN_TEMPLATES else [0]
+
+    model._tokenizer = SimpleNamespace(encode=encode, decode=lambda *_args, **_kw: "")
+    audio = mx.zeros((160,))
+    audio_codes = mx.zeros((config.audio_channels * config.group_size,), dtype=mx.int32)
+    results = []
+
+    def generate(input_ids, *, global_sampler, **kwargs):
+        scores = mx.zeros((1, config.vocab_size))
+        sampled = [global_sampler.sample(scores).item() for _ in range(4)]
+        results.append((input_ids.tolist(), sampled))
+        return input_ids
+
+    python_state = random.getstate()
+    mlx_key = mx.random.state[0].tolist()
+    with (
+        patch.object(model, "_encode_audio_codes", return_value=audio_codes),
+        patch.object(model.model, "generate", side_effect=generate),
+    ):
+        for seed in (0, 1, 0):
+            model.generate(audio, language="en", temperature=1.0, top_p=1.0, seed=seed)
+
+    assert results[0] == results[2]
+    assert results[0][0] != results[1][0]
+    assert results[0][1] != results[1][1]
+    assert random.getstate() == python_state
+    assert mx.random.state[0].tolist() == mlx_key
 
 
 def test_input_embeds_keep_the_language_model_dtype():

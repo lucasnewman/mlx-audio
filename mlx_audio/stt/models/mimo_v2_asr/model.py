@@ -134,11 +134,14 @@ class MiMoSampler:
         temperature: float = 1.0,
         top_k: int = 0,
         top_p: float = 1.0,
+        *,
+        seed: int | None = None,
     ):
         self.do_sample = do_sample
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
+        self._key = mx.random.key(seed) if do_sample and seed is not None else None
 
     def process(self, scores: mx.array) -> mx.array:
         """Apply temperature, top-k, top-p to logits."""
@@ -190,7 +193,10 @@ class MiMoSampler:
             scores = mx.where(mask, mx.array(-float("inf"), dtype=scores.dtype), scores)
 
         if self.do_sample:
-            return mx.random.categorical(scores, axis=-1)
+            key = None
+            if self._key is not None:
+                self._key, key = mx.random.split(self._key)
+            return mx.random.categorical(scores, axis=-1, key=key)
 
         return mx.argmax(scores, axis=-1)
 

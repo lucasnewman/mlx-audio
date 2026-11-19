@@ -164,6 +164,9 @@ async def app_lifespan(app: FastAPI):
 app.router.lifespan_context = app_lifespan
 
 
+_MAX_REQUEST_SEED = 2**32 - 1
+
+
 # Request schemas for OpenAI-compatible endpoints
 class SpeechRequest(BaseModel):
     model: str
@@ -180,7 +183,7 @@ class SpeechRequest(BaseModel):
     top_p: float | None = 0.95
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
-    seed: int | None = Field(default=None, strict=True, ge=0, le=2**32 - 1)
+    seed: int | None = Field(default=None, strict=True, ge=0, le=_MAX_REQUEST_SEED)
     response_format: str | None = "mp3"
     stream: bool = False
     streaming_interval: float = 2.0
@@ -191,6 +194,8 @@ class SpeechRequest(BaseModel):
 class TranscriptionRequest(BaseModel):
     model: str
     language: str | None = None
+    temperature: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    seed: int | None = Field(default=None, strict=True, ge=0, le=_MAX_REQUEST_SEED)
     verbose: bool = False
     max_tokens: int | None = None
     chunk_duration: float = 30.0
@@ -278,6 +283,33 @@ async def _preflight_model_load(model_name: str) -> None:
         ) from exc
 
 
+@contextmanager
+def _request_rng(seed: int | None):
+    if seed is None:
+        yield
+        return
+
+    # MLX exposes the worker's current key as two uint32 words. Reassemble
+    # them in the order expected by mx.random.seed to restore the exact key.
+    high, low = mx.random.state[0].tolist()
+    previous_seed = (high << 32) | low
+    mx.random.seed(seed)
+    try:
+        yield
+    finally:
+        mx.random.seed(previous_seed)
+
+
+def _model_seed_kwargs(signature: inspect.Signature, seed: int) -> dict[str, int]:
+    seed_param = signature.parameters.get("seed")
+    if seed_param is not None and seed_param.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ):
+        return {"seed": seed}
+    return {}
+
+
 _STT_EXTRA_KWARGS = {"word_timestamps", "timestamp_granularities"}
 
 # Floor for max_tokens when the client does not send one. Models whose own
@@ -297,24 +329,38 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
     def run_serial(self, request: InferenceRequest) -> None:
         payload: TranscriptionTaskPayload = request.payload
         tmp_path = f"/tmp/{time.time()}_{request.request_id}.wav"
-        audio_write(tmp_path, payload.audio, payload.sample_rate, format="wav")
 
-        try:
+        with ExitStack() as stack:
+            stack.callback(Path(tmp_path).unlink, missing_ok=True)
+            audio_write(tmp_path, payload.audio, payload.sample_rate, format="wav")
             stt_model = _load_model_for_inference(request.model_name)
+            seed = payload.request.seed
             gen_kwargs = payload.request.model_dump(
-                exclude={"model"}, exclude_none=True
+                exclude={"model", "seed"}, exclude_none=True
             )
             signature = inspect.signature(stt_model.generate)
+            accepts_extra_kwargs = any(
+                param.kind == inspect.Parameter.VAR_KEYWORD
+                for param in signature.parameters.values()
+            )
             gen_kwargs = {
                 key: value
                 for key, value in gen_kwargs.items()
-                if key in signature.parameters or key in _STT_EXTRA_KWARGS
+                if key in signature.parameters
+                or (accepts_extra_kwargs and key in _STT_EXTRA_KWARGS)
             }
             if "max_tokens" in signature.parameters and "max_tokens" not in gen_kwargs:
                 gen_kwargs["max_tokens"] = _default_stt_max_tokens(signature)
+            if seed is not None:
+                gen_kwargs.update(_model_seed_kwargs(signature, seed))
 
+            stack.enter_context(_request_rng(seed))
             result = stt_model.generate(tmp_path, **gen_kwargs)
             if hasattr(result, "__iter__") and hasattr(result, "__next__"):
+                if seed is not None and callable(
+                    close := getattr(result, "close", None)
+                ):
+                    stack.callback(close)
                 accumulated_text = ""
                 for chunk in result:
                     if request.cancel_event.is_set():
@@ -336,9 +382,6 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
                     request.emit_data(json.dumps(sanitize_for_json(chunk_data)) + "\n")
             elif not request.cancel_event.is_set():
                 request.emit_data(json.dumps(sanitize_for_json(result)) + "\n")
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
 
         request.emit_done()
 
@@ -477,23 +520,6 @@ def _resolve_max_tokens(model, speech_request: SpeechRequest) -> dict[str, int]:
     ):
         return {"max_tokens": generate_config["max_new_tokens"]}
     return {}
-
-
-@contextmanager
-def _tts_request_rng(seed: int | None):
-    if seed is None:
-        yield
-        return
-
-    # MLX exposes the worker's current key as two uint32 words. Reassemble
-    # them in the order expected by mx.random.seed to restore the exact key.
-    high, low = mx.random.state[0].tolist()
-    previous_seed = (high << 32) | low
-    mx.random.seed(seed)
-    try:
-        yield
-    finally:
-        mx.random.seed(previous_seed)
 
 
 class TTSExecutionAdapter(BaseModelExecutionAdapter):
@@ -715,14 +741,11 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
         generate = model.generate
         seed = speech_request.seed
         if seed is not None:
-            seed_param = inspect.signature(generate).parameters.get("seed")
-            if seed_param is not None and seed_param.kind in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            ):
-                generate_kwargs["seed"] = seed
+            generate_kwargs.update(
+                _model_seed_kwargs(inspect.signature(generate), seed)
+            )
 
-        with _tts_request_rng(seed), ExitStack() as stack:
+        with _request_rng(seed), ExitStack() as stack:
             results = iter(generate(speech_request.input, **generate_kwargs))
             if seed is not None and callable(close := getattr(results, "close", None)):
                 stack.callback(close)
@@ -1102,6 +1125,8 @@ async def stt_transcriptions(
     file: UploadFile = File(...),
     model: str = Form(...),
     language: Optional[str] = Form(None),
+    temperature: Optional[float] = Form(None, ge=0, allow_inf_nan=False),
+    seed: Optional[int] = Form(None, ge=0, le=_MAX_REQUEST_SEED),
     verbose: bool = Form(False),
     max_tokens: Optional[int] = Form(None),
     chunk_duration: float = Form(30.0),
@@ -1135,6 +1160,8 @@ async def stt_transcriptions(
     payload = TranscriptionRequest(
         model=model,
         language=language,
+        temperature=temperature,
+        seed=seed,
         verbose=verbose,
         max_tokens=max_tokens,
         chunk_duration=chunk_duration,
