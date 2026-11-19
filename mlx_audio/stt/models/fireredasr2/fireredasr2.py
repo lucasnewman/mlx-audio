@@ -56,14 +56,14 @@ class RelPositionalEncoding(nn.Module):
         pe_positive = pe_positive[::-1].copy()
         pe_negative = pe_negative[1:]
         pe = np.concatenate([pe_positive, pe_negative], axis=0)[None, :, :]
-        self.pe = mx.array(pe)
+        self._pe = mx.array(pe)
 
     def __call__(self, x: mx.array) -> mx.array:
-        T_max = self.pe.shape[1]
+        T_max = self._pe.shape[1]
         T = x.shape[1]
         start = T_max // 2 - T + 1
         end = T_max // 2 + T
-        return self.pe[:, start:end, :]
+        return self._pe[:, start:end, :]
 
 
 class ConformerFeedForward(nn.Module):
@@ -243,10 +243,10 @@ class PositionalEncoding(nn.Module):
         )
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
-        self.pe = mx.array(pe[None, :, :])
+        self._pe = mx.array(pe[None, :, :])
 
     def __call__(self, length: int) -> mx.array:
-        return self.pe[:, :length, :]
+        return self._pe[:, :length, :]
 
 
 class DecoderMultiHeadAttention(nn.Module):
@@ -487,6 +487,34 @@ class FireRedASR2(nn.Module):
 
         self._tokenizer = None
         self._cmvn = None
+
+    def load_weights(self, file_or_weights, strict: bool = True):
+        """Load weights, including optional positional tables from legacy exports."""
+        if isinstance(file_or_weights, str):
+            file_or_weights = mx.load(file_or_weights)
+        weights = dict(file_or_weights)
+
+        legacy_encodings = (
+            ("encoder.positional_encoding.pe", self.encoder.positional_encoding),
+            ("decoder.positional_encoding.pe", self.decoder.positional_encoding),
+        )
+        positional_tables = []
+        for name, encoding in legacy_encodings:
+            if name not in weights:
+                continue
+            table = weights.pop(name)
+            if strict and (
+                not isinstance(table, mx.array) or table.shape != encoding._pe.shape
+            ):
+                raise ValueError(
+                    f"Expected {name} to be an array of shape {encoding._pe.shape}"
+                )
+            positional_tables.append((encoding, table))
+
+        super().load_weights(list(weights.items()), strict=strict)
+        for encoding, table in positional_tables:
+            encoding._pe = table
+        return self
 
     def _load_cmvn(self, model_path: str):
         cmvn_path = Path(model_path) / "cmvn.json"

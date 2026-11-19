@@ -74,16 +74,17 @@ class DeepFilterNetModel(nn.Module):
 
         self._vorbis = self._vorbis_window(config.fft_size)
 
-        # Filterbanks loaded from model weights via weight_loader fallback
-        self.erb_fb = self.model.erb_fb
-        self.erb_inv_fb = self.model.mask.erb_inv_fb
         self.erb_widths = config.erb_widths
-        self._has_erb_fb = (
-            hasattr(self.erb_fb, "shape")
-            and len(self.erb_fb.shape) == 2
-            and self.erb_fb.shape[0] == (self.config.fft_size // 2 + 1)
-            and self.erb_fb.shape[1] == self.config.nb_erb
-        )
+
+    # The filterbanks live on the network and are replaced when weights load,
+    # so read them through instead of keeping copies of the initial zeros.
+    @property
+    def erb_fb(self) -> mx.array:
+        return self.model.erb_fb
+
+    @property
+    def erb_inv_fb(self) -> mx.array:
+        return self.model.mask.erb_inv_fb
 
     def load_weights(self, weights, strict: bool = False):
         weight_dict = dict(weights)
@@ -439,8 +440,12 @@ class DeepFilterNetModel(nn.Module):
 
     def _erb(self, spec_mag_sq: mx.array) -> mx.array:
         """Compute ERB energies, preferring learned filterbank projection when present."""
-        if self._has_erb_fb:
-            return spec_mag_sq @ self.erb_fb
+        erb_fb = self.erb_fb
+        if getattr(erb_fb, "shape", None) == (
+            self.config.freq_bins,
+            self.config.nb_erb,
+        ):
+            return spec_mag_sq @ erb_fb
 
         if self.erb_widths is None:
             raise ValueError("Missing both ERB filterbank and ERB band widths.")
