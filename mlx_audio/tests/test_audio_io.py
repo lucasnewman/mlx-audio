@@ -1,6 +1,7 @@
 """Tests for mlx_audio.audio_io module."""
 
 import io
+import json
 import shutil
 import subprocess
 import tempfile
@@ -590,13 +591,11 @@ def _dominant_frequency(samples, rate):
 
 @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
 class TestAudioIOMultiTrack:
-    """ffmpeg decodes the stream ffprobe described: the first audio track."""
+    """ffmpeg uses the metadata of the first track it can decode samples from."""
 
     @pytest.fixture
     def two_track_mp4(self, tmp_path):
         """Track a:0 is 400 Hz at 16 kHz mono; a:1, the default, is 800 Hz stereo."""
-        import json
-
         path = tmp_path / "two_tracks.mp4"
         subprocess.run(
             [
@@ -673,6 +672,69 @@ class TestAudioIOMultiTrack:
         assert rate == 8000
         assert data.shape[0] == 4000
         assert abs(_dominant_frequency(data, rate) - 400) < 100
+
+    @pytest.mark.parametrize("use_buffer", [False, True], ids=["path", "bytesio"])
+    def test_empty_first_track_uses_next_track(self, tmp_path, use_buffer):
+        path = tmp_path / "empty_first_track.mka"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=400:sample_rate=16000:duration=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=sin(800*2*PI*t)|sin(800*2*PI*t):s=48000:d=1",
+                "-filter_complex",
+                "[0:a]atrim=end_sample=0[empty]",
+                "-map",
+                "[empty]",
+                "-map",
+                "1:a",
+                "-c:a",
+                "pcm_s16le",
+                "-disposition:a:0",
+                "0",
+                "-disposition:a:1",
+                "default",
+                str(path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-count_packets",
+                "-show_entries",
+                "stream=sample_rate,channels,nb_read_packets",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+        first, second = json.loads(probe.stdout)["streams"]
+        assert (first["sample_rate"], first["channels"]) == ("16000", 1)
+        assert int(first.get("nb_read_packets", 0)) == 0
+        assert (second["sample_rate"], second["channels"]) == ("48000", 2)
+        assert int(second["nb_read_packets"]) > 0
+
+        source = io.BytesIO(path.read_bytes()) if use_buffer else path
+        data, rate = read(source, dtype="float32")
+
+        assert rate == 48000
+        assert data.shape == (48000, 2)
+        assert abs(_dominant_frequency(data[:, 0], rate) - 800) < 50
 
 
 @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
