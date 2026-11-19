@@ -17,6 +17,8 @@ from mlx_audio.utils import (
 )
 
 MODEL_REMAPPING = {
+    "reverb": "reverb",
+    "reverb_tts": "reverb",
     "zonos3_mini": "zonos3",
     "maya3": "maya2",
     "maya2": "maya2",
@@ -128,6 +130,22 @@ def load_model(
         FileNotFoundError: If the weight files (.safetensors) are not found.
         ValueError: If the model class or args class are not found or cannot be instantiated.
     """
+    # Reverb distributes several incompatible weight formats in nested folders.
+    # Download only FP32 plus tokenizer/voice data, then cache a native bundle.
+    if (
+        str(model_path).rstrip("/") == "software-mansion/Reverb-TTS"
+        or (
+            Path(model_path).expanduser() / "model/safetensors/fp32/config.json"
+        ).is_file()
+    ):
+        from .models.reverb.convert import prepare_model_path
+
+        model_path = prepare_model_path(
+            model_path,
+            revision=kwargs.get("revision"),
+            force_download=kwargs.get("force_download", False),
+        )
+
     return base_load_model(
         model_path=model_path,
         category="tts",

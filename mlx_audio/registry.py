@@ -33,6 +33,8 @@ def model_type_from_config(config: dict) -> Optional[str]:
         config.get("fluid_speech"), dict
     ):
         return "fluid_speech"
+    if model_type == "omnivoice" and "echo" in config:
+        return "reverb"
     if (
         model_type is None
         and isinstance(config.get("model_cfg"), dict)
