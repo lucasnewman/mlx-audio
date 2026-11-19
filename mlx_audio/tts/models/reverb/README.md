@@ -4,8 +4,6 @@ Native MLX implementation of [Software Mansion's Reverb](https://huggingface.co/
 
 The text model, audio decoder, and reference-audio encoder run in MLX. Runtime inference does not require PyTorch or ExecuTorch.
 
-See [benchmarks](BENCHMARKS.md) for measured BF16/8-bit/4-bit latency, memory, and multilingual transcription checks, and `examples/reverb_benchmark.py` to reproduce them.
-
 ## Quick start
 
 Install MLX Audio and log into Hugging Face with an account approved for the gated upstream repository. Loading the original repository downloads only the FP32 checkpoint, text tokenizer, preset voices, and the separate Higgs Audio v2 codec. A BF16 bundle is cached alongside the Hugging Face cache for subsequent offline use.
