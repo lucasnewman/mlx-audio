@@ -180,6 +180,7 @@ class Model(nn.Module):
         top_k: int = 0,
         language: Optional[str] = None,
         verbose: bool = False,
+        seed: int | None = None,
         **kwargs,
     ) -> STTOutput:
         del kwargs
@@ -202,6 +203,7 @@ class Model(nn.Module):
             config=self.config,
             tokenizer=self._tokenizer,
             language=resolved_language,
+            seed=seed,
         )
 
         global_sampler = MiMoSampler(
@@ -209,6 +211,7 @@ class Model(nn.Module):
             temperature=max(temperature, 1e-5) if temperature > 0 else 1.0,
             top_k=top_k,
             top_p=top_p,
+            seed=seed,
         )
         local_sampler = MiMoSampler(do_sample=False)
 

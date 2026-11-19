@@ -197,6 +197,8 @@ def build_asr_prompt(
     config,  # MiMoAudioConfig
     tokenizer=None,
     language: str = "auto",  # "zh", "en", or "auto"
+    *,
+    seed: int | None = None,
 ) -> mx.array:
     """
     Build the full ASR prompt input_ids.
@@ -222,7 +224,8 @@ def build_asr_prompt(
     if language == "zh":
         template_tokens = [44063, 111268, 43815, 105359, 12857, 87335, 68805]
     elif language == "en":
-        template_tokens = tokenizer.encode(random.choice(ASR_EN_TEMPLATES))
+        rng = random if seed is None else random.Random(seed)
+        template_tokens = tokenizer.encode(rng.choice(ASR_EN_TEMPLATES))
     else:
         template_tokens = [44063, 111268, 43815, 105359, 12857, 87335, 68805]
 

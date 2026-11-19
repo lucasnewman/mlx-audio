@@ -139,10 +139,14 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 | `file` | file | required | Audio file to transcribe |
 | `model` | string | required | STT model ID |
 | `language` | string | `null` | Language code |
+| `temperature` | float | `null` | Nonnegative sampling temperature for models that accept it. Omit to use the model's default |
+| `seed` | int | `null` | Optional sampling seed from 0 to 4294967295 |
 | `max_tokens` | int | `null` | Maximum output tokens. When omitted, the larger of 1024 and the model's own `generate()` default (8192 for Qwen3-ASR) |
 | `stream` | bool | `false` | Stream results as NDJSON |
 | `context` | string | `null` | Hotwords or metadata to guide transcription |
 | `verbose` | bool | `false` | Include extra details |
+
+Send `seed` as a multipart form field for repeatable sampling in complete and streamed transcriptions. For models that default to greedy decoding, also send a positive `temperature` to enable sampling. Reuse the same model, audio, settings, response mode, and runtime to repeat the sampling draws.
 
 ### Audio Source Separation
 
