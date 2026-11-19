@@ -59,7 +59,7 @@ File references are downmixed and resampled to 24 kHz. Array references must alr
 
 ## Conversion
 
-For an explicit output directory or MLX quantization:
+Use the converter to create a local MLX bundle from the original Software Mansion checkpoint.
 
 ```bash
 python -m mlx_audio.tts.models.reverb.convert \

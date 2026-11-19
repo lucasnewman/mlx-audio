@@ -8,10 +8,6 @@ class ModelConfig(OmniVoiceConfig):
     model_type: str = "reverb"
     echo: dict = field(default_factory=dict)
 
-    @classmethod
-    def from_dict(cls, params):
-        return super().from_dict({**params, "model_type": "reverb"})
-
     @property
     def embedding_rank(self):
         return self.echo.get("architecture", {}).get("embedding_rank", 256)

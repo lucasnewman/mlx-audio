@@ -5,10 +5,12 @@ import numpy as np
 import pytest
 from mlx.utils import tree_flatten
 
-from mlx_audio.registry import model_type_from_config
+from mlx_audio.registry import classify_model, model_type_from_config
+from mlx_audio.tts import load
 from mlx_audio.tts.models.reverb import Model, ModelConfig
 from mlx_audio.tts.models.reverb.convert import convert
 from mlx_audio.tts.models.reverb.reverb import _CachedGeneration, prefix_attention_mask
+from mlx_audio.utils import load_model
 
 
 def tiny_config():
@@ -36,10 +38,12 @@ def inputs():
     )
 
 
-def test_config_detection_does_not_change_omnivoice():
-    assert model_type_from_config({"model_type": "omnivoice"}) == "omnivoice"
-    assert model_type_from_config({"model_type": "omnivoice", "echo": {}}) == "reverb"
-    assert ModelConfig.from_dict({"model_type": "omnivoice"}).model_type == "reverb"
+def test_registry_uses_explicit_model_type():
+    assert (
+        model_type_from_config({"model_type": "omnivoice", "echo": {}}) == "omnivoice"
+    )
+    assert model_type_from_config({"model_type": "reverb"}) == "reverb"
+    assert classify_model("reverb") == "tts"
 
 
 def test_prefix_mask():
@@ -190,16 +194,20 @@ def test_invalid_generation_arguments(kwargs, match):
 
 
 @pytest.mark.parametrize("bits", [None, 4, 8])
-def test_converter_flattens_bundle_and_retains_codec_and_license(tmp_path, bits):
+def test_converter_flattens_bundle_and_loads_by_model_type(tmp_path, monkeypatch, bits):
     from dataclasses import asdict
 
-    source, codec, output = (tmp_path / name for name in ("source", "codec", "output"))
+    source, codec, output = (
+        tmp_path / name for name in ("source", "codec", "omnivoice")
+    )
     weight_dir = source / "model/safetensors/fp32"
     weight_dir.mkdir(parents=True)
     config = tiny_config()
     config.llm_config.update(hidden_size=64, intermediate_size=64, head_dim=16)
     config.echo["architecture"]["embedding_rank"] = 64
-    (weight_dir / "config.json").write_text(json.dumps(asdict(config)))
+    (weight_dir / "config.json").write_text(
+        json.dumps({**asdict(config), "model_type": "omnivoice"})
+    )
     mx.save_safetensors(
         str(weight_dir / "model.safetensors"), upstream_weights(Model(config))
     )
@@ -214,12 +222,11 @@ def test_converter_flattens_bundle_and_retains_codec_and_license(tmp_path, bits)
     assert convert(source, output, codec=codec, dtype="float32", bits=bits) == output
     saved_config = json.loads((output / "config.json").read_text())
     assert saved_config["model_type"] == "reverb"
-    restored = Model(ModelConfig.from_dict(saved_config))
-    from mlx_audio.utils import apply_quantization
-
-    weights = mx.load(str(output / "model.safetensors"))
-    apply_quantization(restored, saved_config, weights)
-    restored.load_weights(list(weights.items()), strict=True)
+    monkeypatch.setattr(Model, "post_load_hook", staticmethod(lambda model, _: model))
+    restored = load(output)
+    assert isinstance(restored, Model)
+    assert getattr(restored.backbone.embed_tokens.table, "bits", None) == bits
+    assert isinstance(load_model(str(output)), Model)
     assert (output / "audio_tokenizer/model.safetensors").read_bytes() == (
         codec / "model.safetensors"
     ).read_bytes()
@@ -228,55 +235,3 @@ def test_converter_flattens_bundle_and_retains_codec_and_license(tmp_path, bits)
     assert (output / "README.upstream.md").read_text() == "Upstream attribution"
     with pytest.raises(ValueError, match="not empty"):
         convert(source, output, codec=codec)
-
-
-def test_nested_source_cache_is_reused_and_invalidated(tmp_path, monkeypatch):
-    import importlib
-
-    module = importlib.import_module("mlx_audio.tts.models.reverb.convert")
-    source = tmp_path / "source"
-    checkpoint = source / "model/safetensors/fp32"
-    checkpoint.mkdir(parents=True)
-    (checkpoint / "config.json").write_text("{}")
-    (checkpoint / "model.safetensors").write_bytes(b"weights")
-    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hub"))
-    calls = []
-
-    def fake_convert(model, output):
-        calls.append(model)
-        output.mkdir()
-        (output / "complete").touch()
-        return output
-
-    monkeypatch.setattr(module, "convert", fake_convert)
-    first = module.prepare_model_path(source)
-    assert (first / "complete").is_file()
-    assert module.prepare_model_path(source) == first
-    assert len(calls) == 1
-    (checkpoint / "config.json").write_text('{"changed": true}')
-    assert module.prepare_model_path(source) != first
-    assert len(calls) == 2
-
-
-def test_upstream_loader_routes_before_generic_download(tmp_path, monkeypatch):
-    import mlx_audio.tts.utils as tts_utils
-    import mlx_audio.utils as utils
-
-    prepared = tmp_path / "native"
-    calls = []
-
-    def prepare(path, **kwargs):
-        calls.append((path, kwargs))
-        return prepared
-
-    monkeypatch.setattr(
-        "mlx_audio.tts.models.reverb.convert.prepare_model_path", prepare
-    )
-    monkeypatch.setattr(tts_utils, "base_load_model", lambda **kwargs: kwargs)
-    result = utils.load_model("software-mansion/Reverb-TTS")
-    assert result["model_path"] == prepared
-    result = tts_utils.load(
-        "software-mansion/Reverb-TTS", revision="abc", force_download=True
-    )
-    assert calls[-1][1] == {"revision": "abc", "force_download": True}
-    assert result["strict"] is True

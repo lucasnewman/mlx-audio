@@ -901,11 +901,6 @@ def load_model(model_name: str):
     Raises:
         ValueError: If the model type cannot be determined or is not supported
     """
-    # Reverb's upstream config is nested; let its TTS loader select the required
-    # files before a generic snapshot would download every quantized variant.
-    if str(model_name).rstrip("/") == "software-mansion/Reverb-TTS":
-        return _get_tts_utils().load_model(model_name)
-
     model_name_parts = get_model_name_parts(model_name)
     load_error = None
 

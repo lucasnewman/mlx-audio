@@ -4,11 +4,8 @@ python -m mlx_audio.tts.models.reverb.convert --output ./reverb-mlx
 """
 
 import argparse
-import errno
-import hashlib
 import json
 import shutil
-import tempfile
 from pathlib import Path
 
 import mlx.core as mx
@@ -36,44 +33,6 @@ CODEC_PATTERNS = [
 ]
 
 
-def prepare_model_path(model_path, *, revision=None, force_download=False):
-    """Materialize the upstream nested layout in a separate, reusable MLX cache."""
-    from huggingface_hub.constants import HF_HUB_CACHE
-
-    source = Path(model_path).expanduser()
-    if not source.is_dir():
-        source = Path(
-            snapshot_download(
-                str(model_path),
-                revision=revision,
-                force_download=force_download,
-                allow_patterns=SOURCE_PATTERNS,
-            )
-        )
-    checkpoint = source / "model/safetensors/fp32"
-    signature = [str(source.resolve())]
-    for name in ("config.json", "model.safetensors"):
-        stat = (checkpoint / name).stat()
-        signature.extend([str(stat.st_size), str(stat.st_mtime_ns)])
-    key = hashlib.sha256("\n".join(signature).encode()).hexdigest()[:16]
-    cache_root = Path(HF_HUB_CACHE).parent / "mlx-audio"
-    cache_root.mkdir(parents=True, exist_ok=True)
-    destination = cache_root / f"Reverb-TTS-bf16-{key}"
-    if not destination.is_dir():
-        with tempfile.TemporaryDirectory(prefix=".reverb-", dir=cache_root) as temp:
-            staged = convert(source, Path(temp) / "model")
-            try:
-                staged.rename(destination)
-            except OSError as error:
-                # Another loader may have completed the same immutable bundle.
-                if (
-                    error.errno not in (errno.EEXIST, errno.ENOTEMPTY)
-                    or not destination.is_dir()
-                ):
-                    raise
-    return destination
-
-
 def convert(
     model, output, *, codec=CODEC_REPO, dtype="bfloat16", bits=None, revision=None
 ):
@@ -89,6 +48,7 @@ def convert(
     config = json.loads((weights_dir / "config.json").read_text())
     if "echo" not in config:
         raise ValueError("Expected a Reverb checkpoint with an echo configuration.")
+    config["model_type"] = "reverb"
     codec_path = Path(codec).expanduser()
     if not codec_path.is_dir():
         codec_path = Path(snapshot_download(codec, allow_patterns=CODEC_PATTERNS))
@@ -106,7 +66,6 @@ def convert(
         [(key, value.astype(target_dtype)) for key, value in weights.items()],
         strict=True,
     )
-    config["model_type"] = "reverb"
     config["architectures"] = ["ReverbModel"]
     config["dtype"] = dtype
     config["sample_rate"] = 24000
