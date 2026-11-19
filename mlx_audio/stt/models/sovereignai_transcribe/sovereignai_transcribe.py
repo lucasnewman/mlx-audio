@@ -382,8 +382,6 @@ class Model(nn.Module):
             scores = logits[:, -1, :].astype(mx.float32)
             return sampler(scores - mx.logsumexp(scores, axis=-1, keepdims=True))
 
-        # Queue the step for the next token before reading this one on the host,
-        # so the GPU does not idle for every token's round trip (as mlx-lm does).
         y = sample(logits)
         mx.async_eval(y)
         for _ in range(max_tokens):
