@@ -223,7 +223,8 @@ def test_generate_stopping_and_prompt_options(
 
     model = Model(tiny_config())
     model._tokenizer = TinyTokenizer()
-    next_tokens = iter([7, eos])
+    # A trailing token is queued speculatively at EOS and must be discarded.
+    next_tokens = iter([7, eos, 7])
 
     def forward(self, *args, **kwargs):
         token = next(next_tokens)
@@ -267,7 +268,8 @@ def test_invalid_audio_is_rejected(audio):
 def test_stream_deltas_and_final_statistics():
     model = Model(tiny_config())
     model._tokenizer = TinyTokenizer()
-    tokens = iter([7, 106])
+    # A trailing token is queued speculatively at EOS and must be discarded.
+    tokens = iter([7, 106, 7])
 
     def forward(self, *args, **kwargs):
         token = next(tokens)
