@@ -149,6 +149,18 @@ class TestDeepFilterNetRuntimeHelpers(unittest.TestCase):
         spec = mx.ones((1, cfg.fft_size // 2 + 1))
         self.assertTrue(mx.array_equal(runtime._erb(spec), spec @ erb_fb))
 
+    def test_load_weights_falls_back_when_filterbank_shape_is_wrong(self):
+        from mlx_audio.sts.models.deepfilternet.config import DeepFilterNet3Config
+        from mlx_audio.sts.models.deepfilternet.model import DeepFilterNetModel
+
+        cfg = DeepFilterNet3Config()
+        cfg.erb_widths = [1] * (cfg.nb_erb - 1) + [cfg.freq_bins - cfg.nb_erb + 1]
+        runtime = DeepFilterNetModel(cfg)
+        runtime.load_weights([("erb_fb", mx.ones((cfg.nb_erb, cfg.freq_bins)))])
+
+        spec = mx.ones((1, cfg.freq_bins))
+        self.assertTrue(mx.array_equal(runtime._erb(spec), mx.ones((1, cfg.nb_erb))))
+
 
 @unittest.skipUnless(
     os.environ.get("MLX_AUDIO_RUN_STS_INTEGRATION") == "1",

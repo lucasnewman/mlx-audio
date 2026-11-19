@@ -1,7 +1,10 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import mlx.core as mx
+from mlx.utils import tree_flatten
 
 from mlx_audio.stt.models.fireredasr2.config import (
     DecoderConfig,
@@ -33,6 +36,24 @@ class TestFireRedASR2(unittest.TestCase):
             decoder=dec_config,
         )
         self.model = Model(self.config)
+
+    def test_strict_load_accepts_legacy_positional_tables(self):
+        encoder_encoding = self.model.encoder.positional_encoding
+        decoder_encoding = self.model.decoder.positional_encoding
+        weights = dict(tree_flatten(self.model.parameters()))
+        weights["encoder.positional_encoding.pe"] = mx.ones_like(encoder_encoding._pe)
+        weights["decoder.positional_encoding.pe"] = mx.zeros_like(decoder_encoding._pe)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "legacy.safetensors")
+            mx.save_safetensors(path, weights)
+            self.model.load_weights(path, strict=True)
+
+        x = mx.zeros((1, 2, self.config.d_model))
+        self.assertTrue(
+            mx.array_equal(encoder_encoding(x), mx.ones((1, 3, x.shape[-1])))
+        )
+        self.assertTrue(mx.array_equal(decoder_encoding(2), mx.zeros_like(x)))
 
     def test_encoder(self):
         x = mx.random.normal((1, 100, 80))

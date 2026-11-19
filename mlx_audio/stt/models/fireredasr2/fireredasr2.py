@@ -488,6 +488,34 @@ class FireRedASR2(nn.Module):
         self._tokenizer = None
         self._cmvn = None
 
+    def load_weights(self, file_or_weights, strict: bool = True):
+        """Load weights, including optional positional tables from legacy exports."""
+        if isinstance(file_or_weights, str):
+            file_or_weights = mx.load(file_or_weights)
+        weights = dict(file_or_weights)
+
+        legacy_encodings = (
+            ("encoder.positional_encoding.pe", self.encoder.positional_encoding),
+            ("decoder.positional_encoding.pe", self.decoder.positional_encoding),
+        )
+        positional_tables = []
+        for name, encoding in legacy_encodings:
+            if name not in weights:
+                continue
+            table = weights.pop(name)
+            if strict and (
+                not isinstance(table, mx.array) or table.shape != encoding._pe.shape
+            ):
+                raise ValueError(
+                    f"Expected {name} to be an array of shape {encoding._pe.shape}"
+                )
+            positional_tables.append((encoding, table))
+
+        super().load_weights(list(weights.items()), strict=strict)
+        for encoding, table in positional_tables:
+            encoding._pe = table
+        return self
+
     def _load_cmvn(self, model_path: str):
         cmvn_path = Path(model_path) / "cmvn.json"
         if cmvn_path.exists():
