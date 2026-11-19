@@ -41,6 +41,7 @@ class ParallelExpertEncoder(nn.Module):
         self._diar_kernel = mx.stack([mx.sin(angles), mx.cos(angles)], axis=-1).reshape(
             -1, width
         )
+        mx.eval(self._diar_kernel)
 
     def fuse(self, states, probabilities):
         cfg = self._config

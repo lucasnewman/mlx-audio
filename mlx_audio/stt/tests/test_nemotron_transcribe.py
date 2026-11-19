@@ -1,6 +1,7 @@
 """Small numerical and integration tests for the consolidated SpeechLM port."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
 import mlx.core as mx
@@ -243,6 +244,19 @@ def test_windowed_perception_lengths_and_finiteness(frames):
     output = model.perception.encoder(features)
     assert output.shape == (1, (frames + 1) // 2, 16)
     assert mx.all(mx.isfinite(output)).item()
+
+
+def test_preloaded_perception_runs_on_worker_thread():
+    model = tiny_model()
+    mx.eval(model.parameters())
+
+    def encode():
+        return np.array(model.perception(mx.zeros(2000)))
+
+    # The first forward pass must run on the worker, as it does after preload.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        actual = executor.submit(encode).result()
+    np.testing.assert_allclose(actual, encode(), atol=1e-6)
 
 
 def test_left_context_not_added_to_speaker_history():
