@@ -192,7 +192,7 @@ def _decode_ffmpeg(
         "json",
         "-show_streams",
         "-select_streams",
-        "a:0",
+        "a",
         str(input_data),
     ]
     probe_result = subprocess.run(
@@ -211,46 +211,51 @@ def _decode_ffmpeg(
 
     import json
 
-    probe_info = json.loads(probe_result.stdout.decode())
-    if not probe_info.get("streams"):
+    streams = json.loads(probe_result.stdout.decode()).get("streams")
+    if not streams:
         raise RuntimeError("No audio streams found in file")
 
-    stream = probe_info["streams"][0]
-    output_sample_rate = sample_rate or int(stream.get("sample_rate", 44100))
-    output_nchannels = nchannels or int(stream.get("channels", 2))
+    # Use the metadata of the same track we decode. Some containers can
+    # declare an audio track without any samples, so try the tracks in order.
+    for stream in streams:
+        output_sample_rate = sample_rate or int(stream.get("sample_rate", 44100))
+        output_nchannels = nchannels or int(stream.get("channels", 2))
 
-    # Decode to raw PCM using ffmpeg
-    decode_cmd = [
-        ffmpeg_path,
-        "-v",
-        "error",
-        *input_options,
-        "-i",
-        str(input_data),
-        "-f",
-        "s16le",  # Output: signed 16-bit little-endian PCM
-        "-acodec",
-        "pcm_s16le",
-        "-ar",
-        str(output_sample_rate),
-        "-ac",
-        str(output_nchannels),
-    ]
-    max_frames = None
-    if duration is not None:
-        max_frames = round(duration * output_sample_rate)
-        if max_frames == 0:
-            return np.empty(0, dtype=np.int16), output_sample_rate, output_nchannels
-        # One extra frame, so rounding in ffmpeg cannot leave the result short.
-        # ffmpeg needs fixed-point seconds that fit in int64 microseconds.
-        seconds = min((max_frames + 1) / output_sample_rate, 1e12)
-        # -t cuts by timestamp, and a file's timestamps can jump. asetpts sets
-        # them to the sample count, so the cut lands on the frame count.
-        decode_cmd += ["-af", "asetpts=N/SR/TB", "-t", f"{seconds:.6f}"]
-    decode_cmd.append("pipe:1")
-    decode_result = subprocess.run(
-        decode_cmd, stdin=subprocess.DEVNULL, capture_output=True
-    )
+        decode_cmd = [
+            ffmpeg_path,
+            "-v",
+            "error",
+            *input_options,
+            "-i",
+            str(input_data),
+            "-map",
+            f"0:{stream['index']}",
+            "-f",
+            "s16le",  # Output: signed 16-bit little-endian PCM
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(output_sample_rate),
+            "-ac",
+            str(output_nchannels),
+        ]
+        max_frames = None
+        if duration is not None:
+            max_frames = round(duration * output_sample_rate)
+            if max_frames == 0 and len(streams) == 1:
+                return np.empty(0, dtype=np.int16), output_sample_rate, output_nchannels
+            # One extra frame, so rounding in ffmpeg cannot leave the result short.
+            # ffmpeg needs fixed-point seconds that fit in int64 microseconds.
+            seconds = min((max_frames + 1) / output_sample_rate, 1e12)
+            # -t cuts by timestamp, and a file's timestamps can jump. asetpts sets
+            # them to the sample count, so the cut lands on the frame count.
+            decode_cmd += ["-af", "asetpts=N/SR/TB", "-t", f"{seconds:.6f}"]
+        decode_cmd.append("pipe:1")
+        decode_result = subprocess.run(
+            decode_cmd, stdin=subprocess.DEVNULL, capture_output=True
+        )
+        if decode_result.stdout:
+            break
 
     if decode_result.returncode != 0:
         raise RuntimeError(f"ffmpeg decoding failed: {decode_result.stderr.decode()}")
@@ -350,6 +355,8 @@ def read(
     duration: Optional[float] = None,
 ) -> Tuple[np.ndarray, int]:
     """Read audio using miniaudio or ffmpeg.
+
+    For inputs decoded by ffmpeg, read the first audio track that yields samples.
 
     Args:
         file: Path to the audio file or a BytesIO object. The format comes from the
