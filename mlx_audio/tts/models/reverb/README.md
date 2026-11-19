@@ -4,15 +4,28 @@ Native MLX implementation of [Software Mansion's Reverb](https://huggingface.co/
 
 The text model, audio decoder, and reference-audio encoder run in MLX. Runtime inference does not require PyTorch or ExecuTorch.
 
+## Supported Models
+
+| Hugging Face repository | Reverb weights |
+| --- | --- |
+| [nativ-community/Reverb-TTS](https://huggingface.co/nativ-community/Reverb-TTS) | FP32 |
+| [nativ-community/Reverb-TTS-bf16](https://huggingface.co/nativ-community/Reverb-TTS-bf16) | BF16 |
+| [nativ-community/Reverb-TTS-8bit](https://huggingface.co/nativ-community/Reverb-TTS-8bit) | 8-bit affine |
+| [nativ-community/Reverb-TTS-4bit](https://huggingface.co/nativ-community/Reverb-TTS-4bit) | 4-bit affine |
+
+Each bundle includes the FP32 Higgs Audio v2 codec.
+
 ## Quick start
 
-Install MLX Audio and log into Hugging Face with an account approved for the gated upstream repository. Loading the original repository downloads only the FP32 checkpoint, text tokenizer, preset voices, and the separate Higgs Audio v2 codec. A BF16 bundle is cached alongside the Hugging Face cache for subsequent offline use.
+```bash
+pip install mlx-audio
+```
 
 ```python
 from mlx_audio.tts.utils import load
 from mlx_audio.audio_io import write
 
-model = load("software-mansion/Reverb-TTS")
+model = load("nativ-community/Reverb-TTS")
 result = next(model.generate(
     text="Hello from Reverb running locally on Apple Silicon.",
     voice="standard_male",
@@ -23,7 +36,7 @@ write("speech.wav", result.audio, result.sample_rate)
 
 ```bash
 python -m mlx_audio.tts.generate \
-  --model software-mansion/Reverb-TTS \
+  --model nativ-community/Reverb-TTS \
   --voice standard_male \
   --text "Hello from Reverb on Apple Silicon." \
   --lang_code en
