@@ -377,10 +377,18 @@ class Model(nn.Module):
         tokens = []
         decoder = StreamingDetokenizer(self._tokenizer, skip_special_tokens=True)
         finish_reason = "length"
-        for _ in range(max_tokens):
+
+        def sample(logits):
             scores = logits[:, -1, :].astype(mx.float32)
-            logprobs = scores - mx.logsumexp(scores, axis=-1, keepdims=True)
-            token = int(sampler(logprobs).item())
+            return sampler(scores - mx.logsumexp(scores, axis=-1, keepdims=True))
+
+        y = sample(logits)
+        mx.async_eval(y)
+        for _ in range(max_tokens):
+            if len(tokens) + 1 < max_tokens:
+                next_y = sample(self(y.reshape(1, 1), cache=cache))
+                mx.async_eval(next_y)
+            token = int(y.item())
             tokens.append(token)
             if token in self._eos_token_ids:
                 finish_reason = "stop"
@@ -394,8 +402,9 @@ class Model(nn.Module):
                     prompt_tokens=prompt_tokens,
                     generation_tokens=len(tokens),
                 )
-            if len(tokens) < max_tokens:
-                logits = self(mx.array([[token]]), cache=cache)
+            if len(tokens) >= max_tokens:
+                break
+            y = next_y
         decoder.finalize()
         elapsed = time.perf_counter() - start
         yield TranscriptionOutput(
