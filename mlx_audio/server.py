@@ -16,7 +16,7 @@ import subprocess
 import time
 import uuid
 import webbrowser
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,7 +40,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from huggingface_hub.errors import RepositoryNotFoundError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
@@ -180,6 +180,7 @@ class SpeechRequest(BaseModel):
     top_p: float | None = 0.95
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
+    seed: int | None = Field(default=None, strict=True, ge=0, le=2**32 - 1)
     response_format: str | None = "mp3"
     stream: bool = False
     streaming_interval: float = 2.0
@@ -478,6 +479,23 @@ def _resolve_max_tokens(model, speech_request: SpeechRequest) -> dict[str, int]:
     return {}
 
 
+@contextmanager
+def _tts_request_rng(seed: int | None):
+    if seed is None:
+        yield
+        return
+
+    # MLX exposes the worker's current key as two uint32 words. Reassemble
+    # them in the order expected by mx.random.seed to restore the exact key.
+    high, low = mx.random.state[0].tolist()
+    previous_seed = (high << 32) | low
+    mx.random.seed(seed)
+    try:
+        yield
+    finally:
+        mx.random.seed(previous_seed)
+
+
 class TTSExecutionAdapter(BaseModelExecutionAdapter):
     _REQUEST_MODEL_ATTR = "_mlx_audio_loaded_model"
 
@@ -531,6 +549,9 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
         continuous: bool,
     ) -> bool:
         speech_request: SpeechRequest = request.payload.request
+        if speech_request.seed is not None:
+            return False
+
         hook_name = (
             "supports_tts_continuous_batch" if continuous else "supports_tts_batch"
         )
@@ -691,26 +712,42 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             "verbose": speech_request.verbose,
         }
 
-        for result in model.generate(speech_request.input, **generate_kwargs):
-            if request.cancel_event.is_set():
-                mx.clear_cache()
-                request.emit_done()
-                return
+        generate = model.generate
+        seed = speech_request.seed
+        if seed is not None:
+            seed_param = inspect.signature(generate).parameters.get("seed")
+            if seed_param is not None and seed_param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                generate_kwargs["seed"] = seed
 
-            if speech_request.stream:
-                # An empty final chunk only marks the end of the stream; encoded,
-                # it would send a container header without audio.
-                if result.audio.size > 0:
-                    self._emit_audio(
-                        request,
-                        speech_request,
-                        result.audio,
-                        result.sample_rate,
-                    )
-            else:
-                audio_chunks.append(result.audio)
-                if sample_rate is None:
-                    sample_rate = result.sample_rate
+        with _tts_request_rng(seed), ExitStack() as stack:
+            results = iter(generate(speech_request.input, **generate_kwargs))
+            if seed is not None and callable(close := getattr(results, "close", None)):
+                stack.callback(close)
+            for result in results:
+                if request.cancel_event.is_set():
+                    break
+
+                if speech_request.stream:
+                    # An empty final chunk would encode as a header without audio.
+                    if result.audio.size > 0:
+                        self._emit_audio(
+                            request,
+                            speech_request,
+                            result.audio,
+                            result.sample_rate,
+                        )
+                else:
+                    audio_chunks.append(result.audio)
+                    if sample_rate is None:
+                        sample_rate = result.sample_rate
+
+        if request.cancel_event.is_set():
+            mx.clear_cache()
+            request.emit_done()
+            return
 
         if speech_request.stream:
             request.emit_done()

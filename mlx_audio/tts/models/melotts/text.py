@@ -250,6 +250,9 @@ _number_re = re.compile(r"\d+")
 _time_re = re.compile(
     r"(?<![\d:])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])(?:\s*([ap])\.?\s?m\b)?"
 )
+# A minus sign before a number: at the start, or after a space, an opening bracket
+# or a quote. A hyphen after a digit or a letter ("5-10", "covid-19") is not a sign.
+_minus_sign_re = re.compile(r"(?<![^\s(\[{\"'])-(?=\d)")
 
 _ordinal_words = {
     "one": "first",
@@ -362,6 +365,7 @@ def text_normalize(text: str) -> str:
     text = re.sub(_time_re, _expand_time, text)
     text = re.sub(_comma_number_re, _remove_commas, text)
     text = re.sub(_currency_re, _expand_currency, text)
+    text = re.sub(_minus_sign_re, "minus ", text)
     text = re.sub(_decimal_number_re, _expand_decimal, text)
     text = re.sub(_ordinal_re, _expand_ordinal, text)
     text = re.sub(_number_re, _expand_number, text)

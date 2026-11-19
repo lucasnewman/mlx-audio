@@ -95,12 +95,15 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 | `top_p` | float | `0.95`* | Nucleus sampling threshold |
 | `top_k` | int | `40`* | Top-k sampling |
 | `repetition_penalty` | float | `1.0`* | Repetition penalty |
+| `seed` | int or null | `null` | Optional sampling seed from 0 to 4294967295 |
 | `max_tokens` | int or null | `null` | Maximum generation tokens; omitted or null uses the model's default |
 | `ref_audio` | string | `null` | Path to reference audio for voice cloning |
 | `ref_text` | string | `null` | Transcript of reference audio |
 | `instruct` | string | `null` | Style/emotion instruction |
 
 \* For models that support checkpoint sampling defaults (currently Qwen3-TTS), an omitted sampling field uses the value from the checkpoint's `generation_config.json` when it has one; otherwise the default above applies. Send the field explicitly to override it.
+
+Seeded requests run individually in both response modes. The seed controls MLX sampling and is also passed to models that declare a `seed` parameter. Repeat a request with the same model, inputs, sampling settings, response mode, and runtime to reproduce the sampling draws.
 
 The model's token limit applies to serial, streaming, fixed-batch, and continuous-batch requests. Depending on the model, the default may come from checkpoint metadata (for Qwen3-TTS, `max_new_tokens` in `generation_config.json`) or be calculated from the input text. Send `max_tokens` explicitly to override it.
 

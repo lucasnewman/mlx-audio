@@ -37,14 +37,14 @@ pip install -e ".[dev,docs]"
 If you use [uv](https://github.com/astral-sh/uv) for project management:
 
 ```bash
-uv sync
+uv sync --extra dev
 ```
 
-This installs the project plus the default development group. Extras are opt-in:
+This installs the project and development tools from the `dev` extra. Include it alongside any other extras you need:
 
 ```bash
 # Include docs tooling
-uv sync --extra docs
+uv sync --extra dev --extra docs
 
 # Include every optional extra
 uv sync --all-extras

@@ -131,12 +131,12 @@ def format_vtt_timestamp(seconds: float) -> str:
 
 def _get_cues(segments):
     """Extract subtitle cues, rejecting text without timestamps."""
-    if hasattr(segments, "sentences"):
-        return [
-            {"start": s.start, "end": s.end, "text": s.text} for s in segments.sentences
-        ]
+    sentences = getattr(segments, "sentences", None)
+    if sentences:
+        return [{"start": s.start, "end": s.end, "text": s.text} for s in sentences]
+
     cues = []
-    for s in segments.segments:
+    for s in getattr(segments, "segments", None) or ():
         if s.get("start") is None or s.get("end") is None:
             if s["text"].strip():
                 raise ValueError(
@@ -196,7 +196,8 @@ def save_as_vtt(segments, output_path: str):
 
 
 def save_as_json(segments, output_path: str):
-    if hasattr(segments, "sentences"):
+    sentences = getattr(segments, "sentences", None)
+    if sentences is not None:
         result = {
             "text": segments.text,
             "sentences": [
@@ -215,11 +216,11 @@ def save_as_json(segments, output_path: str):
                         for t in s.tokens
                     ],
                 }
-                for s in segments.sentences
+                for s in sentences
             ],
         }
         # Add speaker_id only if it exists
-        for i, s in enumerate(segments.sentences):
+        for i, s in enumerate(sentences):
             if hasattr(s, "speaker_id"):
                 result["sentences"][i]["speaker_id"] = s.speaker_id
     else:
@@ -227,7 +228,7 @@ def save_as_json(segments, output_path: str):
             "text": segments.text,
             "segments": [],
         }
-        for s in segments.segments:
+        for s in getattr(segments, "segments", None) or ():
             seg = {"text": s["text"]}
             if "start" in s or "end" in s:
                 seg["start"] = s.get("start")
@@ -280,6 +281,12 @@ def generate_transcription(
     Returns:
         segments: The generated transcription segments.
     """
+    segments = _transcribe(model, audio, output_path, format, verbose, text, **kwargs)
+    _save_transcription(segments, output_path, format)
+    return segments
+
+
+def _transcribe(model, audio, output_path, format, verbose, text, **kwargs):
     if model is None:
         raise ValueError("Model path or model instance must be provided.")
 
@@ -402,18 +409,16 @@ def generate_transcription(
             )
         print(f"\033[94mPeak memory:\033[0m {mx.get_peak_memory() / 1e9:.2f} GB")
 
+    return segments
+
+
+def _save_transcription(segments, output_path, format):
     # Create output directory if it doesn't exist
     output_dir = os.path.dirname(os.path.abspath(output_path))
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    # Check for segments (Whisper) or sentences (Parakeet)
-    has_segments = hasattr(segments, "segments") and segments.segments is not None
-    has_sentences = hasattr(segments, "sentences") and segments.sentences is not None
-
-    if format == "txt" or (not has_segments and not has_sentences):
-        if not has_segments and not has_sentences:
-            print("[WARNING] No segments found, saving as plain text.")
+    if format == "txt":
         save_as_txt(segments, output_path)
     elif format == "srt":
         save_as_srt(segments, output_path)
@@ -422,12 +427,17 @@ def generate_transcription(
     elif format == "json":
         save_as_json(segments, output_path)
 
-    return segments
-
 
 def main():
     args = parse_args()
-    generate_transcription(**vars(args))
+    if args.output_path != "-":
+        generate_transcription(**vars(args))
+        return
+
+    # Keep stdout available for the transcript, including when the model prints.
+    with contextlib.redirect_stdout(sys.stderr):
+        segments = _transcribe(**vars(args))
+    _save_transcription(segments, args.output_path, args.format)
 
 
 if __name__ == "__main__":

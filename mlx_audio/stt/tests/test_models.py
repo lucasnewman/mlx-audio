@@ -779,6 +779,44 @@ class TestParakeetModel(unittest.TestCase):
                 overlap_duration=5.0,
             )
 
+    def test_rnnt_decode_reuses_prediction_across_blanks(self):
+        from mlx_audio.stt.models.parakeet.parakeet import ParakeetRNNT
+
+        model = ParakeetRNNT.__new__(ParakeetRNNT, None)
+        model.vocabulary = ["▁a", "▁b"]
+        model.max_symbols = 1
+        model.encoder_config = SimpleNamespace(subsampling_factor=1)
+        model.preprocessor_config = SimpleNamespace(sample_rate=100, hop_length=1)
+        blank = len(model.vocabulary)
+        frame_tokens = [blank, 0, blank, blank, 1]
+        frames = mx.array(frame_tokens, dtype=mx.float32).reshape(1, -1, 1)
+        model.encoder = lambda mel: (frames, mx.array([len(frame_tokens)]))
+
+        prediction_inputs = []
+        joint_predictions = []
+
+        def decoder(token, state):
+            prediction_inputs.append(None if token is None else int(token[0, 0]))
+            step = mx.full((1, 1, 1), len(prediction_inputs))
+            return step, (step, step)
+
+        def joint(feature, prediction):
+            joint_predictions.append(int(prediction[0, 0, 0]))
+            token = int(feature[0, 0, 0])
+            return mx.zeros((1, 1, 1, blank + 1)).at[..., token].add(1.0)
+
+        model.decoder = decoder
+        model.joint = joint
+
+        result = model.decode(mx.zeros((1, len(frame_tokens), 80)))[0]
+
+        tokens = [
+            token.id for sentence in result.sentences for token in sentence.tokens
+        ]
+        self.assertEqual(tokens, [0, 1])
+        self.assertEqual(prediction_inputs, [None, 0])
+        self.assertEqual(joint_predictions, [1, 1, 2, 2, 2])
+
     def test_log_mel_spectrogram_shape_and_params(self):
         """Verify log_mel_spectrogram output shape and NeMo-aligned parameters."""
         from mlx_audio.stt.models.parakeet.audio import (

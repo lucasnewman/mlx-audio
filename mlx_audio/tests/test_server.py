@@ -1429,6 +1429,107 @@ def _tts_inference_request(model, **fields):
     return request
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_tts_speech_seed_repeats_audio(client, mock_model_provider, stream):
+    def generate(input_text, **kwargs):
+        assert "seed" not in kwargs
+        for _ in range(2):
+            samples = mx.random.uniform(low=-0.5, high=0.5, shape=(64,)).tolist()
+            yield MockAudioResult(np.asarray(samples, dtype=np.float32), 16000)
+
+    mock_model_provider.load_model.return_value = SimpleNamespace(generate=generate)
+    payload = {
+        "model": "test_tts_model",
+        "input": "Hello",
+        "response_format": "wav",
+        "stream": stream,
+    }
+
+    def synthesize(seed):
+        response = client.post("/v1/audio/speech", json={**payload, "seed": seed})
+        assert response.status_code == 200
+        assert response.content
+        return response.content
+
+    first = synthesize(0)
+    assert synthesize(1) != first
+    synthesize(None)
+    assert synthesize(0) == first
+
+
+def test_tts_speech_passes_seed_to_model_that_accepts_it(client, mock_model_provider):
+    received_seeds = []
+
+    def generate(input_text, *, seed=42, **kwargs):
+        received_seeds.append(seed)
+        yield MockAudioResult(np.zeros(64, dtype=np.float32), 16000)
+
+    mock_model_provider.load_model.return_value = SimpleNamespace(generate=generate)
+    payload = {"model": "test_tts_model", "input": "Hello", "response_format": "wav"}
+    assert client.post("/v1/audio/speech", json=payload).status_code == 200
+    response = client.post("/v1/audio/speech", json={**payload, "seed": 0})
+    assert response.status_code == 200
+    assert received_seeds == [42, 0]
+
+
+@pytest.mark.parametrize("seed", [-1, 2**32, 0.5, True, "0"])
+def test_tts_speech_rejects_invalid_seed(client, mock_model_provider, seed):
+    response = client.post(
+        "/v1/audio/speech",
+        json={"model": "test_tts_model", "input": "Hello", "seed": seed},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["body", "seed"]
+    mock_model_provider.load_model.assert_not_called()
+
+
+def test_tts_seeded_requests_bypass_both_batch_paths():
+    from mlx_audio.server import TTSExecutionAdapter
+
+    def batch_generate(texts): ...
+
+    model = SimpleNamespace(
+        batch_generate=batch_generate,
+        create_tts_batch_session=MagicMock(),
+    )
+    adapter = TTSExecutionAdapter()
+    for supports in (adapter.supports_batch, adapter.supports_continuous_batch):
+        assert supports(_tts_inference_request(model))
+        assert not supports(_tts_inference_request(model, seed=0))
+
+
+@pytest.mark.parametrize("outcome", ["complete", "cancel", "error"])
+def test_tts_restores_rng_after_generator_cleanup(outcome):
+    from mlx_audio.server import TTSExecutionAdapter
+
+    initial_key = mx.random.state[0].tolist()
+    _, cleanup_key = mx.random.split(mx.random.key(0))
+    expected_cleanup_draw = mx.random.uniform(key=cleanup_key).item()
+    cleanup_draws = []
+
+    def generate(input_text, **kwargs):
+        try:
+            if outcome == "cancel":
+                request.cancel_event.set()
+            yield MockAudioResult(np.zeros(64, dtype=np.float32), 16000)
+            if outcome == "error":
+                raise RuntimeError("generation failed")
+        finally:
+            cleanup_draws.append(mx.random.uniform().item())
+
+    model = SimpleNamespace(generate=generate)
+    request = _tts_inference_request(model, seed=0, response_format="wav")
+    adapter = TTSExecutionAdapter()
+    if outcome == "error":
+        with pytest.raises(RuntimeError, match="generation failed"):
+            adapter.run_serial(request)
+    else:
+        adapter.run_serial(request)
+
+    assert cleanup_draws == [expected_cleanup_draw]
+    assert mx.random.state[0].tolist() == initial_key
+
+
 def test_tts_continuous_batch_options_use_generate_config():
     from mlx_audio.server import TTSExecutionAdapter
 

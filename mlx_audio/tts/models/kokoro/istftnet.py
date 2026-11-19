@@ -1,4 +1,5 @@
 import math
+from functools import partial
 from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
@@ -338,6 +339,18 @@ class AdaIN1d(nn.Module):
         return x
 
 
+def adain_snake(adain: AdaIN1d, x: mx.array, s: mx.array, alpha: mx.array):
+    gamma, beta = mx.split(mx.expand_dims(adain.fc(s), axis=2), 2, axis=1)
+    x = mx.fast.layer_norm(x, None, None, adain.norm.eps)
+    return _affine_snake(x, gamma, beta, alpha)
+
+
+@partial(mx.compile, shapeless=True)
+def _affine_snake(x, gamma, beta, alpha):
+    x = (1 + gamma) * x + beta
+    return x + (1 / alpha) * (mx.sin(alpha * x) ** 2)
+
+
 class AdaINResBlock1(nn.Module):
     def __init__(
         self,
@@ -378,15 +391,13 @@ class AdaINResBlock1(nn.Module):
         for c1, c2, n1, n2, a1, a2 in zip(
             self.convs1, self.convs2, self.adain1, self.adain2, self.alpha1, self.alpha2
         ):
-            xt = n1(x, s)
-            xt = xt + (1 / a1) * (mx.sin(a1 * xt) ** 2)  # Snake1D
+            xt = adain_snake(n1, x, s, a1)
 
             xt = xt.swapaxes(2, 1)
             xt = c1(xt, mx.conv1d)
             xt = xt.swapaxes(2, 1)
 
-            xt = n2(xt, s)
-            xt = xt + (1 / a2) * (mx.sin(a2 * xt) ** 2)  # Snake1D
+            xt = adain_snake(n2, xt, s, a2)
 
             xt = xt.swapaxes(2, 1)
             xt = c2(xt, mx.conv1d)

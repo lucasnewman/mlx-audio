@@ -147,6 +147,7 @@ for result in model.generate(
 | **Higgs Audio v3** | 4B conversational TTS with voice cloning and inline control tokens | 100 languages | [bosonai/higgs-audio-v3-tts-4b](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b) |
 | **Fish Audio Drama 3** | 35B MoE multi-speaker TTS with voice cloning, inline cues and streaming ([convert](docs/models/tts/fish-drama3.md)) | 83 languages | [mlx-community/fish-audio-drama-3-4bit](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) |
 | **OmniVoice** | Zero-shot multilingual TTS with voice cloning, batch generation, and nonverbal tags | 646+ languages | [mlx-community/OmniVoice-bf16](https://huggingface.co/mlx-community/OmniVoice-bf16) |
+| [**Reverb**](mlx_audio/tts/models/reverb/README.md) | 297M TTS with preset voices, native voice cloning, and cached reference attention | EN, DE, FR, ES, IT, PL, PT | [software-mansion/Reverb-TTS](https://huggingface.co/software-mansion/Reverb-TTS) |
 | **CSM / MisoTTS** | Sesame-style conversational speech models with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b), [MisoTTS bf16](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-bf16), [MisoTTS 8bit](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-8bit) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
 | **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
