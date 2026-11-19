@@ -146,6 +146,7 @@ class Model(nn.Module):
         ref_audio=None,
         ref_text=None,
         spk_emb=None,
+        seed=None,
     ):
         references = (
             list(ref_audio)
@@ -196,6 +197,10 @@ class Model(nn.Module):
             raise ValueError(
                 "Speaker embeddings must match the reference speaker count"
             )
+        # Lazy speaker initialization must not shift seeded synthesis noise.
+        # Seed before VAE sampling too, so reference latents stay reproducible.
+        if seed is not None:
+            mx.random.seed(int(seed))
         prompt_latents = None
         prompt_hidden = None
         if task in REFERENCE_TASKS:
@@ -325,8 +330,6 @@ class Model(nn.Module):
             )
             if language not in allowed and task != "podcast":
                 raise ValueError(f"{task} requires a supported target language")
-        if seed is not None:
-            mx.random.seed(int(seed))
         started = time.perf_counter()
         ids, embeds, prompt_latents = self.prepare_inputs(
             text,
@@ -336,6 +339,7 @@ class Model(nn.Module):
             ref_audio=ref_audio,
             ref_text=ref_text,
             spk_emb=spk_emb,
+            seed=None if seed is None else int(seed),
         )
         tts = self.config.tts_config
         limit = int(
