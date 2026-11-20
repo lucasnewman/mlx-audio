@@ -142,6 +142,27 @@ def test_boundaries_and_conservative_defaults(text, expected):
 
 
 @pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("$1", "one dollar"),
+        ("$1.00", "one dollar"),
+        ("$1.01", "one dollar one cent"),
+        ("$0.01", "zero dollars one cent"),
+        ("₹1", "one rupee"),
+        ("₹1.01", "one rupee one paisa"),
+        ("₹0.01", "zero rupees one paisa"),
+        ("£1", "one pound"),
+        ("€1", "one euro"),
+        ("$2", "two dollars"),
+        ("$5.50", "five dollars fifty cents"),
+        ("₹95.41", "ninety five rupees forty one paise"),
+    ],
+)
+def test_one_unit_amounts_use_singular_english_noun(text, expected):
+    assert normalise_text(text, "en") == expected
+
+
+@pytest.mark.parametrize(
     "text",
     ["31/02/2025", "2025-13-04", "01-02/2025", "24:00", "12:75", "₹12,34", "12,34"],
 )

@@ -470,7 +470,12 @@
       },
       "count_one": "one",
       "singular": {
-
+        "dollars": "dollar",
+        "rupees": "rupee",
+        "euros": "euro",
+        "pounds": "pound",
+        "cents": "cent",
+        "paise": "paisa"
       },
       "time_hour": "{h} o'clock",
       "time_hm": "{h} {m}",
