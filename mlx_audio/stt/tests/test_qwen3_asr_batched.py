@@ -545,9 +545,9 @@ class TestPerChunkLanguage(unittest.TestCase):
         calls = model._generate_single_chunk.call_args_list
         self.assertEqual([call.kwargs["language"] for call in calls], [None, None])
         self.assertEqual(
-            [segment["language"] for segment in out.segments], ["None", "English"]
+            [segment["language"] for segment in out.segments], [None, "English"]
         )
-        self.assertEqual(out.text, " hello")
+        self.assertEqual(out.text, "hello")
 
     def test_explicit_language_is_kept_for_every_chunk(self):
         model = _make_minimal_model()
@@ -591,9 +591,9 @@ class TestPerChunkLanguage(unittest.TestCase):
 
         self.assertIsNone(model._generate_chunks_batched.call_args.kwargs["language"])
         self.assertEqual(
-            [segment["language"] for segment in out.segments], ["None", "English"]
+            [segment["language"] for segment in out.segments], [None, "English"]
         )
-        self.assertEqual(out.text, " hello")
+        self.assertEqual(out.text, "hello")
 
     def test_streaming_chunks_are_each_auto_detected(self):
         model = _make_minimal_model()
@@ -629,7 +629,7 @@ class TestPerChunkLanguage(unittest.TestCase):
         self.assertEqual(languages, [None, None])
         self.assertEqual(
             [(result.text, result.language) for result in results],
-            [("", "None"), ("hello", "English"), ("", "English")],
+            [("", None), ("hello", "English"), ("", "English")],
         )
 
     def test_streaming_finalized_text_keeps_chunk_language(self):

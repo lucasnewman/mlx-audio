@@ -47,6 +47,79 @@ def _audio_duration(wav: np.ndarray, sr: int) -> float:
     return len(wav) / sr
 
 
+# ISO 639 codes of the languages Qwen3-ASR supports; OpenAI-style clients send
+# codes ("en", "zh-CN") while the prompt needs the model's language names.
+_LANGUAGE_CODES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fil": "Filipino",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "th": "Thai",
+    "tl": "Filipino",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
+
+# Languages written without spaces between words.
+_NO_SPACE_LANGUAGES = {"Chinese", "Cantonese", "Japanese"}
+
+
+def normalize_language(
+    language: Optional[str], supported: Optional[List[str]] = None
+) -> Optional[str]:
+    """Map a language name or ISO 639 code to the name Qwen3-ASR uses.
+
+    Unknown values are returned unchanged; empty values give None.
+    """
+    if language is None or not str(language).strip():
+        return None
+    language = str(language).strip()
+    key = language.lower().replace("_", "-")
+    names = {name.lower(): name for name in supported or []}
+    if key in names:
+        return names[key]
+    return _LANGUAGE_CODES.get(key) or _LANGUAGE_CODES.get(key.split("-")[0], language)
+
+
+def _join_chunk_texts(texts: List[str], languages: List[Optional[str]]) -> str:
+    """Join chunk transcripts, without a space next to a Chinese/Japanese chunk."""
+    out = ""
+    prev_language = None
+    for text, language in zip(texts, languages):
+        text = text.strip()
+        if not text:
+            continue
+        if out:
+            no_space = _NO_SPACE_LANGUAGES & {prev_language, language}
+            out += "" if no_space else " "
+        out += text
+        prev_language = language
+    return out
+
+
 def split_audio_into_chunks(
     wav: np.ndarray,
     sr: int,
@@ -907,17 +980,29 @@ class Qwen3ASRModel(nn.Module):
 
         return input_features, feature_attention_mask, num_audio_tokens
 
+    def _language_name(self, language: Optional[str]) -> Optional[str]:
+        config = getattr(self, "config", None)
+        supported = getattr(config, "support_languages", None)
+        return normalize_language(language, supported)
+
     def extract_language(
         self,
         text: str,
-    ) -> str:
-        """Extract language from text."""
+    ) -> Tuple[Optional[str], str]:
+        """Split ``language X<asr_text>text`` into (language, text).
+
+        The language is None when the output has no language tag or the model
+        reports ``language None`` (no speech), as in the official toolkit.
+        """
         if "<asr_text>" in text and text.startswith("language "):
+            language = text[len("language ") : text.find("<asr_text>")].strip()
+            if language.lower() == "none":
+                language = None
             return (
-                text[len("language ") : text.find("<asr_text>")].strip(),
+                self._language_name(language),
                 text[text.find("<asr_text>") + len("<asr_text>") :],
             )
-        return "English", text
+        return None, text
 
     def _build_prompt(
         self,
@@ -932,12 +1017,9 @@ class Qwen3ASRModel(nn.Module):
         """
         system_content = f"{system_prompt}\n" if system_prompt else ""
 
+        language = self._language_name(language)
         if language is not None:
-            supported = self.config.support_languages or []
-            supported_lower = {lang.lower(): lang for lang in supported}
-            # Match language (case-insensitive) against supported languages
-            lang_name = supported_lower.get(language.lower(), language)
-            assistant_prefix = f"language {lang_name}<asr_text>"
+            assistant_prefix = f"language {language}<asr_text>"
         else:
 
             assistant_prefix = ""
@@ -1360,6 +1442,7 @@ class Qwen3ASRModel(nn.Module):
 
         # Qwen3-ASR biases toward rare vocabulary via the system prompt.
         system_prompt = merge_hotwords(system_prompt, hotwords)
+        language = self._language_name(language)
 
         # If streaming requested, delegate to stream_transcribe
         if stream:
@@ -1518,7 +1601,9 @@ class Qwen3ASRModel(nn.Module):
         end_time = time.time()
 
         # Combine transcriptions
-        full_text = " ".join(all_texts)
+        full_text = _join_chunk_texts(
+            all_texts, [segment["language"] for segment in segments]
+        )
 
         return STTOutput(
             text=full_text,
@@ -1575,6 +1660,8 @@ class Qwen3ASRModel(nn.Module):
             raise RuntimeError(
                 "Tokenizer/FeatureExtractor not initialized. Call post_load_hook first."
             )
+
+        language = self._language_name(language)
 
         # Load audio
         if isinstance(audio, list):
