@@ -564,7 +564,8 @@ class AlbertLayer(nn.Module):
         )
         self.ffn = nn.Linear(config.hidden_size, config.intermediate_size)
         self.ffn_output = nn.Linear(config.intermediate_size, config.hidden_size)
-        self.activation = nn.GELU()
+        # transformers AlbertConfig defaults to hidden_act="gelu_new" (tanh approximation), which Kokoro uses
+        self.activation = nn.GELU(approx="tanh")
 
     def __call__(self, hidden_states, attention_mask=None):
         attention_output = self.attention(hidden_states, attention_mask)
