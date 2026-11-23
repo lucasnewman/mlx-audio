@@ -10,7 +10,12 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from .qwen3_asr import AudioEncoder, TextModel, _get_feat_extract_output_lengths
+from .qwen3_asr import (
+    AudioEncoder,
+    TextModel,
+    _get_feat_extract_output_lengths,
+    normalize_language,
+)
 
 
 class ForceAlignProcessor:
@@ -694,7 +699,7 @@ class ForcedAlignerModel(nn.Module):
 
             # Encode text with timestamp tokens
             word_list, aligner_input_text = self.aligner_processor.encode_timestamp(
-                txt, lang
+                txt, normalize_language(lang) or lang
             )
 
             # Replace single audio_pad with correct number
