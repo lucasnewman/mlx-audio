@@ -248,7 +248,8 @@ _number_re = re.compile(r"\d+")
 # A clock time, "3:30" or "15:05", with an optional "am", "p.m." and so on. Not
 # part of a longer time or ratio such as "1:30:45".
 _time_re = re.compile(
-    r"(?<![\d:])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])(?:\s*([ap])\.?\s?m\b)?"
+    r"(?<![\d:])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])"
+    r"(?:\s*([ap])(?:\.\s?m\b\.?|\s?m\b))?"
 )
 # A minus sign before a number: at the start, or after a space, an opening bracket
 # or a quote. A hyphen after a digit or a letter ("5-10", "covid-19") is not a sign.

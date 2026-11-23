@@ -8821,7 +8821,21 @@ class TestMeloTTSText(unittest.TestCase):
         self.assertEqual(
             text_normalize("Meet at 3:30 pm today."), "meet at three thirty p m today."
         )
-        self.assertEqual(text_normalize("9:05 A.M."), "nine oh five a m.")
+        # The trailing dot of a dotted "p.m."/"a.m." abbreviation is part of the
+        # time, not a sentence boundary, so it must not leak into the spoken output.
+        self.assertEqual(text_normalize("9:05 a.m."), "nine oh five a m")
+        self.assertEqual(
+            text_normalize("The 9:05 a.m. train is late."),
+            "the nine oh five a m train is late.",
+        )
+        # A comma after the dotted form survives; only the meridiem dots are eaten.
+        self.assertEqual(
+            text_normalize("9:05 a.m., she said"), "nine oh five a m, she said"
+        )
+        # The dotless "pm"/"am" form must leave a following sentence period intact:
+        # nothing after the "m" is consumed, so the sentence boundary is preserved.
+        self.assertEqual(text_normalize("3:30 pm. Bye"), "three thirty p m. bye")
+        self.assertEqual(text_normalize("3:30 am. Next"), "three thirty a m. next")
         self.assertEqual(text_normalize("at 12:00am"), "at twelve a m")
         self.assertEqual(text_normalize("15:45"), "fifteen forty five")
         self.assertEqual(text_normalize("at 7:00"), "at seven")
