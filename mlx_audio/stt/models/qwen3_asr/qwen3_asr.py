@@ -1029,7 +1029,7 @@ class Qwen3ASRModel(nn.Module):
         When language is None, the model will auto-detect the language
         by outputting 'language {detected}<asr_text>{text}'.
         """
-        system_content = f"{system_prompt}\n" if system_prompt else ""
+        system_content = system_prompt or ""
 
         language = self._language_name(language)
         if language is not None:
