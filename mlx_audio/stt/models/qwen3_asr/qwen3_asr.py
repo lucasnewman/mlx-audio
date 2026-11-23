@@ -2,6 +2,7 @@
 
 import math
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
@@ -101,11 +102,19 @@ def normalize_language(
     names = {name.lower(): name for name in supported or []}
     if key in names:
         return names[key]
-    return _LANGUAGE_CODES.get(key) or _LANGUAGE_CODES.get(key.split("-")[0], language)
+    subtags = key.split("-", 2)
+    # BCP 47 allows Cantonese as either the primary language or a zh extlang.
+    if subtags[:2] == ["zh", "yue"]:
+        return _LANGUAGE_CODES["yue"]
+    return _LANGUAGE_CODES.get(subtags[0], language)
+
+
+def _is_latin_letter(char: str) -> bool:
+    return char.isalpha() and "LATIN" in unicodedata.name(char, "")
 
 
 def _join_chunk_texts(texts: List[str], languages: List[Optional[str]]) -> str:
-    """Join chunk transcripts, without a space next to a Chinese/Japanese chunk."""
+    """Join chunks, preserving spaces between Latin words even in CJK speech."""
     out = ""
     prev_language = None
     for text, language in zip(texts, languages):
@@ -113,8 +122,13 @@ def _join_chunk_texts(texts: List[str], languages: List[Optional[str]]) -> str:
         if not text:
             continue
         if out:
-            no_space = _NO_SPACE_LANGUAGES & {prev_language, language}
-            out += "" if no_space else " "
+            cjk_boundary = (
+                prev_language in _NO_SPACE_LANGUAGES or language in _NO_SPACE_LANGUAGES
+            )
+            if not cjk_boundary or (
+                _is_latin_letter(out[-1]) and _is_latin_letter(text[0])
+            ):
+                out += " "
         out += text
         prev_language = language
     return out

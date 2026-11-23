@@ -40,6 +40,10 @@ class TestNormalizeLanguage(unittest.TestCase):
             ("zh-CN", "Chinese"),
             ("zh_TW", "Chinese"),
             ("yue", "Cantonese"),
+            ("yue-HK", "Cantonese"),
+            ("zh-yue", "Cantonese"),
+            ("ZH_YUE_Hant_HK", "Cantonese"),
+            ("zh-Hant-HK", "Chinese"),
             ("ja", "Japanese"),
             ("chinese", "Chinese"),
             ("English", "English"),
@@ -67,9 +71,27 @@ class TestQwen3ASRLanguage(unittest.TestCase):
         self.assertEqual([s["language"] for s in out.segments], ["English"] * 2)
         self.assertEqual(out.text, "hello world")
 
+    def test_extended_cantonese_tag_in_prompt_and_segment(self):
+        model, out = _transcribe(["你好"], "zh-yue-HK")
+        model._build_prompt(3, "zh-yue-HK")
+        prompt = model._tokenizer.encode.call_args.args[0]
+        self.assertTrue(prompt.endswith("language Cantonese<asr_text>"), prompt)
+        self.assertEqual(out.segments[0]["language"], "Cantonese")
+
     def test_chinese_chunks_are_joined_without_space(self):
         _, out = _transcribe(["今天天气", "很好。"], "zh")
         self.assertEqual(out.text, "今天天气很好。")
+
+    def test_english_words_across_mixed_language_chunks_keep_space(self):
+        _, out = _transcribe(
+            ["language Chinese<asr_text>我喜欢 New", "language English<asr_text>York"],
+            None,
+        )
+        self.assertEqual(out.text, "我喜欢 New York")
+
+    def test_latin_words_in_forced_chinese_keep_space(self):
+        _, out = _transcribe(["在 café", "", "Central见"], "zh")
+        self.assertEqual(out.text, "在 café Central见")
 
     def test_detected_japanese_chunks_are_joined_without_space(self):
         _, out = _transcribe(
